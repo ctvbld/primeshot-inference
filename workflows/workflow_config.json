@@ -1,0 +1,551 @@
+{
+  "workflows": {
+    "flux_lora": {
+      "file": "flux_lora.json",
+      "name": "Flux + LoRA Generation",
+      "description": "Generate images using Flux.1-dev with custom LoRAs for personalized styles",
+      "parameters": {
+        "lora_path": {
+          "type": "string", 
+          "required": true,
+          "description": "Path to the LoRA file in S3 (e.g., /data/user_id/loras/style.safetensors)"
+        },
+        "style_prompt": {
+          "type": "string", 
+          "required": true,
+          "description": "Positive prompt describing the desired image"
+        },
+        "negative_prompt": {
+          "type": "string", 
+          "default": "blurry, low quality, distorted",
+          "description": "Negative prompt to avoid unwanted elements"
+        },
+        "batch_size": {
+          "type": "integer", 
+          "default": 4, 
+          "min": 1, 
+          "max": 15,
+          "description": "Number of images to generate"
+        },
+        "resolution": {
+          "type": "string", 
+          "default": "1024x1024",
+          "options": ["512x512", "768x768", "1024x1024", "1024x1536", "1536x1024"],
+          "description": "Image resolution"
+        },
+        "seed": {
+          "type": "integer", 
+          "default": -1,
+          "description": "Random seed (-1 for random)"
+        },
+        "steps": {
+          "type": "integer",
+          "default": 28,
+          "min": 4,
+          "max": 50,
+          "description": "Number of denoising steps"
+        },
+        "cfg": {
+          "type": "float",
+          "default": 3.5,
+          "min": 1.0,
+          "max": 10.0,
+          "description": "Classifier-free guidance scale"
+        },
+        "lora_strength": {
+          "type": "float",
+          "default": 1.0,
+          "min": 0.0,
+          "max": 2.0,
+          "description": "LoRA strength multiplier"
+        }
+      },
+      "node_mappings": {
+        "unet_loader": "1",
+        "clip_loader": "2",
+        "vae_loader": "3",
+        "lora_loader": "4",
+        "positive_prompt": "5",
+        "negative_prompt": "6",
+        "flux_guidance": "7",
+        "latent_image": "8",
+        "sampler": "9",
+        "vae_decode": "10",
+        "save_image": "11"
+      },
+              "parameter_mappings": {
+        "style_prompt": {
+          "node": "5",
+          "input_key": "text"
+        },
+        "negative_prompt": {
+          "node": "6",
+          "input_key": "text"
+        },
+        "batch_size": {
+          "node": "8",
+          "input_key": "batch_size"
+        },
+        "resolution": {
+          "special_handler": "resolution",
+          "width_mapping": {
+            "node": "8",
+            "input_key": "width"
+          },
+          "height_mapping": {
+            "node": "8",
+            "input_key": "height"
+          }
+        },
+        "seed": {
+          "node": "9",
+          "input_key": "seed",
+          "special_handler": "random_seed"
+        },
+        "steps": {
+          "node": "9",
+          "input_key": "steps"
+        },
+        "cfg": {
+          "node": "7",
+          "input_key": "guidance"
+        },
+        "lora_path": {
+          "special_handler": "lora_file"
+        },
+        "lora_strength": {
+          "node": "4",
+          "input_key": "strength_model",
+          "secondary_mappings": [
+            {
+              "node": "4",
+              "input_key": "strength_clip"
+            }
+          ]
+        },
+        "output_prefix": {
+          "special_handler": "job_output",
+          "node": "11",
+          "input_key": "filename_prefix"
+        }
+      }
+    },
+    "flux_lora_supir": {
+      "file": "flux_lora_supir.json",
+      "name": "Flux + LoRA + SUPIR Upscaling",
+      "description": "Generate and upscale images using Flux.1-dev with custom LoRAs and SUPIR upscaling for enhanced quality",
+      "parameters": {
+        "lora_path": {
+          "type": "string", 
+          "required": true,
+          "description": "Path to the LoRA file in S3 (e.g., /data/user_id/loras/style.safetensors)"
+        },
+        "style_prompt": {
+          "type": "string", 
+          "required": true,
+          "description": "Positive prompt describing the desired image"
+        },
+        "negative_prompt": {
+          "type": "string", 
+          "default": "blurry, low quality, distorted",
+          "description": "Negative prompt to avoid unwanted elements"
+        },
+        "batch_size": {
+          "type": "integer", 
+          "default": 4, 
+          "min": 1, 
+          "max": 15,
+          "description": "Number of images to generate"
+        },
+        "resolution": {
+          "type": "string", 
+          "default": "1024x1024",
+          "options": ["512x512", "768x768", "1024x1024", "1024x1536", "1536x1024"],
+          "description": "Image resolution (will be upscaled by SUPIR)"
+        },
+        "seed": {
+          "type": "integer", 
+          "default": -1,
+          "description": "Random seed (-1 for random)"
+        },
+        "steps": {
+          "type": "integer",
+          "default": 28,
+          "min": 4,
+          "max": 50,
+          "description": "Number of denoising steps for initial generation"
+        },
+        "cfg": {
+          "type": "float",
+          "default": 3.5,
+          "min": 1.0,
+          "max": 10.0,
+          "description": "Classifier-free guidance scale for initial generation"
+        },
+        "lora_strength": {
+          "type": "float",
+          "default": 1.0,
+          "min": 0.0,
+          "max": 2.0,
+          "description": "LoRA strength multiplier"
+        },
+        "upscale_factor": {
+          "type": "float",
+          "default": 2.0,
+          "min": 1.0,
+          "max": 4.0,
+          "description": "SUPIR upscaling factor"
+        },
+        "supir_steps": {
+          "type": "integer",
+          "default": 20,
+          "min": 5,
+          "max": 50,
+          "description": "Number of sampling steps for SUPIR upscaling"
+        },
+        "supir_cfg": {
+          "type": "float",
+          "default": 4.0,
+          "min": 1.0,
+          "max": 10.0,
+          "description": "Classifier-free guidance scale for SUPIR"
+        },
+        "supir_denoise_strength": {
+          "type": "integer",
+          "default": 50,
+          "min": 0,
+          "max": 100,
+          "description": "SUPIR first stage denoising strength"
+        },
+        "use_tiled_processing": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use tiled processing for memory efficiency"
+        },
+        "supir_positive_prompt": {
+          "type": "string",
+          "default": "high quality, detailed, sharp, photorealistic",
+          "description": "Positive prompt for SUPIR conditioning (describes desired quality and style)"
+        },
+        "supir_negative_prompt": {
+          "type": "string", 
+          "default": "bad quality, blurry, messy, artifacts, distorted",
+          "description": "Negative prompt for SUPIR conditioning (describes undesired artifacts)"
+        }
+      },
+      "node_mappings": {
+        "unet_loader": "1",
+        "clip_loader": "2",
+        "vae_loader": "3",
+        "lora_loader": "4",
+        "positive_prompt": "5",
+        "negative_prompt": "6",
+        "flux_guidance": "7",
+        "latent_image": "8",
+        "sampler": "9",
+        "vae_decode": "10",
+        "supir_loader": "12",
+        "supir_denoise": "13",
+        "supir_conditioner": "16",
+        "supir_encode": "17",
+        "supir_sample": "14",
+        "supir_decode": "15",
+        "sdxl_checkpoint": "18",
+        "save_image": "11"
+      },
+              "parameter_mappings": {
+        "style_prompt": {
+          "node": "5",
+          "input_key": "text"
+        },
+        "negative_prompt": {
+          "node": "6",
+          "input_key": "text"
+        },
+        "batch_size": {
+          "node": "8",
+          "input_key": "batch_size"
+        },
+        "resolution": {
+          "special_handler": "resolution",
+          "width_mapping": {
+            "node": "8",
+            "input_key": "width"
+          },
+          "height_mapping": {
+            "node": "8",
+            "input_key": "height"
+          }
+        },
+        "seed": {
+          "node": "9",
+          "input_key": "seed",
+          "special_handler": "random_seed"
+        },
+        "steps": {
+          "node": "9",
+          "input_key": "steps"
+        },
+        "cfg": {
+          "node": "7",
+          "input_key": "guidance"
+        },
+        "lora_path": {
+          "special_handler": "lora_file"
+        },
+        "lora_strength": {
+          "node": "4",
+          "input_key": "strength_model",
+          "secondary_mappings": [
+            {
+              "node": "4",
+              "input_key": "strength_clip"
+            }
+          ]
+        },
+        "upscale_factor": {
+          "node": "13",
+          "input_key": "scale_by"
+        },
+        "supir_steps": {
+          "node": "14",
+          "input_key": "steps"
+        },
+        "supir_cfg": {
+          "node": "14",
+          "input_key": "cfg"
+        },
+        "supir_denoise_strength": {
+          "node": "13",
+          "input_key": "s_stage1"
+        },
+        "use_tiled_processing": {
+          "node": "14",
+          "input_key": "tiled"
+        },
+        "supir_positive_prompt": {
+          "node": "16",
+          "widget_index": 0
+        },
+        "supir_negative_prompt": {
+          "node": "16", 
+          "widget_index": 1
+        },
+        "output_prefix": {
+          "special_handler": "job_output",
+          "node": "11",
+          "input_key": "filename_prefix"
+        }
+      }
+    },
+    "flux_lora_supir_interposer": {
+      "file": "flux_lora_supir_interposer.json",
+      "name": "Flux + LoRA + Latent Interposer + SUPIR",
+      "description": "Experimental workflow using SD-Latent-Interposer to convert Flux latents directly to SDXL latents for SUPIR upscaling, potentially reducing quality loss",
+      "parameters": {
+        "lora_path": {
+          "type": "string", 
+          "required": true,
+          "description": "Path to the LoRA file in S3 (e.g., /data/user_id/loras/style.safetensors)"
+        },
+        "style_prompt": {
+          "type": "string", 
+          "required": true,
+          "description": "Positive prompt describing the desired image"
+        },
+        "negative_prompt": {
+          "type": "string", 
+          "default": "blurry, low quality, distorted",
+          "description": "Negative prompt to avoid unwanted elements"
+        },
+        "batch_size": {
+          "type": "integer", 
+          "default": 4, 
+          "min": 1, 
+          "max": 15,
+          "description": "Number of images to generate"
+        },
+        "resolution": {
+          "type": "string", 
+          "default": "1024x1024",
+          "options": ["512x512", "768x768", "1024x1024", "1024x1536", "1536x1024"],
+          "description": "Image resolution (will be upscaled by SUPIR)"
+        },
+        "seed": {
+          "type": "integer", 
+          "default": -1,
+          "description": "Random seed (-1 for random)"
+        },
+        "steps": {
+          "type": "integer",
+          "default": 28,
+          "min": 4,
+          "max": 50,
+          "description": "Number of denoising steps for initial generation"
+        },
+        "cfg": {
+          "type": "float",
+          "default": 3.5,
+          "min": 1.0,
+          "max": 10.0,
+          "description": "Classifier-free guidance scale for initial generation"
+        },
+        "lora_strength": {
+          "type": "float",
+          "default": 1.0,
+          "min": 0.0,
+          "max": 2.0,
+          "description": "LoRA strength multiplier"
+        },
+        "upscale_factor": {
+          "type": "float",
+          "default": 2.0,
+          "min": 1.0,
+          "max": 4.0,
+          "description": "SUPIR upscaling factor"
+        },
+        "supir_steps": {
+          "type": "integer",
+          "default": 20,
+          "min": 5,
+          "max": 50,
+          "description": "Number of sampling steps for SUPIR upscaling"
+        },
+        "supir_cfg": {
+          "type": "float",
+          "default": 4.0,
+          "min": 1.0,
+          "max": 10.0,
+          "description": "Classifier-free guidance scale for SUPIR"
+        },
+        "supir_denoise_strength": {
+          "type": "integer",
+          "default": 50,
+          "min": 0,
+          "max": 100,
+          "description": "SUPIR first stage denoising strength"
+        },
+        "use_tiled_processing": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use tiled processing for memory efficiency"
+        },
+        "supir_positive_prompt": {
+          "type": "string",
+          "default": "high quality, detailed, sharp, photorealistic",
+          "description": "Positive prompt for SUPIR conditioning (describes desired quality and style)"
+        },
+        "supir_negative_prompt": {
+          "type": "string", 
+          "default": "bad quality, blurry, messy, artifacts, distorted",
+          "description": "Negative prompt for SUPIR conditioning (describes undesired artifacts)"
+        }
+      },
+      "node_mappings": {
+        "unet_loader": "1",
+        "clip_loader": "2",
+        "flux_vae_loader": "3",
+        "lora_loader": "4",
+        "positive_prompt": "5",
+        "negative_prompt": "6",
+        "flux_guidance": "7",
+        "latent_image": "8",
+        "sampler": "9",
+        "latent_interposer": "10",
+        "sdxl_vae_loader": "11",
+        "supir_loader": "12",
+        "vae_decode": "13",
+        "supir_denoise": "17",
+        "supir_conditioner": "18",
+        "supir_encode": "19",
+        "supir_sample": "14",
+        "supir_decode": "15",
+        "save_image": "16"
+      },
+      "parameter_mappings": {
+        "style_prompt": {
+          "node": "5",
+          "input_key": "text"
+        },
+        "negative_prompt": {
+          "node": "6",
+          "input_key": "text"
+        },
+        "batch_size": {
+          "node": "8",
+          "input_key": "batch_size"
+        },
+        "resolution": {
+          "special_handler": "resolution",
+          "width_mapping": {
+            "node": "8",
+            "input_key": "width"
+          },
+          "height_mapping": {
+            "node": "8",
+            "input_key": "height"
+          }
+        },
+        "seed": {
+          "node": "9",
+          "input_key": "seed",
+          "special_handler": "random_seed"
+        },
+        "steps": {
+          "node": "9",
+          "input_key": "steps"
+        },
+        "cfg": {
+          "node": "7",
+          "input_key": "guidance"
+        },
+        "lora_path": {
+          "special_handler": "lora_file"
+        },
+        "lora_strength": {
+          "node": "4",
+          "input_key": "strength_model",
+          "secondary_mappings": [
+            {
+              "node": "4",
+              "input_key": "strength_clip"
+            }
+          ]
+        },
+        "upscale_factor": {
+          "node": "17",
+          "input_key": "scale_by"
+        },
+        "supir_steps": {
+          "node": "14",
+          "input_key": "steps"
+        },
+        "supir_cfg": {
+          "node": "14",
+          "input_key": "cfg"
+        },
+        "supir_denoise_strength": {
+          "node": "17",
+          "input_key": "s_stage1"
+        },
+        "use_tiled_processing": {
+          "node": "14",
+          "input_key": "tiled"
+        },
+        "supir_positive_prompt": {
+          "node": "18",
+          "widget_index": 0
+        },
+        "supir_negative_prompt": {
+          "node": "18", 
+          "widget_index": 1
+        },
+        "output_prefix": {
+          "special_handler": "job_output",
+          "node": "16",
+          "input_key": "filename_prefix"
+        }
+      }
+    }
+  }
+} 
