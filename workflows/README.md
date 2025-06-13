@@ -14,7 +14,26 @@ Enhanced workflow that generates images and then upscales them using SUPIR for s
 
 **Output**: High-resolution upscaled images (e.g., 2048x2048 with 2x upscaling)
 
-### 3. Flux + LoRA + Latent Interposer + SUPIR (`flux_lora_supir_interposer`) ⚡ **EXPERIMENTAL**
+### 3. Flux + LoRA + ControlNet Upscaling (`flux_lora_controlnet_upscale`)
+Native Flux upscaling using [Jasper AI's Flux.1-dev ControlNet Upscaler](https://huggingface.co/jasperai/Flux.1-dev-Controlnet-Upscaler).
+
+**Key Features**:
+- **Flux-Native**: Specifically trained for Flux.1-dev output
+- **High Quality**: Uses diffusion-based upscaling instead of traditional interpolation
+- **4x Upscaling**: Produces 4096x4096 images from 1024x1024 input
+- **ControlNet Architecture**: Maintains coherence with original Flux generation style
+
+**Workflow Flow**:
+1. Flux + LoRA generation → Initial image (e.g., 1024x1024)
+2. Image scaling → Prepare control image (4x scaled)
+3. **Flux ControlNet Upscaler** → High-quality 4K output
+
+**Benefits**:
+- Better quality than traditional upscalers for Flux images
+- Maintains Flux's unique aesthetic characteristics
+- Professional-grade upscaling using the same diffusion process
+
+### 4. Flux + LoRA + Latent Interposer + SUPIR (`flux_lora_supir_interposer`) ⚡ **EXPERIMENTAL**
 Experimental workflow using [SD-Latent-Interposer](https://github.com/city96/SD-Latent-Interposer) to convert Flux latents directly to SDXL latents for SUPIR processing.
 
 **Key Innovation**: Instead of decoding Flux latents to pixels and then re-encoding to SDXL latents (lossy process), this workflow uses a neural network to convert latents directly, potentially preserving more image quality.
@@ -30,6 +49,29 @@ Experimental workflow using [SD-Latent-Interposer](https://github.com/city96/SD-
 - Better preservation of Flux generation characteristics
 
 **Note**: This is experimental technology. The interposer may introduce artifacts or color shifts as mentioned in the [project documentation](https://github.com/city96/SD-Latent-Interposer#interposer-v40).
+
+### 5. Pixelwave Flux 8x Upscale (`flux_lora_pixelwave_8x`) 🚀 **NEW**
+Advanced 8x upscaling workflow using the specialized [Pixelwave Flux model](https://huggingface.co/mikeyandfriends/PixelWave_FLUX.1-dev_03) with TTP Tiling technology for ultra-realistic skin texture preservation.
+
+**Key Features**:
+- **8x Upscaling**: Produces ultra-high resolution images (e.g., 8192x8192 from 1024x1024)
+- **Pixelwave Model**: Fine-tuned Flux model optimized for realistic skin textures
+- **TTP Tiling**: Advanced tiling system prevents seams and artifacts
+- **Quality Preservation**: Maintains fine details without quality loss
+
+**Workflow Flow**:
+1. Pixelwave Flux generation → High-quality base image
+2. **TTP Tile Processing** → Image divided into optimal tiles
+3. **Advanced Upscaling** → Each tile processed individually
+4. **Seamless Assembly** → Tiles merged without visible boundaries
+
+**Benefits**:
+- Superior skin texture rendering
+- No visible tile boundaries
+- Extreme detail preservation
+- Professional-grade 8K output
+
+**Best For**: Portraits, fashion photography, detailed character art
 
 ## SUPIR Upscaling Features
 
@@ -83,6 +125,27 @@ Experimental workflow using [SD-Latent-Interposer](https://github.com/city96/SD-
 }
 ```
 
+### Flux + LoRA + ControlNet Upscaling (Flux-Native)
+
+```json
+{
+  "user_id": "user123", 
+  "workflow_name": "flux_lora_controlnet_upscale",
+  "parameters": {
+    "lora_path": "/data/user123/loras/style.safetensors",
+    "style_prompt": "professional portrait, high quality, sharp focus",
+    "negative_prompt": "blurry, low quality, distorted",
+    "batch_size": 1,
+    "resolution": "1024x1024",
+    "steps": 28,
+    "upscale_steps": 28,
+    "cfg": 3.5,
+    "controlnet_strength": 0.6,
+    "lora_strength": 1.0
+  }
+}
+```
+
 ### Flux + LoRA + Latent Interposer + SUPIR (Experimental)
 
 ```json
@@ -107,6 +170,29 @@ Experimental workflow using [SD-Latent-Interposer](https://github.com/city96/SD-
 }
 ```
 
+### Pixelwave Flux 8x Upscale (Ultra-Realistic)
+
+```json
+{
+  "user_id": "user123", 
+  "workflow_name": "flux_lora_pixelwave_8x",
+  "parameters": {
+    "style_prompt": "ultra realistic portrait, professional photography, sharp details, perfect skin texture",
+    "negative_prompt": "blurry, low quality, distorted, artifacts, pixelated",
+    "batch_size": 1,
+    "resolution": "1024x1024",
+    "steps": 28,
+    "cfg": 3.5,
+    "tile_width": 1024,
+    "tile_height": 1024,
+    "denoise": 0.35,
+    "lora_path": "realistic_skin_v2.safetensors",
+    "lora_strength": 0.8,
+    "lora_clip_strength": 0.8
+  }
+}
+```
+
 ## SUPIR Parameters
 
 | Parameter | Type | Default | Range | Description |
@@ -117,16 +203,29 @@ Experimental workflow using [SD-Latent-Interposer](https://github.com/city96/SD-
 | `supir_denoise_strength` | integer | 50 | 0-100 | First-stage denoising strength |
 | `use_tiled_processing` | boolean | true | - | Enable tiled processing for memory efficiency |
 
+## Pixelwave Parameters
+
+| Parameter | Type | Default | Range | Description |
+|-----------|------|---------|-------|-------------|
+| `tile_width` | integer | 1024 | 512-2048 | Width of each processing tile |
+| `tile_height` | integer | 1024 | 512-2048 | Height of each processing tile |
+| `denoise` | float | 0.35 | 0.1-1.0 | Denoising strength for upscaling tiles |
+| `lora_path` | string | None | - | Path to LoRA model file (relative to /data/user_id/loras/) |
+| `lora_strength` | float | 1.0 | 0.0-2.0 | LoRA model strength |
+| `lora_clip_strength` | float | 1.0 | 0.0-2.0 | LoRA CLIP strength |
+
 ## Performance Considerations
 
 ### Memory Requirements
 - **Basic Generation**: ~8GB VRAM for 1024x1024
 - **SUPIR Upscaling**: ~12-16GB VRAM for 2x upscaling
+- **Pixelwave 8x Upscale**: ~16-24GB VRAM for 8x upscaling
 - **Tiled Processing**: Reduces memory usage for large images
 
 ### Processing Time
 - **Basic Generation**: ~30-60 seconds for 4 images
 - **With SUPIR Upscaling**: ~90-180 seconds for 4 upscaled images
+- **Pixelwave 8x Upscale**: ~180-300 seconds for 1 ultra-high resolution image
 
 ### Quality vs Speed
 - Higher `supir_steps` = Better quality, longer processing time

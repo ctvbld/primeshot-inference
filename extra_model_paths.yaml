@@ -16,6 +16,7 @@ comfyui:
     loras: /models/loras/
     upscale_models: /models/upscale_models/
     vae: /models/vae/
+    style_models: /models/style_models/
 
 # Additional VAE paths for Flux models
 flux:

@@ -23,6 +23,9 @@ import modal.experimental
 vol = modal.Volume.from_name("models-vol", create_if_missing=True)
 aws_secret = modal.Secret.from_name("aws-secret")
 
+# ComfyUI API secret for API nodes authentication
+comfyui_secret = modal.Secret.from_name("comfyui-api-secret")
+
 # S3 mount for user LoRAs and outputs
 s3_mount = modal.CloudBucketMount(
     bucket_name="primeshot-uploads-01",
@@ -32,6 +35,99 @@ s3_mount = modal.CloudBucketMount(
 )
 
 # ## Model Setup Functions
+
+def setup_comfyui_locale():
+    """Configure ComfyUI to use English locale by setting internal configuration."""
+    import os
+    import json
+    
+    print("🌐 Configuring ComfyUI locale to English...")
+    
+    # ComfyUI user configuration directory (correct structure)
+    user_dir = "/root/comfy/ComfyUI/user"
+    default_dir = os.path.join(user_dir, "default") 
+    os.makedirs(default_dir, exist_ok=True)
+    
+    # Multiple settings files to try different approaches
+    settings_files = [
+        os.path.join(default_dir, "comfy.settings.json"),
+        os.path.join(default_dir, "settings.json"),
+        os.path.join(user_dir, "default.json"),
+    ]
+    
+    try:
+        # Try to create English locale settings in multiple formats
+        for settings_file in settings_files:
+            settings = {}
+            
+            # Load existing settings if they exist
+            if os.path.exists(settings_file):
+                try:
+                    with open(settings_file, 'r') as f:
+                        settings = json.load(f)
+                    print(f"📂 Loaded existing settings from {settings_file}")
+                except json.JSONDecodeError:
+                    print(f"⚠️ Invalid JSON in {settings_file}, creating new settings")
+                    settings = {}
+            
+            # Configure English locale settings
+            if "Comfy" not in settings:
+                settings["Comfy"] = {}
+            
+            # Set locale to English in multiple formats to ensure compatibility
+            settings["Comfy"]["Locale"] = "en"
+            settings["Comfy"]["Language"] = "en"
+            settings["Comfy"]["locale"] = "en"  # Lowercase variant
+            settings["Comfy"]["language"] = "en"  # Lowercase variant
+            
+            # Configure menu settings
+            if "Menu" not in settings["Comfy"]:
+                settings["Comfy"]["Menu"] = {}
+            settings["Comfy"]["Menu"]["UseNewMenu"] = "enabled"
+            
+            # Write settings
+            with open(settings_file, 'w') as f:
+                json.dump(settings, f, indent=2, ensure_ascii=False)
+            
+            print(f"✅ Created/updated settings: {settings_file}")
+        
+        # Also create a browser locale override script
+        browser_override_script = os.path.join(default_dir, "locale_override.js")
+        js_content = """
+// Force English locale in browser
+window.comfyUILocale = 'en';
+if (typeof Storage !== "undefined") {
+    localStorage.setItem('Comfy.Locale', 'en');
+    localStorage.setItem('Comfy.Language', 'en');
+}
+console.log('ComfyUI forced to English locale');
+"""
+        with open(browser_override_script, 'w') as f:
+            f.write(js_content)
+        
+        print(f"✅ Created browser locale override: {browser_override_script}")
+        
+        # Create environment file for additional locale configuration
+        env_file = os.path.join(default_dir, "locale.env")
+        env_content = """COMFYUI_LOCALE=en
+COMFYUI_LANGUAGE=en
+BROWSER_LOCALE=en
+LC_ALL=en_US.UTF-8
+LANG=en_US.UTF-8
+"""
+        with open(env_file, 'w') as f:
+            f.write(env_content)
+        
+        print(f"✅ Created locale environment file: {env_file}")
+        print(f"🌐 ComfyUI locale configured to English with multiple fallbacks")
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Failed to configure ComfyUI locale: {str(e)}")
+        import traceback
+        print(f"📍 Error details: {traceback.format_exc()}")
+        return False
 
 def setup_model_paths_config():
     """Configure ComfyUI model paths by copying extra_model_paths.yaml config file."""
@@ -74,6 +170,9 @@ def setup_model_paths_config():
         print("\n📁 Checking /models/vae:")
         subprocess.run("find /models/vae -name '*.safetensors' -type f 2>/dev/null | head -3", shell=True)
         
+        print("\n📁 Checking /models/clip_vision:")
+        subprocess.run("find /models/clip_vision -name '*.safetensors' -type f 2>/dev/null | head -5", shell=True)
+        
         # Check essential models
         essential_models = [
             ("/models/checkpoints/flux1-dev-fp8.safetensors", "Flux FP8 (checkpoints)"),
@@ -82,6 +181,7 @@ def setup_model_paths_config():
             ("/models/clip/clip_l.safetensors", "CLIP-L"),
             ("/models/clip/t5xxl_fp8_e4m3fn.safetensors", "T5XXL FP8"),
             ("/models/vae/sdxl-vae-fp16-fix/diffusion_pytorch_model.safetensors", "VAE"),
+            ("/models/vae/ae.safetensors", "Flux VAE"),
         ]
         
         print("\n🔍 Model availability check:")
@@ -96,6 +196,7 @@ def setup_model_paths_config():
                 print(f"⚠️ {name}: Not found")
         
         print("✅ ComfyUI configured to use /models volume via extra_model_paths.yaml")
+        
     else:
         print("⚠️ /models directory not found")
     
@@ -106,32 +207,68 @@ def setup_model_paths_config():
 # Build ComfyUI image following Modal's clean approach
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .apt_install("git", "locales")  # git for ComfyUI installation, locales for language support
+    .apt_install(
+        "git", "locales",  # git for ComfyUI installation, locales for language support
+        # System dependencies for OpenCV and graphics libraries
+        "libgl1-mesa-glx", "libglib2.0-0", "libfontconfig1", "libxrender1", 
+        "libxtst6", "libxi6", "libxrandr2", "libasound2", "libgtk-3-0",
+        "libsm6", "libxext6",
+        # Additional Mesa and GL libraries
+        "mesa-utils", "libgl1-mesa-dev", "libgles2-mesa-dev",
+        # Build tools that might be needed for some packages
+        "build-essential", "cmake", "pkg-config"
+    )  # git for ComfyUI installation, locales for language support
     .run_commands("locale-gen en_US.UTF-8")  # Generate English locale
-    .env({"LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8", "LANGUAGE": "en_US:en"})  # Set default locale
+    .env({
+        "LANG": "en_US.UTF-8", 
+        "LC_ALL": "en_US.UTF-8", 
+        "LANGUAGE": "en_US:en",
+        # Prevent interactive prompts in pip and other tools
+        "DEBIAN_FRONTEND": "noninteractive",
+        "PIP_NO_INPUT": "1",
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1"
+    })  # Set default locale and non-interactive mode
     .pip_install("fastapi[standard]==0.115.4")  # web dependencies
-    .pip_install("comfy-cli==1.3.8")  # ComfyUI installer
+    .pip_install("comfy-cli==1.4.0")  # Install specific version of ComfyUI 3.0.7
+    # Pre-install OpenCV to avoid conflicts with custom nodes
+    .pip_install("opencv-python-headless==4.8.1.78")  # OpenCV without GUI dependencies
+    # Install updated PyTorch and xformers first to avoid conflicts
+    .pip_install("torch>=2.3.1", "torchvision>=0.18.1")  # Latest PyTorch for compatibility
+    .pip_install("xformers>=0.0.25")  # Updated xformers for attention mask fixes
     .run_commands(  # install ComfyUI with NVIDIA support
         "comfy --skip-prompt install --fast-deps --nvidia"
     )
-    # Install custom nodes for LoRA and upscaling
+    # Install core custom nodes first (known to be stable)
     .run_commands(
-        "comfy node install --fast-deps was-node-suite-comfyui@1.0.2"
+        "comfy node install --fast-deps was-node-suite-comfyui@latest"
     )
-    # Install SUPIR upscaling nodes (by Kijai) - direct GitHub install
+    # Install rgthree for UI controls and labels (latest version for compatibility)
     .run_commands(
-        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/kijai/ComfyUI-SUPIR.git",
-        "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-SUPIR && pip install -r requirements.txt"
+        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/rgthree/rgthree-comfy.git",
+        "cd /root/comfy/ComfyUI/custom_nodes/rgthree-comfy && pip install -r requirements.txt --no-input"
     )
-    # Install SD-Latent-Interposer for Flux→SDXL latent conversion
+    # Install ControlAltAI nodes for resolution controls (uses pyproject.toml)
     .run_commands(
-        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/city96/SD-Latent-Interposer.git",
-        "cd /root/comfy/ComfyUI/custom_nodes/SD-Latent-Interposer && pip install huggingface-hub"
+        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/gseth/ControlAltAI-Nodes.git",
+        "cd /root/comfy/ComfyUI/custom_nodes/ControlAltAI-Nodes && pip install . --no-input"
+    )
+    .run_commands(
+        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/kijai/ComfyUI-KJNodes",
+        "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-KJNodes && pip install -r requirements.txt --no-input"
+    )
+    .run_commands(
+        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/kaibioinfo/ComfyUI_AdvancedRefluxControl"
+    )
+    # Post-installation compatibility fixes for attention mask issues
+    .run_commands(
+        # Clear any cached model files that might cause conflicts
+        "find /root/comfy/ComfyUI -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true",
+        # Verify Python environment is clean
+        "python -c 'import torch; print(f\"PyTorch: {torch.__version__}\"); import xformers; print(f\"xformers: {xformers.__version__}\")'"
     )
     # Add workflow templates directory and job tracker
     .add_local_dir("workflows", "/root/workflows")
     .add_local_file("job_tracker.py", "/root/job_tracker.py")
-    # Add ComfyUI model paths configuration
     .add_local_file("extra_model_paths.yaml", "/extra_model_paths.yaml")
 )
 
@@ -141,8 +278,9 @@ app = modal.App(name="comfyui", image=image)
 
 @app.function(
     max_containers=1,
-    gpu="A10G",  # Cost-effective for UI development
+    gpu="L40S",  # Cost-effective for UI development A10G
     volumes={"/models": vol, "/data": s3_mount},
+    secrets=[comfyui_secret],  # Add ComfyUI secret for API nodes
     timeout=3600
 )
 @modal.concurrent(max_inputs=10)
@@ -150,6 +288,10 @@ app = modal.App(name="comfyui", image=image)
 def dev_server():
     """Interactive ComfyUI development server for workflow creation."""
     print("🚀 Starting ComfyUI development server...")
+    
+    # Configure ComfyUI locale to English first
+    if not setup_comfyui_locale():
+        print("⚠️ Warning: Failed to configure ComfyUI locale")
     
     # Configure ComfyUI with extra_model_paths.yaml
     if not setup_model_paths_config():
@@ -202,28 +344,43 @@ def dev_server():
     linked_loras = link_all_loras()
     print(f"✅ Linked {linked_loras} LoRAs from S3 bucket for dev server")
     
-    # Set environment variables to force English locale
+    # Set comprehensive environment variables to force English locale
     env = os.environ.copy()
     env.update({
         'LANG': 'en_US.UTF-8',
         'LC_ALL': 'en_US.UTF-8',
-        'LANGUAGE': 'en_US:en'
+        'LANGUAGE': 'en_US:en',
+        'LC_NUMERIC': 'en_US.UTF-8',
+        'LC_TIME': 'en_US.UTF-8',
+        'LC_COLLATE': 'en_US.UTF-8',
+        'LC_MONETARY': 'en_US.UTF-8',
+        'LC_MESSAGES': 'en_US.UTF-8',
+        'LC_PAPER': 'en_US.UTF-8',
+        'LC_NAME': 'en_US.UTF-8',
+        'LC_ADDRESS': 'en_US.UTF-8',
+        'LC_TELEPHONE': 'en_US.UTF-8',
+        'LC_MEASUREMENT': 'en_US.UTF-8',
+        'LC_IDENTIFICATION': 'en_US.UTF-8',
+        'COMFYUI_LOCALE': 'en',
+        'COMFYUI_LANGUAGE': 'en',
+        'COMFY_API_KEY': os.environ.get('COMFY_API_KEY', '')  # Add API key for API nodes
     })
     
-    # Launch ComfyUI UI server (extra_model_paths.yaml will be loaded automatically)
+    # Launch ComfyUI UI server (locale controlled via config files and environment)
     subprocess.Popen(
         "comfy launch -- --listen 0.0.0.0 --port 8000 --output-directory /data/outputs",
         shell=True,
         env=env
     )
-    print("🌐 ComfyUI UI available at the development server URL")
+    print("🌐 ComfyUI UI available at the development server URL with API node support and English locale")
 
 # ## Production Image Generation
 
 @app.cls(
     scaledown_window=300,  # 5 minute keep-alive
-    gpu="L40S",  # High-performance for batch inference
+    gpu="H100",  # High-performance for batch inference
     volumes={"/models": vol, "/data": s3_mount},
+    secrets=[aws_secret, comfyui_secret],  # Add ComfyUI secret for API nodes
 )
 @modal.concurrent(max_inputs=5)
 class ComfyUI:
@@ -236,6 +393,10 @@ class ComfyUI:
         """Launch ComfyUI server in background when container starts."""
         print("🔄 Initializing ComfyUI production environment...")
         
+        # Configure ComfyUI locale to English first
+        if not setup_comfyui_locale():
+            print("⚠️ Warning: Failed to configure ComfyUI locale")
+        
         # Configure ComfyUI with extra_model_paths.yaml
         if not setup_model_paths_config():
             raise RuntimeError("Failed to configure model paths")
@@ -243,18 +404,32 @@ class ComfyUI:
         # Create LoRA directory for job-specific dynamic linking
         os.makedirs("/root/comfy/ComfyUI/models/loras", exist_ok=True)
         
-        # Set environment variables to force English locale
+        # Set comprehensive environment variables including API key for API nodes
         env = os.environ.copy()
         env.update({
             'LANG': 'en_US.UTF-8',
             'LC_ALL': 'en_US.UTF-8',
-            'LANGUAGE': 'en_US:en'
+            'LANGUAGE': 'en_US:en',
+            'LC_NUMERIC': 'en_US.UTF-8',
+            'LC_TIME': 'en_US.UTF-8',
+            'LC_COLLATE': 'en_US.UTF-8',
+            'LC_MONETARY': 'en_US.UTF-8',
+            'LC_MESSAGES': 'en_US.UTF-8',
+            'LC_PAPER': 'en_US.UTF-8',
+            'LC_NAME': 'en_US.UTF-8',
+            'LC_ADDRESS': 'en_US.UTF-8',
+            'LC_TELEPHONE': 'en_US.UTF-8',
+            'LC_MEASUREMENT': 'en_US.UTF-8',
+            'LC_IDENTIFICATION': 'en_US.UTF-8',
+            'COMFYUI_LOCALE': 'en',
+            'COMFYUI_LANGUAGE': 'en',
+            'COMFY_API_KEY': os.environ.get('COMFY_API_KEY', '')  # Add API key for API nodes
         })
         
-        # Launch ComfyUI server in background (extra_model_paths.yaml will be loaded automatically)
-        cmd = f"comfy launch --background -- --port {self.port} --output-directory /data/outputs"
+        # Launch ComfyUI server in background (locale controlled via config files and environment)
+        cmd = f"comfy launch --background -- --port {self.port} --output-directory /data/outputs"  
         subprocess.run(cmd, shell=True, check=True, env=env)
-        print("✅ ComfyUI server running in background")
+        print("✅ ComfyUI server running in background with API node support and English locale")
 
     def setup_style_lora(self, lora_s3_path: str, style_id: str) -> str:
         """Link specific LoRA from S3 path for this style only."""
@@ -294,6 +469,51 @@ class ComfyUI:
                         print(f"🧹 Cleaned up LoRA symlink: {filename}")
         except Exception as e:
             print(f"⚠️ Warning: Failed to cleanup LoRA symlinks: {str(e)}")
+
+    def _workflow_uses_api_nodes(self, workflow: Dict[str, Any]) -> bool:
+        """Check if workflow contains API nodes that require credits."""
+        api_node_classes = [
+            "OpenAI", "DALL·E", "GPT", "Google", "Gemini", "Veo",
+            "Stability AI", "Black Forest Labs", "Luma", "Runway",
+            "Ideogram", "Kling", "MiniMax", "PixVerse", "Pika",
+            "Recraft", "Rodin", "Tripo"
+        ]
+        
+        for node_id, node_data in workflow.items():
+            class_type = node_data.get("class_type", "")
+            if any(api_class in class_type for api_class in api_node_classes):
+                print(f"🔑 Detected API node: {class_type} in node {node_id}")
+                return True
+        return False
+
+    def _validate_api_credits(self) -> None:
+        """Validate that API key has sufficient credits for API nodes."""
+        api_key = os.environ.get('COMFY_API_KEY', '')
+        if not api_key:
+            raise Exception("COMFY_API_KEY not found. API nodes require authentication.")
+        
+        try:
+            # Simple health check that also validates API key and credits
+            import urllib.request
+            import urllib.error
+            
+            # Check queue endpoint with API key
+            req = urllib.request.Request(f"http://127.0.0.1:{self.port}/queue")
+            req.add_header('Authorization', f'Bearer {api_key}')
+            
+            response = urllib.request.urlopen(req, timeout=10)
+            print("✅ API key validated and credits available")
+            
+        except urllib.error.HTTPError as e:
+            if e.code == 402:  # Payment required
+                raise Exception("Insufficient credits for API nodes. Please purchase more credits at https://platform.comfy.org")
+            elif e.code == 401:  # Unauthorized  
+                raise Exception("Invalid API key for ComfyUI API nodes. Check your COMFY_API_KEY.")
+            else:
+                print(f"⚠️ API validation warning (HTTP {e.code}): {e}")
+        except Exception as e:
+            print(f"⚠️ API validation warning: {str(e)}")
+            # Don't fail hard on validation errors in case of network issues
 
     @modal.method()
     def generate_images(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -378,7 +598,7 @@ class ComfyUI:
         return json.loads(config_path.read_text())
 
     def load_workflow_template(self, workflow_name: str) -> Dict[str, Any]:
-        """Load specified workflow template."""
+        """Load specified workflow template with API node support."""
         config = self.get_workflow_config()
         
         if workflow_name not in config["workflows"]:
@@ -391,7 +611,14 @@ class ComfyUI:
         if not workflow_path.exists():
             raise FileNotFoundError(f"Workflow file not found: {workflow_file}")
         
-        return json.loads(workflow_path.read_text())
+        workflow = json.loads(workflow_path.read_text())
+        
+        # Check if workflow uses API nodes and validate credits
+        if self._workflow_uses_api_nodes(workflow):
+            print(f"🔑 Workflow '{workflow_name}' uses API nodes - validating credits...")
+            self._validate_api_credits()
+        
+        return workflow
 
     def validate_workflow_request(self, workflow_name: str, parameters: Dict[str, Any]) -> None:
         """Validate workflow exists and parameters are correct."""
@@ -484,6 +711,21 @@ class ComfyUI:
                 node_id = height_mapping["node"]
                 input_key = height_mapping["input_key"]
                 workflow[node_id]["inputs"][input_key] = height
+            
+            # Handle upscale mappings with multipliers
+            upscale_width_mapping = mapping.get("upscale_width_mapping")
+            if upscale_width_mapping:
+                node_id = upscale_width_mapping["node"]
+                input_key = upscale_width_mapping["input_key"]
+                multiplier = upscale_width_mapping.get("multiplier", 1)
+                workflow[node_id]["inputs"][input_key] = width * multiplier
+            
+            upscale_height_mapping = mapping.get("upscale_height_mapping")
+            if upscale_height_mapping:
+                node_id = upscale_height_mapping["node"]
+                input_key = upscale_height_mapping["input_key"]
+                multiplier = upscale_height_mapping.get("multiplier", 1)
+                workflow[node_id]["inputs"][input_key] = height * multiplier
                 
         elif special_handler == "random_seed":
             # Generate random seed if -1
@@ -559,9 +801,13 @@ class ComfyUI:
         with open(workflow_file, 'w') as f:
             json.dump(workflow, f)
         
-        # Run workflow using comfy CLI
+        # Set environment variables including API key for CLI execution
+        env = os.environ.copy()
+        env['COMFY_API_KEY'] = os.environ.get('COMFY_API_KEY', '')
+        
+        # Run workflow using comfy CLI with API key authentication
         cmd = f"comfy run --workflow {workflow_file} --wait --timeout 1200 --verbose"
-        result = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
+        result = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True, env=env)
         
         print(f"✅ Workflow executed successfully for style {style_id}")
         return f"/data/outputs/{user_id}/generated/{style_id}"

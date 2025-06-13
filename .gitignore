@@ -1,0 +1,32 @@
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.development
+.env.test
+.venv/
+venv/
+
+# Local test file
+local_test.py
+
+# Cursor rules
+.cursor/
+
+# Models directory
+models/
+
+# Python cache
+__pycache__
+__pycache__/
+scripts/__pycache__/
+*.pyc
+
+# AI Toolkit outputs (if running locally)
+ai-toolkit/output/
+ai-toolkit/logs/
+
+# macOS
+.DS_Store

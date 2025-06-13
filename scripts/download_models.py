@@ -65,8 +65,11 @@ def download_models():
         "/models/unet",
         "/models/upscale_models", 
         "/models/clip",
+        "/models/clip_vision",
         "/models/vae",
-        "/models/loras"
+        "/models/loras",
+        "/models/controlnet",
+        "/models/style_models"
     ]
     
     for dir_path in directories:
@@ -106,46 +109,6 @@ def download_models():
             )
         },
         {
-            "name": "SUPIR Upscaler (Essential - 2GB)",
-            "check_path": "/models/checkpoints/SUPIR-v0Q_fp16.safetensors",
-            "download_func": lambda: hf_hub_download(
-                repo_id="Kijai/SUPIR_pruned", 
-                filename="SUPIR-v0Q_fp16.safetensors",
-                local_dir="/models/checkpoints",
-                local_dir_use_symlinks=False
-            )
-        },
-        {
-            "name": "JuggernautXL Photorealistic Model (Required for SUPIR - 7.1GB)",
-            "check_path": "/models/checkpoints/Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors",
-            "download_func": lambda: hf_hub_download(
-                repo_id="RunDiffusion/Juggernaut-XL-v9", 
-                filename="Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors",
-                local_dir="/models/checkpoints",
-                local_dir_use_symlinks=False
-            )
-        },
-        {
-            "name": "RealVisXL V5.0 - Realistic Faces Model (Optional - 6.9GB)",
-            "check_path": "/models/checkpoints/RealVisXL_V5.0_fp16.safetensors",
-            "download_func": lambda: hf_hub_download(
-                repo_id="SG161222/RealVisXL_V5.0", 
-                filename="RealVisXL_V5.0_fp16.safetensors",
-                local_dir="/models/checkpoints",
-                local_dir_use_symlinks=False
-            )
-        },
-        {
-            "name": "CyberRealistic XL V5.7 - Hyper-realistic Model (Optional - 6.9GB)",
-            "check_path": "/models/checkpoints/CyberRealisticXLPlay_V5.7.safetensors",
-            "download_func": lambda: hf_hub_download(
-                repo_id="cyberdelia/CyberRealisticXL", 
-                filename="CyberRealisticXLPlay_V5.7.safetensors",
-                local_dir="/models/checkpoints",
-                local_dir_use_symlinks=False
-            )
-        },
-        {
             "name": "CLIP-L Text Encoder (Essential - 246MB)",
             "check_path": "/models/clip/clip_l.safetensors",
             "download_func": lambda: hf_hub_download(
@@ -166,11 +129,134 @@ def download_models():
             )
         },
         {
+            "name": "T5XXL FP16 Text Encoder (Full Precision - 9.79GB)",
+            "check_path": "/models/clip/t5xxl_fp16.safetensors",
+            "download_func": lambda: hf_hub_download(
+                repo_id="comfyanonymous/flux_text_encoders",
+                filename="t5xxl_fp16.safetensors",
+                local_dir="/models/clip",
+                local_dir_use_symlinks=False
+            )
+        },
+        {
+            "name": "T5XXL GGUF Q8 Text Encoder (GGUF Format - 5.06GB)",
+            "check_path": "/models/clip/t5-v1_1-xxl-encoder-Q8_0.gguf",
+            "download_func": lambda: hf_hub_download(
+                repo_id="city96/t5-v1_1-xxl-encoder-gguf",
+                filename="t5-v1_1-xxl-encoder-Q8_0.gguf",
+                local_dir="/models/clip",
+                local_dir_use_symlinks=False
+            )
+        },
+        {
             "name": "VAE (Essential - 335MB)",
             "check_path": "/models/vae/sdxl-vae-fp16-fix",
             "check_files": ["diffusion_pytorch_model.safetensors", "config.json"],
             "download_func": lambda: download_vae_model()
-        }
+        },
+        {
+            "name": "Flux VAE (Essential for Flux - 335MB)",
+            "check_path": "/models/vae/ae.safetensors",
+            "download_func": lambda: hf_hub_download(
+                repo_id="black-forest-labs/FLUX.1-dev",
+                filename="ae.safetensors",
+                local_dir="/models/vae",
+                local_dir_use_symlinks=False
+            )
+        },
+        {
+            "name": "4x_NMKD-Siax_200k Upscaler (Best for Faces - 67MB)",
+            "check_path": "/models/upscale_models/4x_NMKD-Siax_200k.pth",
+            "download_func": lambda: hf_hub_download(
+                repo_id="gemasai/4x_NMKD-Siax_200k",
+                filename="4x_NMKD-Siax_200k.pth",
+                local_dir="/models/upscale_models",
+                local_dir_use_symlinks=False
+            )
+        },
+        {
+            "name": "RealESRGAN 4x+ Upscaler (General Purpose - 67MB)",
+            "check_path": "/models/upscale_models/RealESRGAN_x4plus.pth",
+            "download_func": lambda: hf_hub_download(
+                repo_id="schwgHao/RealESRGAN_x4plus",
+                filename="RealESRGAN_x4plus.pth",
+                local_dir="/models/upscale_models",
+                local_dir_use_symlinks=False
+            )
+        },
+        {
+            "name": "4x_foolhardy_Remacri Upscaler (Sharp Details - 67MB)",
+            "check_path": "/models/upscale_models/4x_foolhardy_Remacri.pth",
+            "download_func": lambda: hf_hub_download(
+                repo_id="FacehugmanIII/4x_foolhardy_Remacri",
+                filename="4x_foolhardy_Remacri.pth",
+                local_dir="/models/upscale_models",
+                local_dir_use_symlinks=False
+            )
+        },
+        {
+            "name": "FLUX.1-Turbo-Alpha (8-step Speed LoRA - 694MB)",
+            "check_path": "/models/loras/diffusion_pytorch_model.safetensors",
+            "download_func": lambda: hf_hub_download(
+                repo_id="alimama-creative/FLUX.1-Turbo-Alpha",
+                filename="diffusion_pytorch_model.safetensors",
+                local_dir="/models/loras",
+                local_dir_use_symlinks=False
+            )
+        },
+        {
+            "name": "OpenFLUX.1 Fast LoRA (Speed Optimization - 687MB)",
+            "check_path": "/models/loras/openflux1-v0.1.0-fast-lora.safetensors",
+            "download_func": lambda: hf_hub_download(
+                repo_id="ostris/OpenFLUX.1",
+                filename="openflux1-v0.1.0-fast-lora.safetensors",
+                local_dir="/models/loras",
+                local_dir_use_symlinks=False
+            )
+        },
+        {
+            "name": "Flux Realism LoRA (XLabs AI - 22.4MB)",
+            "check_path": "/models/loras/flux-realism-lora.safetensors",
+            "download_func": lambda: shutil.copy(
+                hf_hub_download(
+                    repo_id="XLabs-AI/flux-RealismLora",
+                    filename="lora.safetensors",
+                    local_dir="/models/loras",
+                    local_dir_use_symlinks=False
+                ),
+                "/models/loras/flux-realism-lora.safetensors"
+            )
+        },
+        {
+            "name": "Minimal Portrait Photography LoRA (LeeDavee - 613MB)",
+            "check_path": "/models/loras/Minimal Portrait Photography_V1.0.safetensors",
+            "download_func": lambda: hf_hub_download(
+                repo_id="LeeDavee/flux-lora",
+                filename="Minimal Portrait Photography_V1.0.safetensors",
+                local_dir="/models/loras",
+                local_dir_use_symlinks=False
+            )
+        },
+        {
+            "name": "FLUX.1-Redux-dev (Style Transfer - ~12GB)",
+            "check_path": "/models/style_models/flux1-redux-dev.safetensors",
+            "download_func": lambda: hf_hub_download(
+                repo_id="black-forest-labs/FLUX.1-Redux-dev",
+                filename="flux1-redux-dev.safetensors",
+                local_dir="/models/style_models",
+                local_dir_use_symlinks=False
+            )
+        },
+        {
+            "name": "SigCLIP Vision 384 (Essential for Redux - 857MB)",
+            "check_path": "/models/clip_vision/sigclip_vision_patch14_384.safetensors",
+            "download_func": lambda: hf_hub_download(
+                repo_id="Comfy-Org/sigclip_vision_384",
+                filename="sigclip_vision_patch14_384.safetensors",
+                local_dir="/models/clip_vision",
+                local_dir_use_symlinks=False
+            )
+        },
     ]
     
     # Download each model with existence check
@@ -302,13 +388,19 @@ def download_models():
         ("/models/checkpoints/flux1-dev-fp8.safetensors", "Flux FP8 Checkpoint"),
         ("/models/unet/flux1-dev.safetensors", "Flux Dev UNET"),
         ("/models/unet/flux1-dev-fp8.safetensors", "Flux FP8 UNET"),
-        ("/models/checkpoints/SUPIR-v0Q_fp16.safetensors", "SUPIR"),
-        ("/models/checkpoints/Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors", "JuggernautXL"),
-        ("/models/checkpoints/RealVisXL_V5.0_fp16.safetensors", "RealVisXL V5.0"),
-        ("/models/checkpoints/CyberRealisticXLPlay_V5.7.safetensors", "CyberRealistic XL V5.7"),
         ("/models/clip/clip_l.safetensors", "CLIP-L"),
         ("/models/clip/t5xxl_fp8_e4m3fn.safetensors", "T5XXL FP8"),
-        ("/models/vae/sdxl-vae-fp16-fix", "VAE")
+        ("/models/clip/t5xxl_fp16.safetensors", "T5XXL FP16"),
+        ("/models/vae/sdxl-vae-fp16-fix", "VAE"),
+        ("/models/vae/ae.safetensors", "Flux VAE"),
+        ("/models/upscale_models/4x_NMKD-Siax_200k.pth", "4x NMKD-Siax Upscaler"),
+        ("/models/upscale_models/RealESRGAN_x4plus.pth", "RealESRGAN 4x+ Upscaler"),
+        ("/models/upscale_models/4x_foolhardy_Remacri.pth", "4x Foolhardy Remacri Upscaler"),
+        ("/models/loras/diffusion_pytorch_model.safetensors", "FLUX.1-Turbo-Alpha"),
+        ("/models/loras/openflux1-v0.1.0-fast-lora.safetensors", "OpenFLUX.1 Fast LoRA"),
+        ("/models/loras/Minimal Portrait Photography_V1.0.safetensors", "Minimal Portrait Photography LoRA"),
+        ("/models/style_models/flux1-redux-dev.safetensors", "FLUX.1-Redux-dev"),
+        ("/models/clip_vision/sigclip_vision_patch14_384.safetensors", "SigCLIP Vision 384"),
     ]
     
     all_ready = True
@@ -346,13 +438,18 @@ if __name__ == "__main__":
         ("/models/checkpoints/flux1-dev-fp8.safetensors", "Flux FP8 Checkpoint"),
         ("/models/unet/flux1-dev.safetensors", "Flux Dev UNET"),
         ("/models/unet/flux1-dev-fp8.safetensors", "Flux FP8 UNET"),
-        ("/models/checkpoints/SUPIR-v0Q_fp16.safetensors", "SUPIR"),
-        ("/models/checkpoints/Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors", "JuggernautXL"),
-        ("/models/checkpoints/RealVisXL_V5.0_fp16.safetensors", "RealVisXL V5.0"),
-        ("/models/checkpoints/cyberrealistic-xl-v31-sdxl.safetensors", "CyberRealistic XL v3.1"),
         ("/models/clip/clip_l.safetensors", "CLIP-L"),
         ("/models/clip/t5xxl_fp8_e4m3fn.safetensors", "T5XXL FP8"),
-        ("/models/vae/sdxl-vae-fp16-fix", "VAE")
+        ("/models/clip/t5xxl_fp16.safetensors", "T5XXL FP16"),
+        ("/models/vae/ae.safetensors", "Flux VAE"),
+        ("/models/upscale_models/4x_NMKD-Siax_200k.pth", "4x NMKD-Siax Upscaler"),
+        ("/models/upscale_models/RealESRGAN_x4plus.pth", "RealESRGAN 4x+ Upscaler"),
+        ("/models/upscale_models/4x_foolhardy_Remacri.pth", "4x Foolhardy Remacri Upscaler"),
+        ("/models/loras/diffusion_pytorch_model.safetensors", "FLUX.1-Turbo-Alpha"),
+        ("/models/loras/openflux1-v0.1.0-fast-lora.safetensors", "OpenFLUX.1 Fast LoRA"),
+        ("/models/loras/Minimal Portrait Photography_V1.0.safetensors", "Minimal Portrait Photography LoRA"),
+        ("/models/style_models/flux1-redux-dev.safetensors", "FLUX.1-Redux-dev"),
+        ("/models/clip_vision/sigclip_vision_patch14_384.safetensors", "SigCLIP Vision 384"),
     ]
     
     all_ready = True

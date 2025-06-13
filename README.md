@@ -385,7 +385,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - 📧 Email: support@primeshot.ai
 - 💬 Discord: [Primeshot Community](https://discord.gg/primeshot)
 - 📖 Documentation: [docs.primeshot.ai](https://docs.primeshot.ai)
-- 🐛 Issues: [GitHub Issues](https://github.com/primeshot/comfyui-modal/issues)
+- 🐛 Issues: [GitHub Issues](https://github.com/primeshot/comfyui-modal/issues) 
 
 ### Advanced Features
 
