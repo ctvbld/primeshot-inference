@@ -109,6 +109,16 @@ def download_models():
             )
         },
         {
+            "name": "Project0 REAL1SM V3 FP16 UNET (Realism/Art - 23.8GB)",
+            "check_path": "/models/unet/project0_real1smV3FP16.safetensors",
+            "download_func": lambda: hf_hub_download(
+                repo_id="LeeDavee/models",
+                filename="project0_real1smV3FP16.safetensors",
+                local_dir="/models/unet",
+                local_dir_use_symlinks=False
+            )
+        },
+        {
             "name": "CLIP-L Text Encoder (Essential - 246MB)",
             "check_path": "/models/clip/clip_l.safetensors",
             "download_func": lambda: hf_hub_download(
@@ -386,12 +396,12 @@ def download_models():
     print(f"\n🔍 FINAL VERIFICATION:")
     essential_checks = [
         ("/models/checkpoints/flux1-dev-fp8.safetensors", "Flux FP8 Checkpoint"),
+        ("/models/unet/project0_real1smV3FP16.safetensors", "Project0 REAL1SM V3 FP16 UNET"),
         ("/models/unet/flux1-dev.safetensors", "Flux Dev UNET"),
         ("/models/unet/flux1-dev-fp8.safetensors", "Flux FP8 UNET"),
         ("/models/clip/clip_l.safetensors", "CLIP-L"),
         ("/models/clip/t5xxl_fp8_e4m3fn.safetensors", "T5XXL FP8"),
         ("/models/clip/t5xxl_fp16.safetensors", "T5XXL FP16"),
-        ("/models/vae/sdxl-vae-fp16-fix", "VAE"),
         ("/models/vae/ae.safetensors", "Flux VAE"),
         ("/models/upscale_models/4x_NMKD-Siax_200k.pth", "4x NMKD-Siax Upscaler"),
         ("/models/upscale_models/RealESRGAN_x4plus.pth", "RealESRGAN 4x+ Upscaler"),
@@ -436,6 +446,7 @@ if __name__ == "__main__":
     
     essential_checks = [
         ("/models/checkpoints/flux1-dev-fp8.safetensors", "Flux FP8 Checkpoint"),
+        ("/models/unet/project0_real1smV3FP16.safetensors", "Project0 REAL1SM V3 FP16 UNET"),
         ("/models/unet/flux1-dev.safetensors", "Flux Dev UNET"),
         ("/models/unet/flux1-dev-fp8.safetensors", "Flux FP8 UNET"),
         ("/models/clip/clip_l.safetensors", "CLIP-L"),

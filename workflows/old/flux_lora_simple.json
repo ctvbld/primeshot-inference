@@ -1,0 +1,161 @@
+{
+  "1": {
+    "inputs": {
+      "unet_name": "flux1-dev.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Flux UNET"
+    }
+  },
+  "2": {
+    "inputs": {
+      "clip_name1": "clip_l.safetensors",
+      "clip_name2": "t5xxl_fp16.safetensors",
+      "type": "flux",
+      "device": "default"
+    },
+    "class_type": "DualCLIPLoader",
+    "_meta": {
+      "title": "Load Dual CLIP"
+    }
+  },
+  "3": {
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "4": {
+    "inputs": {
+      "lora_name": "mel_loras_flux_lora_20250604_103045.safetensors",
+      "strength_model": 0.7000000000000002,
+      "strength_clip": 1.0000000000000002,
+      "model": [
+        "1",
+        0
+      ],
+      "clip": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "Load LoRA"
+    }
+  },
+  "5": {
+    "inputs": {
+      "text": "Studio portrait with dramatic, high-contrast lighting using a narrow horizontal slit of hard light that cuts sharply across the eyes and upper cheeks, leaving the rest in shadow. The composition is a close-up crop, framing only the head and upper shoulders, with the subject centered tightly in the frame against a deep red background. Controlled artificial lighting, minimal ambient spill, shot on a full-frame camera with a 50mm f/1.4 lens for crisp detail and shallow depth of field.\n\nTOK is an white American woman age 35 to 39 years-old; 165cm tall, 79–89kg; medium to long brown hair styled in soft waves or curls; hazel to greenish-hazel eyes. TOK is wearing a black shirt.",
+      "clip": [
+        "4",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Positive Prompt"
+    }
+  },
+  "6": {
+    "inputs": {
+      "text": "plastic-like texture, oily appearance, unnatural texture, 3d render, cgi, doll, deformed, disfigured, poorly drawn, poor anatomy, bad hands, blurry, nude, bad hands, bad anatomy, ugly, deformed, face asymmetry, eyes asymmetry, deformed eyes, deformed mouth, open mouth, stray hair strands on skin, unwanted hair artifacts on face, spots, grey spots, grain, noise, artifacts, necklace",
+      "clip": [
+        "4",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Negative Prompt"
+    }
+  },
+  "7": {
+    "inputs": {
+      "guidance": 3.5,
+      "conditioning": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "FluxGuidance",
+    "_meta": {
+      "title": "Flux Guidance"
+    }
+  },
+  "8": {
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 4
+    },
+    "class_type": "EmptySD3LatentImage",
+    "_meta": {
+      "title": "Empty Latent Image"
+    }
+  },
+  "9": {
+    "inputs": {
+      "seed": 601407746760267,
+      "steps": 32,
+      "cfg": 1.7,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "beta",
+      "denoise": 1,
+      "model": [
+        "4",
+        0
+      ],
+      "positive": [
+        "7",
+        0
+      ],
+      "negative": [
+        "6",
+        0
+      ],
+      "latent_image": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "10": {
+    "inputs": {
+      "samples": [
+        "9",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "11": {
+    "inputs": {
+      "filename_prefix": "flux_lora_output",
+      "images": [
+        "10",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Images"
+    }
+  }
+}

@@ -19,14 +19,9 @@ local_test.py
 models/
 
 # Python cache
-__pycache__
 __pycache__/
-scripts/__pycache__/
 *.pyc
 
-# AI Toolkit outputs (if running locally)
-ai-toolkit/output/
-ai-toolkit/logs/
 
 # macOS
 .DS_Store

@@ -844,7 +844,7 @@ class ComfyUI:
         
         return output_urls
 
-    @modal.fastapi_endpoint(method="POST")
+    @modal.fastapi_endpoint(method="POST", label="inference", requires_proxy_auth=True)
     def api(self, request_data: Dict[str, Any]):
         """Main API endpoint for image generation."""
         from fastapi import HTTPException
@@ -898,58 +898,58 @@ class ComfyUI:
 
 # ## API Endpoints
 
-@app.function(
-    image=modal.Image.debian_slim().pip_install(["fastapi==0.104.1"]).add_local_dir("workflows", "/root/workflows")
-)
-@modal.fastapi_endpoint(method="GET", label="workflows")
-def list_workflows():
-    """List available workflows and their parameters."""
-    import json
-    from pathlib import Path
+# @app.function(
+#     image=modal.Image.debian_slim().pip_install(["fastapi==0.104.1"]).add_local_dir("workflows", "/root/workflows")
+# )
+# @modal.fastapi_endpoint(method="GET", label="workflows")
+# def list_workflows():
+#     """List available workflows and their parameters."""
+#     import json
+#     from pathlib import Path
     
-    try:
-        config_path = Path("/root/workflows/workflow_config.json")
-        if config_path.exists():
-            return json.loads(config_path.read_text())
-        else:
-            return {"error": "Workflow configuration not found"}
-    except Exception as e:
-        return {"error": str(e)}
+#     try:
+#         config_path = Path("/root/workflows/workflow_config.json")
+#         if config_path.exists():
+#             return json.loads(config_path.read_text())
+#         else:
+#             return {"error": "Workflow configuration not found"}
+#     except Exception as e:
+#         return {"error": str(e)}
 
-@app.function(
-    image=modal.Image.debian_slim().pip_install(["fastapi==0.104.1", "pydantic==2.5.0"]).add_local_file("job_tracker.py", "/root/job_tracker.py"),
-    secrets=[aws_secret]
-)
-@modal.fastapi_endpoint(method="GET", label="job-status") 
-def job_status_endpoint(job_id: str):
-    """Get status of a generation job."""
-    import sys
-    sys.path.append("/root")
+# @app.function(
+#     image=modal.Image.debian_slim().pip_install(["fastapi==0.104.1", "pydantic>=2.8.0"]).add_local_file("job_tracker.py", "/root/job_tracker.py"),
+#     secrets=[aws_secret]
+# )
+# @modal.fastapi_endpoint(method="GET", label="job-status") 
+# def job_status_endpoint(job_id: str):
+#     """Get status of a generation job."""
+#     import sys
+#     sys.path.append("/root")
     
-    try:
-        from job_tracker import get_job_tracker
-        tracker = get_job_tracker()
+#     try:
+#         from job_tracker import get_job_tracker
+#         tracker = get_job_tracker()
         
-        job_status = tracker.get_job_status(job_id)
+#         job_status = tracker.get_job_status(job_id)
         
-        if not job_status:
-            return {
-                "error": f"Job {job_id} not found",
-                "status": "error"
-            }
+#         if not job_status:
+#             return {
+#                 "error": f"Job {job_id} not found",
+#                 "status": "error"
+#             }
         
-        return job_status
+#         return job_status
         
-    except Exception as e:
-        return {
-            "error": str(e),
-            "status": "error"
-        }
+#     except Exception as e:
+#         return {
+#             "error": str(e),
+#             "status": "error"
+#         }
 
 @app.function(
     image=modal.Image.debian_slim().pip_install(["fastapi==0.104.1"])
 )
-@modal.fastapi_endpoint(method="GET", label="health")
+@modal.fastapi_endpoint(method="GET", label="health", requires_proxy_auth=True)
 def health_check():
     """Health check endpoint."""
     return {
