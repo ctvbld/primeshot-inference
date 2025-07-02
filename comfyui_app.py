@@ -229,6 +229,7 @@ image = (
         "PIP_DISABLE_PIP_VERSION_CHECK": "1"
     })  # Set default locale and non-interactive mode
     .pip_install("fastapi[standard]==0.115.4")  # web dependencies
+    .pip_install("websockets>=12.0", "supabase>=2.9.1", "requests>=2.32.0")  # WebSocket progress tracking
     .pip_install("comfy-cli==1.4.0")  # Install specific version of ComfyUI 3.0.7
     # Pre-install OpenCV to avoid conflicts with custom nodes
     .pip_install("opencv-python-headless==4.8.1.78")  # OpenCV without GUI dependencies
@@ -270,6 +271,10 @@ image = (
     .add_local_dir("workflows", "/root/workflows")
     .add_local_file("job_tracker.py", "/root/job_tracker.py")
     .add_local_file("extra_model_paths.yaml", "/extra_model_paths.yaml")
+    # Add inference progress tracking components
+    .add_local_file("inference_progress_tracker.py", "/root/inference_progress_tracker.py")
+    .add_local_file("inference_supabase_client.py", "/root/inference_supabase_client.py")
+    .add_local_file("inference_websocket_manager.py", "/root/inference_websocket_manager.py")
 )
 
 # ## Modal App Definition
@@ -517,12 +522,16 @@ class ComfyUI:
 
     @modal.method()
     def generate_images(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate images using Flux + LoRA workflow."""
+        """Generate images using Flux + LoRA workflow with real-time progress tracking."""
         import sys
         sys.path.append("/root")
         
+        # Initialize progress tracking
+        progress_tracker = None
+        inference_job_id = request_data.get("job_id")
+        
         try:
-            # Import job tracker
+            # Import job tracker for backward compatibility
             from job_tracker import get_job_tracker
             tracker = get_job_tracker()
             
@@ -533,37 +542,113 @@ class ComfyUI:
             
             print(f"🎯 Starting generation job: {style_id}")
             
+            # Initialize WebSocket progress tracking if job_id provided
+            if inference_job_id:
+                try:
+                    # Use smart WebSocket server manager for inference
+                    from inference_websocket_manager import inference_websocket_manager
+                    
+                    print("🔧 Setting up WebSocket progress tracking for inference...")
+                    success, websocket_url = inference_websocket_manager.ensure_server_for_job(inference_job_id)
+                    
+                    if success:
+                        from inference_progress_tracker import InferenceLogStreamTracker
+                        
+                        # Determine number of images to generate
+                        parameters = request_data.get("parameters", {})
+                        total_images = parameters.get("batch_size", 1)
+                        
+                        progress_tracker = InferenceLogStreamTracker(inference_job_id, total_images, websocket_url)
+                        print(f"📊 WebSocket progress tracking initialized for inference job: {inference_job_id} ({total_images} images)")
+                        print(f"🔗 WebSocket URL: {websocket_url}")
+                        
+                        # Initialize Supabase database tracking
+                        try:
+                            from inference_supabase_client import get_inference_supabase_client
+                            supabase_client = get_inference_supabase_client()
+                            
+                            # Create inference job record in database
+                            workflow_name = request_data.get("workflow_name", "flux_lora")
+                            user_id = request_data["user_id"]
+                            supabase_client.create_inference_job(user_id, workflow_name, parameters)
+                            print(f"📊 Created inference job record in database: {inference_job_id}")
+                        except Exception as e:
+                            print(f"⚠️ Failed to create database record: {e}")
+                    else:
+                        print(f"⚠️ Failed to setup WebSocket server: {websocket_url}")
+                        progress_tracker = None
+                        
+                except Exception as e:
+                    print(f"⚠️ Failed to initialize progress tracking: {e}")
+                    progress_tracker = None
+            else:
+                print("⚠️ No inference job ID provided - progress tracking disabled")
+
+            def print_and_track(message: str):
+                """Print message and feed to progress tracker for automatic detection"""
+                print(message)
+                if progress_tracker:
+                    try:
+                        progress_tracker.process_output(message + '\n')
+                    except Exception as e:
+                        print(f"⚠️ Failed to feed message to progress tracker: {e}")
+            
+            print_and_track(f"🎯 Starting generation job: {style_id}")
+            
             # Health check before processing
+            print_and_track("🔍 Performing health check...")
             self.poll_server_health()
+            print_and_track("✅ Health check passed")
             
             # Extract workflow name and parameters
             workflow_name = request_data.get("workflow_name", "flux_lora")
             parameters = request_data.get("parameters", {})
             
             # Validate workflow and parameters
+            print_and_track("🔍 Validating workflow and parameters...")
             self.validate_workflow_request(workflow_name, parameters)
+            print_and_track("✅ Workflow validation passed")
             
             # Setup style-specific LoRA (for workflows that need it)
             style_lora_filename = None
             if "lora_path" in parameters:
+                print_and_track("🔗 Setting up LoRA...")
                 lora_s3_path = parameters.get("lora_path")
                 style_lora_filename = self.setup_style_lora(lora_s3_path, style_id)
+                print_and_track("✅ LoRA setup complete")
             
             # Load and customize workflow
+            print_and_track("📋 Loading workflow template...")
             workflow = self.load_workflow_template(workflow_name)
             user_id = request_data["user_id"]
+            
+            # Analyze workflow for progress tracking
+            if progress_tracker:
+                progress_tracker.progress_tracker.detect_workflow_features(workflow)
+            
+            print_and_track("⚙️ Injecting parameters...")
             workflow = self.inject_parameters(workflow, workflow_name, parameters, style_id, user_id, style_lora_filename)
+            print_and_track("✅ Parameters injected successfully")
             
             # Execute workflow
+            print_and_track("🚀 Starting workflow execution...")
             start_time = time.time()
             result = self.execute_workflow(workflow, style_id, user_id)
             execution_time = time.time() - start_time
+            print_and_track("✅ Workflow executed successfully")
             
             # Process results and upload to S3
+            print_and_track("📤 Processing results and uploading to S3...")
             output_urls = self.process_results(result, request_data, style_id)
+            print_and_track(f"✅ Generated {len(output_urls)} images successfully")
             
             # Mark job as completed
             tracker.mark_completed(style_id, output_urls, execution_time)
+            
+            # Mark progress tracking as completed
+            if progress_tracker:
+                progress_tracker.progress_tracker.mark_completed(True, "")
+                print(f"✅ Inference job {inference_job_id} marked as completed")
             
             # Cleanup style-specific LoRA
             self.cleanup_style_lora(style_id)
@@ -578,7 +663,15 @@ class ComfyUI:
             }
             
         except Exception as e:
-            print(f"❌ Generation failed: {str(e)}")
+            error_msg = f"❌ Generation failed: {str(e)}"
+            print(error_msg)
+            
+            # Mark progress tracking as failed
+            if progress_tracker:
+                progress_tracker.progress_tracker.mark_completed(False, str(e))
+                print(f"📊 Inference job {inference_job_id} marked as failed")
+            
+            # Mark job tracker as failed for backward compatibility
             tracker.mark_failed(style_id, str(e))
             
             # Cleanup style-specific LoRA even on failure
@@ -589,6 +682,15 @@ class ComfyUI:
                 "status": "failed", 
                 "error": str(e)
             }
+        finally:
+            # Cleanup: Unregister job from WebSocket server
+            if inference_job_id and progress_tracker:
+                try:
+                    from inference_websocket_manager import inference_websocket_manager
+                    inference_websocket_manager.cleanup_job(inference_job_id)
+                    print(f"🧹 Cleaned up WebSocket registration for job: {inference_job_id}")
+                except Exception as cleanup_error:
+                    print(f"⚠️ Failed to cleanup WebSocket job registration: {cleanup_error}")
 
     def get_workflow_config(self) -> Dict[str, Any]:
         """Load workflow configuration metadata."""
