@@ -1,0 +1,66 @@
+{ 
+  "meta": {    
+    "styleName": "Moody Studio Portrait",
+    "promptPrefix": "IMG_StudioPortrait_2025"  
+  },  
+  "camera": {    
+    "model": "full-frame DSLR or mirrorless camera",    
+    "focalLength": "portrait prime (e.g., 85mm equivalent)",    
+    "angle": "eye-level shot",    
+    "type": "controlled studio portrait"  
+  },  
+  "subject": {    
+    "primary": "FACEMODEL",    
+    "emotion": "positive, confident, and approachable",    
+    "pose": "tightly framed from upper chest, minimal space above the hairline",    
+    "gaze": "looking directly at the camera"  
+  },  
+  "character": {    
+    "appearance": "clean, natural look with well-groomed features",
+    "gender": "Male",
+    "age": "mid to late 30s",
+    "hair": {
+        "length": "Short to medium",
+        "texture": "Thick and wavy",
+        "color": "Dark brown/black"
+    },
+    "accessories": {
+        "glasses": "None visible",
+        "earrings": "None visible",
+        "necklace": "None visible",
+        "piercings": "None visible",
+        "hairAccessories": "None",
+        "other": "None visible"
+    },
+    "wardrobe": "dark navy blue suit, white shirt, teal tie"
+  },
+  "composition": {    
+    "theory": "tight portrait framing, 90% of vertical frame occupied by the subject",    
+    "visualHierarchy": "sharp facial detail with balanced use of shadow to create dimensionality"  
+  },  
+  "setting": {    
+    "environment": "indoor studio setup",
+    "architecture": "none",
+    "furniture": "none"
+  },
+  "background": {
+    "color": "deep dark green",
+    "texture": "smooth and flat",
+    "depth": "none",
+    "gradient": "none"
+  },
+  "lighting": {
+    "source": "controlled soft studio lights",
+    "direction": "soft and directional from camera left, creating gentle shadows for depth on the face",
+    "quality": "soft but defined shadows, creating depth while maintaining a low and moody tone"
+  },  
+  "style": {    
+    "artDirection": "cinematic and editorial, minimalistic and professional",    
+    "mood": "subdued, sophisticated, and intimate"  
+  },  
+  "rendering": {    
+    "engine": "modern digital photography emulation",    
+    "fidelitySpec": "crisp detail, subtle tonal range, smooth gradient transitions",    
+    "postProcessing": "low-key grading, preserving true-to-skin color with desaturated tones in clothing and background" 
+  }
+}

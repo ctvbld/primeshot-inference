@@ -5,7 +5,7 @@
 
 # # ComfyUI Photography Platform with Flux + LoRA
 
-# Advanced photography platform using ComfyUI with Flux.1-dev + custom LoRAs + 4K upscaling.
+# Advanced photography platform using ComfyUI v0.3.46+ with Flux.1-dev + custom LoRAs + 4K upscaling.
 # Built following Modal's best practices with S3 integration and persistent model caching.
 
 import json
@@ -204,37 +204,79 @@ def setup_model_paths_config():
 
 # ## Image Building
 
-# Build ComfyUI image following Modal's clean approach
+# Define the base image with CUDA development tools for SageAttention compilation
+cuda_version = "12.8.0"  # Use available CUDA version
+flavor = "devel"  # Includes full CUDA toolkit for compilation
+operating_sys = "ubuntu22.04"
+tag = f"{cuda_version}-{flavor}-{operating_sys}"
+
 image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .apt_install(
-        "git", "locales",  # git for ComfyUI installation, locales for language support
-        # System dependencies for OpenCV and graphics libraries
-        "libgl1-mesa-glx", "libglib2.0-0", "libfontconfig1", "libxrender1", 
-        "libxtst6", "libxi6", "libxrandr2", "libasound2", "libgtk-3-0",
-        "libsm6", "libxext6",
-        # Additional Mesa and GL libraries
-        "mesa-utils", "libgl1-mesa-dev", "libgles2-mesa-dev",
-        # Build tools that might be needed for some packages
-        "build-essential", "cmake", "pkg-config"
-    )  # git for ComfyUI installation, locales for language support
+    modal.Image.from_registry(f"nvidia/cuda:{tag}", add_python="3.12")
+    .entrypoint([])  # Remove verbose logging by base image on entry
+    .apt_install([
+        "git", "build-essential", "cmake", "ninja-build",
+        "locales", "pkg-config", "curl", "wget",
+        # Graphics libraries for ComfyUI
+        "libgl1-mesa-glx", "libglib2.0-0", "libfontconfig1",
+        "libxrender1", "libxtst6", "libxi6", "libxrandr2", 
+        "libasound2", "libgtk-3-0", "libsm6", "libxext6",
+        "mesa-utils", "libgl1-mesa-dev", "libgles2-mesa-dev"
+    ])
     .run_commands("locale-gen en_US.UTF-8")  # Generate English locale
     .env({
+        # Locale settings
         "LANG": "en_US.UTF-8", 
         "LC_ALL": "en_US.UTF-8", 
         "LANGUAGE": "en_US:en",
         # Prevent interactive prompts in pip and other tools
         "DEBIAN_FRONTEND": "noninteractive",
         "PIP_NO_INPUT": "1",
-        "PIP_DISABLE_PIP_VERSION_CHECK": "1"
-    })  # Set default locale and non-interactive mode
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        # Performance GPU environment variables for H100 optimization
+        "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True,backend:cudaMallocAsync",
+        "TORCH_CUDNN_V8_API_ENABLED": "1",
+        "TORCH_ALLOW_TF32_CUBLAS_OVERRIDE": "1", 
+        "NVIDIA_TF32_OVERRIDE": "1",
+        "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+        "CUDA_LAUNCH_BLOCKING": "0",
+        # Threading optimizations for inference
+        "OMP_NUM_THREADS": "8",
+        "MKL_NUM_THREADS": "8",
+        # Compilation settings for H100 architecture
+        "TORCH_CUDA_ARCH_LIST": "9.0",  # H100 compute capability
+        "FORCE_CUDA": "1",
+        # Memory optimization
+        "PYTORCH_NO_CUDA_MEMORY_CACHING": "0",
+        "TORCH_CUDNN_V8_API_LRU_CACHE_LIMIT": "32",
+        # SageAttention optimization flags
+        "SAGE_ATTENTION_BACKEND": "triton",
+        # Prevent CUDA issues with xformers
+        "XFORMERS_ENABLE_TRITON": "1",  # Prevents xformers from calling torch.cuda.get_device_capability on import
+        # H100 Performance: Force models to stay on GPU
+        "COMFYUI_MODEL_DEVICE": "cuda",
+        "COMFYUI_VAE_DEVICE": "cuda", 
+        "COMFYUI_CLIP_DEVICE": "cuda",
+        "COMFYUI_LOWVRAM": "false",
+        "COMFYUI_NOVRAM": "false"
+    })
+    # Install optimized PyTorch 2.5+ with CUDA 12.1 (compatible with 12.8)
+    .pip_install(
+        "torch>=2.5.1", "torchvision>=0.20.1", "torchaudio>=2.5.1",
+        extra_options="--index-url https://download.pytorch.org/whl/cu121"
+    )
+    # Install Triton for SageAttention optimization
+    .pip_install("triton>=3.2.0")
+    # Install SageAttention 2.2.0+ using run_commands (same as working AI Toolkit)
+    .run_commands([
+        "pip install sageattention>=2.2.0 --no-deps"
+    ])
+    # Install web dependencies and ComfyUI
     .pip_install("fastapi[standard]==0.115.4")  # web dependencies
-    .pip_install("comfy-cli==1.4.0")  # Install specific version of ComfyUI 3.0.7
+    .pip_install("comfy-cli==1.4.1")  # Install latest version of ComfyUI
     # Pre-install OpenCV to avoid conflicts with custom nodes
     .pip_install("opencv-python-headless==4.8.1.78")  # OpenCV without GUI dependencies
-    # Install updated PyTorch and xformers first to avoid conflicts
-    .pip_install("torch>=2.3.1", "torchvision>=0.18.1")  # Latest PyTorch for compatibility
-    .pip_install("xformers>=0.0.25")  # Updated xformers for attention mask fixes
+    # Install optimized xformers for additional attention acceleration
+    .pip_install("xformers>=0.0.28")  # Latest xformers for attention optimizations
     .run_commands(  # install ComfyUI with NVIDIA support
         "comfy --skip-prompt install --fast-deps --nvidia"
     )
@@ -257,7 +299,25 @@ image = (
         "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-KJNodes && pip install -r requirements.txt --no-input"
     )
     .run_commands(
+       "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/yolain/ComfyUI-Easy-Use",
+       "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-Easy-Use && pip install -r requirements.txt --no-input"
+    )
+    .run_commands(
+        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/vrgamegirl19/comfyui-vrgamedevgirl",
+        "cd /root/comfy/ComfyUI/custom_nodes/comfyui-vrgamedevgirl && pip install -r requirements.txt --no-input"
+    )
+    .run_commands(
         "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/kaibioinfo/ComfyUI_AdvancedRefluxControl"
+    )
+    # Install RES4LYF advanced sampling nodes
+    .run_commands(
+        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/ClownsharkBatwing/RES4LYF.git",
+        "cd /root/comfy/ComfyUI/custom_nodes/RES4LYF && pip install -r requirements.txt --no-input 2>/dev/null || echo 'No requirements.txt found for RES4LYF'"
+    )
+    # Install bilbox-comfyui photo prompt and post-processing nodes
+    .run_commands(
+        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/syllebra/bilbox-comfyui.git", 
+        "cd /root/comfy/ComfyUI/custom_nodes/bilbox-comfyui && pip install -r requirements.txt --no-input"
     )
     # Post-installation compatibility fixes for attention mask issues
     .run_commands(
@@ -278,7 +338,7 @@ app = modal.App(name="comfyui", image=image)
 
 @app.function(
     max_containers=1,
-    gpu="L40S",  # Cost-effective for UI development A10G
+    gpu="H100",  # Cost-effective for UI development A10G
     volumes={"/models": vol, "/data": s3_mount},
     secrets=[comfyui_secret],  # Add ComfyUI secret for API nodes
     timeout=3600
@@ -344,7 +404,7 @@ def dev_server():
     linked_loras = link_all_loras()
     print(f"✅ Linked {linked_loras} LoRAs from S3 bucket for dev server")
     
-    # Set comprehensive environment variables to force English locale
+    # Set comprehensive environment variables for English locale and performance optimization
     env = os.environ.copy()
     env.update({
         'LANG': 'en_US.UTF-8',
@@ -363,12 +423,23 @@ def dev_server():
         'LC_IDENTIFICATION': 'en_US.UTF-8',
         'COMFYUI_LOCALE': 'en',
         'COMFYUI_LANGUAGE': 'en',
-        'COMFY_API_KEY': os.environ.get('COMFY_API_KEY', '')  # Add API key for API nodes
+        'COMFY_API_KEY': os.environ.get('COMFY_API_KEY', ''),  # Add API key for API nodes
+        # Performance optimization environment variables
+        'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True,backend:cudaMallocAsync',
+        'TORCH_ALLOW_TF32_CUBLAS_OVERRIDE': '1',
+        'NVIDIA_TF32_OVERRIDE': '1',
+        'SAGE_ATTENTION_BACKEND': 'triton',
+        # H100 Performance: Force models to stay on GPU
+        'COMFYUI_MODEL_DEVICE': 'cuda',
+        'COMFYUI_VAE_DEVICE': 'cuda', 
+        'COMFYUI_CLIP_DEVICE': 'cuda',
+        'COMFYUI_LOWVRAM': 'false',
+        'COMFYUI_NOVRAM': 'false'
     })
     
-    # Launch ComfyUI UI server (locale controlled via config files and environment)
+    # Launch ComfyUI UI server with SageAttention and H100 performance optimizations
     subprocess.Popen(
-        "comfy launch -- --listen 0.0.0.0 --port 8000 --output-directory /data/outputs",
+        "comfy launch -- --listen 0.0.0.0 --port 8000 --use-sage-attention --gpu-only --bf16-unet --bf16-vae --output-directory /data/outputs",
         shell=True,
         env=env
     )
@@ -404,7 +475,7 @@ class ComfyUI:
         # Create LoRA directory for job-specific dynamic linking
         os.makedirs("/root/comfy/ComfyUI/models/loras", exist_ok=True)
         
-        # Set comprehensive environment variables including API key for API nodes
+        # Set comprehensive environment variables including API key and performance optimizations
         env = os.environ.copy()
         env.update({
             'LANG': 'en_US.UTF-8',
@@ -423,13 +494,24 @@ class ComfyUI:
             'LC_IDENTIFICATION': 'en_US.UTF-8',
             'COMFYUI_LOCALE': 'en',
             'COMFYUI_LANGUAGE': 'en',
-            'COMFY_API_KEY': os.environ.get('COMFY_API_KEY', '')  # Add API key for API nodes
+            'COMFY_API_KEY': os.environ.get('COMFY_API_KEY', ''),  # Add API key for API nodes
+            # Performance optimization environment variables
+            'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True,backend:cudaMallocAsync',
+            'TORCH_ALLOW_TF32_CUBLAS_OVERRIDE': '1',
+            'NVIDIA_TF32_OVERRIDE': '1',
+            'SAGE_ATTENTION_BACKEND': 'triton',
+            # H100 Performance: Force models to stay on GPU
+            'COMFYUI_MODEL_DEVICE': 'cuda',
+            'COMFYUI_VAE_DEVICE': 'cuda', 
+            'COMFYUI_CLIP_DEVICE': 'cuda',
+            'COMFYUI_LOWVRAM': 'false',
+            'COMFYUI_NOVRAM': 'false'
         })
         
-        # Launch ComfyUI server in background (locale controlled via config files and environment)
-        cmd = f"comfy launch --background -- --port {self.port} --output-directory /data/outputs"  
+        # Launch ComfyUI server in background with SageAttention and H100 performance optimizations
+        cmd = f"comfy launch --background -- --port {self.port} --use-sage-attention --gpu-only --bf16-unet --bf16-vae --output-directory /data/outputs"  
         subprocess.run(cmd, shell=True, check=True, env=env)
-        print("✅ ComfyUI server running in background with API node support and English locale")
+        print("✅ ComfyUI server running with SageAttention and performance optimizations")
 
     def setup_style_lora(self, lora_s3_path: str, style_id: str) -> str:
         """Link specific LoRA from S3 path for this style only."""
@@ -801,11 +883,24 @@ class ComfyUI:
         with open(workflow_file, 'w') as f:
             json.dump(workflow, f)
         
-        # Set environment variables including API key for CLI execution
+        # Set environment variables including API key and performance optimizations for CLI execution
         env = os.environ.copy()
-        env['COMFY_API_KEY'] = os.environ.get('COMFY_API_KEY', '')
+        env.update({
+            'COMFY_API_KEY': os.environ.get('COMFY_API_KEY', ''),
+            # Performance optimization environment variables
+            'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True,backend:cudaMallocAsync',
+            'TORCH_ALLOW_TF32_CUBLAS_OVERRIDE': '1',
+            'NVIDIA_TF32_OVERRIDE': '1',
+            'SAGE_ATTENTION_BACKEND': 'triton',
+            # H100 Performance: Force models to stay on GPU
+            'COMFYUI_MODEL_DEVICE': 'cuda',
+            'COMFYUI_VAE_DEVICE': 'cuda', 
+            'COMFYUI_CLIP_DEVICE': 'cuda',
+            'COMFYUI_LOWVRAM': 'false',
+            'COMFYUI_NOVRAM': 'false'
+        })
         
-        # Run workflow using comfy CLI with API key authentication
+        # Run workflow using comfy CLI with performance optimizations and API key authentication
         cmd = f"comfy run --workflow {workflow_file} --wait --timeout 1200 --verbose"
         result = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True, env=env)
         
@@ -955,6 +1050,6 @@ def health_check():
     return {
         "status": "healthy",
         "service": "ComfyUI",
-        "version": "2.0.0",
-        "features": ["flux", "lora", "upscaling", "s3"]
+        "version": "2.1.0",
+        "features": ["flux", "lora", "upscaling", "s3", "latest"]
     } 

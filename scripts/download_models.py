@@ -11,26 +11,6 @@ from pathlib import Path
 models_volume = modal.Volume.from_name("models-vol")
 app = modal.App("download-all-models")
 
-
-
-def download_vae_model():
-    """Download VAE model files individually - this actually works."""
-    from huggingface_hub import hf_hub_download
-    
-    # Download the main model file
-    hf_hub_download(
-        repo_id="madebyollin/sdxl-vae-fp16-fix",
-        filename="diffusion_pytorch_model.safetensors",
-        local_dir="/models/vae/sdxl-vae-fp16-fix"
-    )
-    
-    # Download config
-    hf_hub_download(
-        repo_id="madebyollin/sdxl-vae-fp16-fix",
-        filename="config.json",
-        local_dir="/models/vae/sdxl-vae-fp16-fix"
-    )
-
 @app.function(
     image=modal.Image.debian_slim().pip_install([
         "huggingface_hub>=0.19.0", 
@@ -42,7 +22,7 @@ def download_vae_model():
     secrets=[modal.Secret.from_name("huggingface-secret")]
 )
 def download_models():
-    """Download all required models with existence checks."""
+    """Download all required models with smart existence checks and partial downloads."""
     from huggingface_hub import hf_hub_download, snapshot_download
     import shutil
     import os
@@ -50,7 +30,7 @@ def download_models():
     # Enable faster downloads for large files
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
     
-    print("🚀 ComfyUI Model Download - Checking and downloading missing models...")
+    print("🚀 ComfyUI Model Download - Smart checking and downloading missing models...")
     print("⚡ HF_TRANSFER enabled for faster large file downloads")
     
     # Clean any corrupted cache first
@@ -58,6 +38,64 @@ def download_models():
     import subprocess
     subprocess.run(["find", "/models", "-name", "*.incomplete", "-delete"], capture_output=True)
     subprocess.run(["find", "/models", "-name", "*.lock", "-delete"], capture_output=True)
+    
+    def check_file_integrity(file_path, min_size_mb=0.01):
+        """Check if a file exists and has reasonable size."""
+        if not os.path.exists(file_path):
+            return False
+        size_mb = os.path.getsize(file_path) / (1024*1024)
+        return size_mb >= min_size_mb
+    
+    def get_missing_files(base_path, required_files, min_sizes=None):
+        """Get list of missing or corrupted files from a directory."""
+        if min_sizes is None:
+            min_sizes = {}
+        
+        missing = []
+        for file_path in required_files:
+            full_path = os.path.join(base_path, file_path)
+            min_size = min_sizes.get(file_path, 0.01)  # Default 0.01MB minimum
+            if not check_file_integrity(full_path, min_size):
+                missing.append(file_path)
+        return missing
+    
+    def smart_snapshot_download(repo_id, local_dir, required_files=None, min_sizes=None):
+        """Download only missing files from a snapshot repository."""
+        os.makedirs(local_dir, exist_ok=True)
+        
+        if required_files:
+            missing_files = get_missing_files(local_dir, required_files, min_sizes)
+            if not missing_files:
+                return True  # All files present
+            
+            print(f"📁 Missing files in {os.path.basename(local_dir)}: {missing_files}")
+            
+            # Download only missing files using allow_patterns
+            patterns_to_download = []
+            for missing_file in missing_files:
+                # Add the specific file and its directory structure
+                patterns_to_download.append(missing_file)
+                # Also include parent directories to ensure proper structure
+                parent_dir = os.path.dirname(missing_file)
+                if parent_dir and parent_dir not in patterns_to_download:
+                    patterns_to_download.append(f"{parent_dir}/*")
+            
+            print(f"📥 Downloading patterns: {patterns_to_download}")
+            snapshot_download(
+                repo_id=repo_id,
+                local_dir=local_dir,
+                allow_patterns=patterns_to_download,
+                ignore_patterns=["*.git*", "README.md"]
+            )
+        else:
+            # Download everything if no specific files specified
+            snapshot_download(
+                repo_id=repo_id,
+                local_dir=local_dir,
+                ignore_patterns=["*.git*", "README.md"]
+            )
+        
+        return True
     
     # Create all necessary directories
     directories = [
@@ -69,309 +107,260 @@ def download_models():
         "/models/vae",
         "/models/loras",
         "/models/controlnet",
-        "/models/style_models"
+        "/models/style_models",
+        "/models/Wan-AI",
+        "/models/vlm"
     ]
     
     for dir_path in directories:
         os.makedirs(dir_path, exist_ok=True)
         print(f"📁 Created directory: {dir_path}")
     
-    # Define all models to download with existence checks
+    # Define all models to download with smart checking
     models_to_download = [
         {
-            "name": "Flux.1-dev FP8 (Essential - 12GB)",
-            "check_path": "/models/checkpoints/flux1-dev-fp8.safetensors", 
-            "download_func": lambda: hf_hub_download(
-                repo_id="Kijai/flux-fp8",
-                filename="flux1-dev-fp8.safetensors",
-                local_dir="/models/checkpoints",
-                local_dir_use_symlinks=False
+            "name": "Wan-AI Wan2.2-T2V-A14B",
+            "type": "snapshot",
+            "check_path": "/models/Wan-AI/Wan2.2-T2V-A14B",
+            "repo_id": "Wan-AI/Wan2.2-T2V-A14B"
+        },
+        {
+            "name": "Wan-AI Wan2.2-TI2V-5B",
+            "type": "snapshot",
+            "check_path": "/models/Wan-AI/Wan2.2-TI2V-5B",
+            "repo_id": "Wan-AI/Wan2.2-TI2V-5B"
+        },
+        {
+            "name": "Wan-AI Wan2.1-T2V-14B",
+            "type": "snapshot",
+            "check_path": "/models/Wan-AI/Wan2.1-T2V-14B",
+            "repo_id": "Wan-AI/Wan2.1-T2V-14B"
+        },
+        {
+            "name": "Wan-AI Wan2.2-TI2V-5B-Diffusers",
+            "type": "snapshot",
+            "check_path": "/models/Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+            "repo_id": "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+        },
+        {
+            "name": "Wan 2.2 T2V Low Noise 14B FP16 UNET (TextImage-to-Video - ~28GB)",
+            "type": "single_file",
+            "check_path": "/models/unet/wan2.2_t2v_low_noise_14B_fp16.safetensors",
+            "min_size_gb": 25,  # Should be around 28GB
+            "download_func": lambda: shutil.move(
+                hf_hub_download(
+                    repo_id="Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+                    filename="split_files/diffusion_models/wan2.2_t2v_low_noise_14B_fp16.safetensors",
+                    local_dir="/models/unet"
+                ),
+                "/models/unet/wan2.2_t2v_low_noise_14B_fp16.safetensors"
             )
         },
         {
-            "name": "Flux.1-dev UNET (Essential - 23.8GB)",
-            "check_path": "/models/unet/flux1-dev.safetensors",
-            "download_func": lambda: hf_hub_download(
-                repo_id="black-forest-labs/FLUX.1-dev",
-                filename="flux1-dev.safetensors",
-                local_dir="/models/unet",
-                local_dir_use_symlinks=False
+            "name": "Wan 2.2 T2V High Noise 14B FP16 UNET (TextImage-to-Video - ~28GB)",
+            "type": "single_file",
+            "check_path": "/models/unet/wan2.2_t2v_high_noise_14B_fp16.safetensors",
+            "min_size_gb": 25,  # Should be around 28GB
+            "download_func": lambda: shutil.move(
+                hf_hub_download(
+                    repo_id="Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+                    filename="split_files/diffusion_models/wan2.2_t2v_high_noise_14B_fp16.safetensors",
+                    local_dir="/models/unet"
+                ),
+                "/models/unet/wan2.2_t2v_high_noise_14B_fp16.safetensors"
             )
         },
         {
-            "name": "Flux.1-dev FP8 UNET (Optimized - 12GB)",
-            "check_path": "/models/unet/flux1-dev-fp8.safetensors",
-            "download_func": lambda: hf_hub_download(
-                repo_id="Kijai/flux-fp8",
-                filename="flux1-dev-fp8.safetensors",
-                local_dir="/models/unet",
-                local_dir_use_symlinks=False
+            "name": "Wan 2.2 TI2V 5B FP16 UNET (TextImage-to-Video - ~10GB)",
+            "type": "single_file",
+            "check_path": "/models/unet/wan2.2_ti2v_5B_fp16.safetensors",
+            "min_size_gb": 10,  # Should be around 10GB
+            "download_func": lambda: shutil.move(
+                hf_hub_download(
+                    repo_id="Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+                    filename="split_files/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors",
+                    local_dir="/models/unet"
+                ),
+                "/models/unet/wan2.2_ti2v_5B_fp16.safetensors"
             )
         },
         {
-            "name": "Project0 REAL1SM V3 FP16 UNET (Realism/Art - 23.8GB)",
-            "check_path": "/models/unet/project0_real1smV3FP16.safetensors",
-            "download_func": lambda: hf_hub_download(
-                repo_id="LeeDavee/models",
-                filename="project0_real1smV3FP16.safetensors",
-                local_dir="/models/unet",
-                local_dir_use_symlinks=False
+            "name": "UMT5 XXL FP16 Text Encoder (Wan 2.2 Repackaged - ~10GB)",
+            "type": "single_file",
+            "check_path": "/models/clip/umt5_xxl_fp16.safetensors",
+            "min_size_gb": 9,
+            "download_func": lambda: shutil.move(
+                hf_hub_download(
+                    repo_id="Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+                    filename="split_files/text_encoders/umt5_xxl_fp16.safetensors",
+                    local_dir="/models/clip"
+                ),
+                "/models/clip/umt5_xxl_fp16.safetensors"
             )
         },
         {
-            "name": "CLIP-L Text Encoder (Essential - 246MB)",
-            "check_path": "/models/clip/clip_l.safetensors",
-            "download_func": lambda: hf_hub_download(
-                repo_id="comfyanonymous/flux_text_encoders",
-                filename="clip_l.safetensors",
-                local_dir="/models/clip",
-                local_dir_use_symlinks=False
-            )
-        },
-        {
-            "name": "T5XXL FP8 Text Encoder (Essential - 4.89GB)",
-            "check_path": "/models/clip/t5xxl_fp8_e4m3fn.safetensors",
-            "download_func": lambda: hf_hub_download(
-                repo_id="comfyanonymous/flux_text_encoders",
-                filename="t5xxl_fp8_e4m3fn.safetensors",
-                local_dir="/models/clip",
-                local_dir_use_symlinks=False
-            )
-        },
-        {
-            "name": "T5XXL FP16 Text Encoder (Full Precision - 9.79GB)",
-            "check_path": "/models/clip/t5xxl_fp16.safetensors",
-            "download_func": lambda: hf_hub_download(
-                repo_id="comfyanonymous/flux_text_encoders",
-                filename="t5xxl_fp16.safetensors",
-                local_dir="/models/clip",
-                local_dir_use_symlinks=False
-            )
-        },
-        {
-            "name": "T5XXL GGUF Q8 Text Encoder (GGUF Format - 5.06GB)",
-            "check_path": "/models/clip/t5-v1_1-xxl-encoder-Q8_0.gguf",
-            "download_func": lambda: hf_hub_download(
-                repo_id="city96/t5-v1_1-xxl-encoder-gguf",
-                filename="t5-v1_1-xxl-encoder-Q8_0.gguf",
-                local_dir="/models/clip",
-                local_dir_use_symlinks=False
-            )
-        },
-        {
-            "name": "VAE (Essential - 335MB)",
-            "check_path": "/models/vae/sdxl-vae-fp16-fix",
-            "check_files": ["diffusion_pytorch_model.safetensors", "config.json"],
-            "download_func": lambda: download_vae_model()
-        },
-        {
-            "name": "Flux VAE (Essential for Flux - 335MB)",
-            "check_path": "/models/vae/ae.safetensors",
-            "download_func": lambda: hf_hub_download(
-                repo_id="black-forest-labs/FLUX.1-dev",
-                filename="ae.safetensors",
-                local_dir="/models/vae",
-                local_dir_use_symlinks=False
+            "name": "Wan 2.2 VAE (Text-to-Video VAE - ~335MB)",
+            "type": "single_file",
+            "check_path": "/models/vae/wan_2.2_vae.safetensors",
+            "min_size_mb": 300,
+            "download_func": lambda: shutil.move(
+                hf_hub_download(
+                    repo_id="Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+                    filename="split_files/vae/wan2.2_vae.safetensors",
+                    local_dir="/models/vae"
+                ),
+                "/models/vae/wan_2.2_vae.safetensors"
             )
         },
         {
             "name": "4x_NMKD-Siax_200k Upscaler (Best for Faces - 67MB)",
+            "type": "single_file",
             "check_path": "/models/upscale_models/4x_NMKD-Siax_200k.pth",
+            "min_size_mb": 60,
             "download_func": lambda: hf_hub_download(
                 repo_id="gemasai/4x_NMKD-Siax_200k",
                 filename="4x_NMKD-Siax_200k.pth",
-                local_dir="/models/upscale_models",
-                local_dir_use_symlinks=False
+                local_dir="/models/upscale_models"
             )
         },
         {
             "name": "RealESRGAN 4x+ Upscaler (General Purpose - 67MB)",
+            "type": "single_file",
             "check_path": "/models/upscale_models/RealESRGAN_x4plus.pth",
+            "min_size_mb": 60,
             "download_func": lambda: hf_hub_download(
                 repo_id="schwgHao/RealESRGAN_x4plus",
                 filename="RealESRGAN_x4plus.pth",
-                local_dir="/models/upscale_models",
-                local_dir_use_symlinks=False
+                local_dir="/models/upscale_models"
             )
         },
         {
             "name": "4x_foolhardy_Remacri Upscaler (Sharp Details - 67MB)",
+            "type": "single_file",
             "check_path": "/models/upscale_models/4x_foolhardy_Remacri.pth",
+            "min_size_mb": 60,
             "download_func": lambda: hf_hub_download(
                 repo_id="FacehugmanIII/4x_foolhardy_Remacri",
                 filename="4x_foolhardy_Remacri.pth",
-                local_dir="/models/upscale_models",
-                local_dir_use_symlinks=False
+                local_dir="/models/upscale_models"
             )
         },
         {
-            "name": "FLUX.1-Turbo-Alpha (8-step Speed LoRA - 694MB)",
-            "check_path": "/models/loras/diffusion_pytorch_model.safetensors",
+            "name": "WanVideo T2V 14B Light x2v CFG Step Distill LoRA (Video Generation)",
+            "type": "single_file",
+            "check_path": "/models/loras/Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors",
+            "min_size_mb": 100,
             "download_func": lambda: hf_hub_download(
-                repo_id="alimama-creative/FLUX.1-Turbo-Alpha",
-                filename="diffusion_pytorch_model.safetensors",
-                local_dir="/models/loras",
-                local_dir_use_symlinks=False
+                repo_id="Kijai/WanVideo_comfy",
+                filename="Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors",
+                local_dir="/models/loras"
             )
         },
         {
-            "name": "OpenFLUX.1 Fast LoRA (Speed Optimization - 687MB)",
-            "check_path": "/models/loras/openflux1-v0.1.0-fast-lora.safetensors",
-            "download_func": lambda: hf_hub_download(
-                repo_id="ostris/OpenFLUX.1",
-                filename="openflux1-v0.1.0-fast-lora.safetensors",
-                local_dir="/models/loras",
-                local_dir_use_symlinks=False
-            )
-        },
-        {
-            "name": "Flux Realism LoRA (XLabs AI - 22.4MB)",
-            "check_path": "/models/loras/flux-realism-lora.safetensors",
-            "download_func": lambda: shutil.copy(
+            "name": "Wan2.1 T2V 14B FusionX LoRA (Video Generation Enhancement - 317MB)",
+            "type": "single_file",
+            "check_path": "/models/loras/Wan2.1_T2V_14B_FusionX_LoRA.safetensors",
+            "min_size_mb": 300,
+            "download_func": lambda: shutil.move(
                 hf_hub_download(
-                    repo_id="XLabs-AI/flux-RealismLora",
-                    filename="lora.safetensors",
-                    local_dir="/models/loras",
-                    local_dir_use_symlinks=False
+                    repo_id="vrgamedevgirl84/Wan14BT2VFusioniX",
+                    filename="FusionX_LoRa/Wan2.1_T2V_14B_FusionX_LoRA.safetensors",
+                    local_dir="/models/loras"
                 ),
-                "/models/loras/flux-realism-lora.safetensors"
-            )
-        },
-        {
-            "name": "Minimal Portrait Photography LoRA (LeeDavee - 613MB)",
-            "check_path": "/models/loras/Minimal Portrait Photography_V1.0.safetensors",
-            "download_func": lambda: hf_hub_download(
-                repo_id="LeeDavee/flux-lora",
-                filename="Minimal Portrait Photography_V1.0.safetensors",
-                local_dir="/models/loras",
-                local_dir_use_symlinks=False
-            )
-        },
-        {
-            "name": "FLUX.1-Redux-dev (Style Transfer - ~12GB)",
-            "check_path": "/models/style_models/flux1-redux-dev.safetensors",
-            "download_func": lambda: hf_hub_download(
-                repo_id="black-forest-labs/FLUX.1-Redux-dev",
-                filename="flux1-redux-dev.safetensors",
-                local_dir="/models/style_models",
-                local_dir_use_symlinks=False
-            )
-        },
-        {
-            "name": "SigCLIP Vision 384 (Essential for Redux - 857MB)",
-            "check_path": "/models/clip_vision/sigclip_vision_patch14_384.safetensors",
-            "download_func": lambda: hf_hub_download(
-                repo_id="Comfy-Org/sigclip_vision_384",
-                filename="sigclip_vision_patch14_384.safetensors",
-                local_dir="/models/clip_vision",
-                local_dir_use_symlinks=False
+                "/models/loras/Wan2.1_T2V_14B_FusionX_LoRA.safetensors"
             )
         },
     ]
     
-    # Download each model with existence check
+    # Download each model with smart existence check
     downloaded_count = 0
     skipped_count = 0
+    partial_downloads = 0
     
     for model in models_to_download:
         name = model["name"]
         check_path = model["check_path"]
-        check_files = model.get("check_files", [])
+        model_type = model["type"]
         
-        # Check if model already exists and is complete
+        # Smart checking based on model type
         skip_download = False
         
-        if os.path.exists(check_path):
-            if os.path.isfile(check_path):
-                # Single file check
-                file_size = os.path.getsize(check_path) / (1024*1024*1024)
-                if file_size > 0.01:  # At least 10MB
-                    print(f"✅ SKIP: {name} already exists ({file_size:.1f}GB)")
+        if model_type == "single_file":
+            # Single file check with size validation
+            if os.path.exists(check_path):
+                file_size_gb = os.path.getsize(check_path) / (1024*1024*1024)
+                file_size_mb = os.path.getsize(check_path) / (1024*1024)
+                
+                # Check against expected minimum size
+                min_size_gb = model.get("min_size_gb", 0)
+                min_size_mb = model.get("min_size_mb", 0.01)
+                
+                if min_size_gb > 0 and file_size_gb >= min_size_gb:
+                    print(f"✅ SKIP: {name} already exists ({file_size_gb:.1f}GB)")
                     skip_download = True
-            elif os.path.isdir(check_path):
-                # Directory with multiple files check - be more thorough
-                if check_files:
-                    # Check that ALL required files exist AND have reasonable sizes
-                    all_files_exist = True
-                    for required_file in check_files:
-                        file_path = os.path.join(check_path, required_file)
-                        if not os.path.exists(file_path):
-                            print(f"⚠️ Missing required file: {required_file}")
-                            all_files_exist = False
-                            break
-                        # Check file size - model files should be substantial
-                        if required_file.endswith(('.bin', '.safetensors')):
-                            size_mb = os.path.getsize(file_path) / (1024*1024)
-                            if size_mb < 10:  # Model files should be at least 10MB
-                                print(f"⚠️ File too small (possibly corrupted): {required_file} ({size_mb:.1f}MB)")
-                                all_files_exist = False
-                                break
-                    
-                    if all_files_exist:
-                        total_files = len([f for f in os.listdir(check_path) 
-                                         if f.endswith(('.safetensors', '.bin', '.json'))])
-                        print(f"✅ SKIP: {name} complete ({total_files} files)")
-                        skip_download = True
-                    else:
-                        print(f"🔄 INCOMPLETE: {name} - will re-download")
-                        # Clean incomplete download
-                        shutil.rmtree(check_path)
+                elif min_size_mb > 0 and file_size_mb >= min_size_mb:
+                    print(f"✅ SKIP: {name} already exists ({file_size_mb:.1f}MB)")
+                    skip_download = True
                 else:
-                    # Check if directory has any substantial model files
-                    model_files = [f for f in os.listdir(check_path) 
-                                 if f.endswith(('.safetensors', '.bin'))]
-                    if model_files:
-                        # Check if model files have reasonable sizes
-                        total_size = sum(os.path.getsize(os.path.join(check_path, f)) 
-                                       for f in model_files) / (1024*1024)
-                        if total_size > 10:  # At least 10MB total
-                            print(f"✅ SKIP: {name} already exists ({len(model_files)} model files, {total_size:.0f}MB)")
-                            skip_download = True
-                        else:
-                            print(f"🔄 CORRUPTED: {name} - files too small, will re-download")
-                            shutil.rmtree(check_path)
-                    else:
-                        print(f"🔄 EMPTY: {name} - no model files found, will re-download")
-                        shutil.rmtree(check_path)
+                    expected = f"{min_size_gb}GB" if min_size_gb > 0 else f"{min_size_mb}MB"
+                    actual = f"{file_size_gb:.1f}GB" if file_size_gb > 1 else f"{file_size_mb:.1f}MB"
+                    print(f"🔄 SIZE MISMATCH: {name} - expected ≥{expected}, got {actual}, will re-download")
+                    os.remove(check_path)  # Remove corrupted file
+            
+        elif model_type == "snapshot":
+            # Smart directory check for snapshot downloads
+            if os.path.exists(check_path):
+                required_files = model.get("required_files", [])
+                min_sizes = model.get("min_sizes", {})
+                
+                missing_files = get_missing_files(check_path, required_files, min_sizes)
+                
+                if not missing_files:
+                    total_files = len([f for f in os.listdir(check_path) 
+                                     if f.endswith(('.safetensors', '.bin', '.json'))])
+                    print(f"✅ SKIP: {name} complete ({total_files} files)")
+                    skip_download = True
+                else:
+                    print(f"🔄 PARTIAL: {name} - missing {len(missing_files)} files: {missing_files[:3]}{'...' if len(missing_files) > 3 else ''}")
+                    # Don't delete directory, just download missing files
+                    partial_downloads += 1
         
         if skip_download:
             skipped_count += 1
             continue
         
         # Download the model
-        print(f"\n📦 DOWNLOADING: {name}")
+        action = "PARTIAL DOWNLOAD" if model_type == "snapshot" and os.path.exists(check_path) else "DOWNLOADING"
+        print(f"\n📦 {action}: {name}")
+        
         try:
-            model["download_func"]()
+            if model_type == "snapshot":
+                # Use smart snapshot download
+                smart_snapshot_download(
+                    repo_id=model["repo_id"],
+                    local_dir=check_path,
+                    required_files=model.get("required_files"),
+                    min_sizes=model.get("min_sizes")
+                )
+            else:
+                # Use existing download function for single files
+                model["download_func"]()
+            
             print(f"✅ SUCCESS: {name}")
             
-            # Verify download actually worked
+            # Verify download
             if os.path.exists(check_path):
                 if os.path.isfile(check_path):
                     size_gb = os.path.getsize(check_path) / (1024*1024*1024)
                     print(f"🔍 Verified: {name} - {size_gb:.1f}GB")
                 elif os.path.isdir(check_path):
                     files = os.listdir(check_path)
+                    model_files = [f for f in files if f.endswith(('.safetensors', '.bin'))]
                     total_size_mb = sum(
                         os.path.getsize(os.path.join(check_path, f)) / (1024*1024)
                         for f in files if os.path.isfile(os.path.join(check_path, f))
                     )
-                    print(f"🔍 Verified: {name} - {len(files)} files, {total_size_mb:.1f}MB total")
-                    
-                    # Check specific required files
-                    if check_files:
-                        missing_files = []
-                        for required_file in check_files:
-                            file_path = os.path.join(check_path, required_file)
-                            if not os.path.exists(file_path):
-                                missing_files.append(required_file)
-                            else:
-                                size_mb = os.path.getsize(file_path) / (1024*1024)
-                                print(f"  ✓ {required_file}: {size_mb:.1f}MB")
-                        
-                        if missing_files:
-                            print(f"  ❌ Still missing: {missing_files}")
-                        else:
-                            print(f"  ✅ All required files present")
+                    print(f"🔍 Verified: {name} - {len(model_files)} model files, {total_size_mb:.0f}MB total")
             else:
                 print(f"❌ VERIFICATION FAILED: {name} - path does not exist after download!")
                 
@@ -391,26 +380,25 @@ def download_models():
     # Final verification
     print(f"\n📊 DOWNLOAD SUMMARY:")
     print(f"📥 Downloaded: {downloaded_count} models")
-    print(f"⏭️ Skipped: {skipped_count} models (already existed)")
+    print(f"🔄 Partial downloads: {partial_downloads} models")
+    print(f"⏭️ Skipped: {skipped_count} models (already complete)")
     
     print(f"\n🔍 FINAL VERIFICATION:")
     essential_checks = [
-        ("/models/checkpoints/flux1-dev-fp8.safetensors", "Flux FP8 Checkpoint"),
-        ("/models/unet/project0_real1smV3FP16.safetensors", "Project0 REAL1SM V3 FP16 UNET"),
-        ("/models/unet/flux1-dev.safetensors", "Flux Dev UNET"),
-        ("/models/unet/flux1-dev-fp8.safetensors", "Flux FP8 UNET"),
-        ("/models/clip/clip_l.safetensors", "CLIP-L"),
-        ("/models/clip/t5xxl_fp8_e4m3fn.safetensors", "T5XXL FP8"),
-        ("/models/clip/t5xxl_fp16.safetensors", "T5XXL FP16"),
-        ("/models/vae/ae.safetensors", "Flux VAE"),
+        ("/models/Wan-AI/Wan2.2-T2V-A14B", "Wan-AI Text-to-Video Model"),
+        ("/models/Wan-AI/Wan2.2-TI2V-5B", "Wan-AI TextImage-to-Video Model"),
+        ("/models/Wan-AI/Wan2.1-T2V-14B", "Wan-AI Text-to-Video Model"),
+        ("/models/Wan-AI/Wan2.2-T2V-A14B-Diffusers", "Wan-AI Text-to-Video Model (Diffusers)"),
+        ("/models/Wan-AI/Wan2.2-TI2V-5B-Diffusers", "Wan-AI TextImage-to-Video Model (Diffusers)"),
+        ("/models/unet/wan2.2_t2v_low_noise_14B_fp16.safetensors", "Wan 2.2 T2V Low Noise 14B FP16 UNET"),
+        ("/models/unet/wan2.2_t2v_high_noise_14B_fp16.safetensors", "Wan 2.2 T2V High Noise 14B FP16 UNET"),
+        ("/models/unet/wan2.2_ti2v_5B_fp16.safetensors", "Wan 2.2 TI2V 5B FP16 UNET"),
+        ("/models/vae/wan_2.2_vae.safetensors", "Wan 2.2 VAE"),
         ("/models/upscale_models/4x_NMKD-Siax_200k.pth", "4x NMKD-Siax Upscaler"),
         ("/models/upscale_models/RealESRGAN_x4plus.pth", "RealESRGAN 4x+ Upscaler"),
         ("/models/upscale_models/4x_foolhardy_Remacri.pth", "4x Foolhardy Remacri Upscaler"),
-        ("/models/loras/diffusion_pytorch_model.safetensors", "FLUX.1-Turbo-Alpha"),
-        ("/models/loras/openflux1-v0.1.0-fast-lora.safetensors", "OpenFLUX.1 Fast LoRA"),
-        ("/models/loras/Minimal Portrait Photography_V1.0.safetensors", "Minimal Portrait Photography LoRA"),
-        ("/models/style_models/flux1-redux-dev.safetensors", "FLUX.1-Redux-dev"),
-        ("/models/clip_vision/sigclip_vision_patch14_384.safetensors", "SigCLIP Vision 384"),
+        ("/models/loras/Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors", "WanVideo T2V 14B Light x2v CFG Step Distill LoRA"),
+        ("/models/loras/Wan2.1_T2V_14B_FusionX_LoRA.safetensors", "Wan2.1 T2V 14B FusionX LoRA"),
     ]
     
     all_ready = True
@@ -445,22 +433,20 @@ if __name__ == "__main__":
     print("🔍 Checking if models are available...")
     
     essential_checks = [
-        ("/models/checkpoints/flux1-dev-fp8.safetensors", "Flux FP8 Checkpoint"),
-        ("/models/unet/project0_real1smV3FP16.safetensors", "Project0 REAL1SM V3 FP16 UNET"),
-        ("/models/unet/flux1-dev.safetensors", "Flux Dev UNET"),
-        ("/models/unet/flux1-dev-fp8.safetensors", "Flux FP8 UNET"),
-        ("/models/clip/clip_l.safetensors", "CLIP-L"),
-        ("/models/clip/t5xxl_fp8_e4m3fn.safetensors", "T5XXL FP8"),
-        ("/models/clip/t5xxl_fp16.safetensors", "T5XXL FP16"),
-        ("/models/vae/ae.safetensors", "Flux VAE"),
+        ("/models/Wan-AI/Wan2.2-T2V-A14B", "Wan-AI Text-to-Video Model"),
+        ("/models/Wan-AI/Wan2.2-TI2V-5B", "Wan-AI TextImage-to-Video Model"),
+        ("/models/Wan-AI/Wan2.1-T2V-14B", "Wan-AI Text-to-Video Model"),
+        ("/models/Wan-AI/Wan2.2-T2V-A14B-Diffusers", "Wan-AI Text-to-Video Model"),
+        ("/models/Wan-AI/Wan2.2-TI2V-5B-Diffusers", "Wan-AI TextImage-to-Video Model"),
+        ("/models/unet/wan2.2_t2v_low_noise_14B_fp16.safetensors", "Wan 2.2 T2V Low Noise 14B FP16 UNET"),
+        ("/models/unet/wan2.2_t2v_high_noise_14B_fp16.safetensors", "Wan 2.2 T2V High Noise 14B FP16 UNET"),
+        ("/models/unet/wan2.2_ti2v_5B_fp16.safetensors", "Wan 2.2 TI2V 5B FP16 UNET"),
+        ("/models/vae/wan_2.2_vae.safetensors", "Wan 2.2 VAE"),
         ("/models/upscale_models/4x_NMKD-Siax_200k.pth", "4x NMKD-Siax Upscaler"),
         ("/models/upscale_models/RealESRGAN_x4plus.pth", "RealESRGAN 4x+ Upscaler"),
         ("/models/upscale_models/4x_foolhardy_Remacri.pth", "4x Foolhardy Remacri Upscaler"),
-        ("/models/loras/diffusion_pytorch_model.safetensors", "FLUX.1-Turbo-Alpha"),
-        ("/models/loras/openflux1-v0.1.0-fast-lora.safetensors", "OpenFLUX.1 Fast LoRA"),
-        ("/models/loras/Minimal Portrait Photography_V1.0.safetensors", "Minimal Portrait Photography LoRA"),
-        ("/models/style_models/flux1-redux-dev.safetensors", "FLUX.1-Redux-dev"),
-        ("/models/clip_vision/sigclip_vision_patch14_384.safetensors", "SigCLIP Vision 384"),
+        ("/models/loras/Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors", "WanVideo T2V 14B Light x2v CFG Step Distill LoRA"),
+        ("/models/loras/Wan2.1_T2V_14B_FusionX_LoRA.safetensors", "Wan2.1 T2V 14B FusionX LoRA"),
     ]
     
     all_ready = True
