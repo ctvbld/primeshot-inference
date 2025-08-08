@@ -337,13 +337,13 @@ image = (
 app = modal.App(name="comfyui", image=image)
 
 @app.function(
-    max_containers=1,
     gpu="H100",  # Cost-effective for UI development A10G
     volumes={"/models": vol, "/data": s3_mount},
     secrets=[comfyui_secret],  # Add ComfyUI secret for API nodes
+    max_containers=500,
     timeout=3600
 )
-@modal.concurrent(max_inputs=10)
+@modal.concurrent(max_inputs=10, target_inputs=80)
 @modal.web_server(8000, startup_timeout=60)
 def dev_server():
     """Interactive ComfyUI development server for workflow creation."""
