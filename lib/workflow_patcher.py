@@ -23,6 +23,7 @@ def patch_workflow(
     seed: int | None,
     images_count: int,
     lora_filename: str | None = None,
+    bypass_nodes: list[dict] | None = None,
 ) -> Dict[str, Any]:
     """Apply minimal patches to a ComfyUI workflow JSON.
     This assumes nodes are identified by common labels; you may adjust mapping.
@@ -52,6 +53,27 @@ def patch_workflow(
 
     # NB takes: prefer batch_size if present; otherwise caller will loop
     set_node_input("KSampler", "batch_size", int(images_count))
+
+    # Optional bypass rewiring for nodes specified by UI name
+    if bypass_nodes:
+        for spec in bypass_nodes:
+            try:
+                ui_name = spec.get("ui_name")
+                passthrough_key = spec.get("passthrough_input_key")
+                if not ui_name or not passthrough_key:
+                    continue
+                output_index = spec.get("output_index", 0)
+                remove = spec.get("remove", False)
+                wf = bypass_node(
+                    wf,
+                    target_ui_name=ui_name,
+                    passthrough_input_key=passthrough_key,
+                    output_index=output_index,
+                    remove=remove,
+                )
+            except Exception:
+                # Non-fatal: continue applying remaining patches
+                pass
 
     return wf
 

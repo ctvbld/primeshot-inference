@@ -37,6 +37,14 @@ user_images_mount = {"/data": modal.CloudBucketMount(
     read_only=False
 )}
 
+# Mount workflows/ prefix at /workflows for local file access to workflow JSON
+workflows_mount = {"/workflows": modal.CloudBucketMount(
+    bucket_name="primeshot-uploads-01",
+    key_prefix="workflows/",
+    secret=aws_secret,
+    read_only=True
+)}
+
 cuda_image = (
     modal.Image.from_registry("nvidia/cuda:12.8.0-devel-ubuntu22.04", add_python="3.12")
     .entrypoint([])  # Remove verbose logging by base image on entry
@@ -110,6 +118,8 @@ cuda_image = (
     # Install optimized xformers for additional attention acceleration
     .pip_install("xformers>=0.0.28")  # Latest xformers for attention optimizations
     .pip_install("websockets>=12.0")  # For ComfyUI WS preview/progress relay
+    # Common dependencies required by various custom nodes and S3 access
+    .pip_install("diffusers>=0.30.0", "transformers>=4.42.0", "accelerate>=0.30.0", "safetensors>=0.4.3", "boto3>=1.34.0")
     .run_commands(  # install ComfyUI with NVIDIA support
         "comfy --skip-prompt install --fast-deps --nvidia"
     )
@@ -246,7 +256,7 @@ def _launch_inference_runtime(port: int) -> None:
     if not setup_model_paths_config():
         raise RuntimeError("Failed to configure model paths")
     os.makedirs("/root/comfy/ComfyUI/models/loras", exist_ok=True)
-    
+
     env = os.environ.copy()
     env.update({
         'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True,backend:cudaMallocAsync',
@@ -259,21 +269,54 @@ def _launch_inference_runtime(port: int) -> None:
         'COMFYUI_LOWVRAM': 'false',
         'COMFYUI_NOVRAM': 'false'
     })
-        
-    cmd = f"comfy launch --background -- --port {port} --use-sage-attention --gpu-only --bf16-unet --bf16-vae --output-directory /data/outputs"
+
+    cmd = (
+        f"comfy launch --background -- --port {port} --use-sage-attention --gpu-only "
+        f"--bf16-unet --bf16-vae --output-directory /data/outputs"
+    )
     subprocess.run(cmd, shell=True, check=True, env=env)
     print("✅ ComfyUI server running with SageAttention and performance optimizations")
 
     try:
         api_env = os.environ.copy()
-        api_env.setdefault("COMFYUI_BASE_URL", f"http://127.0.0.1:{port}")
-        for key in ["AWS_ACCESS_KEY_ID","AWS_SECRET_ACCESS_KEY","AWS_REGION","AWS_BUCKET"]:
+        # Explicitly configure comfyui-api per docs
+        api_env.setdefault("COMFYUI_BASE_URL", f"http://127.0.0.1:{port}")  # for forks expecting base URL
+        api_env.setdefault("COMFYUI_PORT_HOST", str(port))                   # salad tech config expects host port
+        api_env.setdefault("DIRECT_ADDRESS", "127.0.0.1")
+        api_env.setdefault("HOST", "::")
+        api_env.setdefault("PORT", "3000")                                  # wrapper port
+        for key in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "AWS_BUCKET"]:
             if key not in api_env and key in os.environ:
                 api_env[key] = os.environ[key]
-        print("🚀 Starting comfyui-api on http://127.0.0.1:9000 ...")
-        subprocess.Popen("cd /root/comfyui-api && npm start --silent", shell=True, env=api_env)
-        time.sleep(2)
-        print("✅ comfyui-api start triggered")
+        # comfyui-api default wrapper port per docs is 3000
+        print("🚀 Starting comfyui-api (expect default on http://127.0.0.1:3000) ...")
+        # Do not silence logs so we can see failures
+        subprocess.Popen("cd /root/comfyui-api && npm run start", shell=True, env=api_env)
+
+        # Robust warmup: wait for comfyui-api to accept connections (max ~30s)
+        import urllib.request as _rq, urllib.error as _err
+        # Probe common ports: 3000 (wrapper), 9000 (older), configurable via COMFY_API_BASE
+        probe_ports = [
+            os.environ.get("COMFY_API_BASE", "http://127.0.0.1:3000").rstrip("/"),
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:9000",
+        ]
+        ready = False
+        for _ in range(60):
+            for base in probe_ports:
+                try:
+                    _rq.urlopen(base + "/", timeout=0.5)
+                    os.environ["COMFY_API_BASE"] = base
+                    print(f"✅ comfyui-api is accepting connections at {base}")
+                    ready = True
+                    break
+                except Exception:
+                    continue
+            if ready:
+                break
+            time.sleep(0.5)
+        else:
+            print("⚠️ comfyui-api did not become ready within timeout; will rely on submit-side retries")
     except Exception as e:
         print(f"❌ Failed to start comfyui-api: {e}")
 
@@ -281,171 +324,13 @@ def _launch_inference_runtime(port: int) -> None:
         # Warmup
         import urllib.request as _rq
         _rq.urlopen(f"http://127.0.0.1:{port}/system_stats", timeout=3)
-        _rq.urlopen("http://127.0.0.1:9000/", timeout=3)
+        api_base = os.environ.get("COMFY_API_BASE", "http://127.0.0.1:3000")
+        _rq.urlopen(api_base, timeout=3)
     except Exception:
         pass
 
 
 # Shared base with all inference helpers so multiple GPU classes can reuse logic
-def setup_style_lora(lora_s3_path: str, style_id: str) -> str:
-    if not lora_s3_path or lora_s3_path == "default.safetensors":
-        return "default.safetensors"
-    if not os.path.exists(lora_s3_path):
-        raise FileNotFoundError(f"LoRA file not found: {lora_s3_path}")
-    original_filename = os.path.basename(lora_s3_path)
-    style_lora_filename = f"style_{style_id}_{original_filename}"
-    lora_models_dir = "/root/comfy/ComfyUI/models/loras"
-    style_lora_path = os.path.join(lora_models_dir, style_lora_filename)
-    os.makedirs(lora_models_dir, exist_ok=True)
-    try:
-        os.symlink(lora_s3_path, style_lora_path)
-        print(f"🔗 Linked LoRA for style {style_id}: {original_filename}")
-        return style_lora_filename
-    except Exception as e:
-        raise Exception(f"Failed to link LoRA: {str(e)}")
-    
-def cleanup_style_lora(style_id: str) -> None:
-    lora_models_dir = "/root/comfy/ComfyUI/models/loras"
-    try:
-        for filename in os.listdir(lora_models_dir):
-            if filename.startswith(f"style_{style_id}_"):
-                lora_path = os.path.join(lora_models_dir, filename)
-                if os.path.islink(lora_path):
-                    os.unlink(lora_path)
-                    print(f"🧹 Cleaned up LoRA symlink: {filename}")
-    except Exception as e:
-        print(f"⚠️ Warning: Failed to cleanup LoRA symlinks: {str(e)}")
-
-def get_workflow_config() -> Dict[str, Any]:
-        config_path = Path("/root/workflows/workflow_config.json")
-        if not config_path.exists():
-            raise FileNotFoundError("Workflow configuration not found")
-        return json.loads(config_path.read_text())
-
-def load_workflow_template(workflow_name: str) -> Dict[str, Any]:
-    config = get_workflow_config()
-    if workflow_name not in config["workflows"]:
-        available = list(config["workflows"].keys())
-        raise ValueError(f"Unknown workflow: {workflow_name}. Available: {available}")
-    workflow_file = config["workflows"][workflow_name]["file"]
-    workflow_path = Path(f"/root/workflows/{workflow_file}")
-    if not workflow_path.exists():
-        raise FileNotFoundError(f"Workflow file not found: {workflow_file}")
-    return json.loads(workflow_path.read_text())
-
-def validate_workflow_request(workflow_name: str, parameters: Dict[str, Any]) -> None:
-    config = get_workflow_config()
-    if workflow_name not in config["workflows"]:
-        available = list(config["workflows"].keys())
-        raise ValueError(f"Unknown workflow: {workflow_name}. Available: {available}")
-    workflow_config = config["workflows"][workflow_name]
-    param_definitions = workflow_config.get("parameters", {})
-    for param_name, param_config in param_definitions.items():
-        if param_config.get("required", False) and param_name not in parameters:
-            raise ValueError(f"Missing required parameter: {param_name}")
-    for param_name, param_value in parameters.items():
-        if param_name in param_definitions:
-            _validate_parameter_value(param_name, param_value, param_definitions[param_name])
-
-def _validate_parameter_value(param_name: str, value: Any, config: Dict[str, Any]) -> None:
-        param_type = config.get("type", "string")
-        if param_type == "integer" and not isinstance(value, int):
-            raise ValueError(f"Parameter {param_name} must be an integer")
-        elif param_type == "float" and not isinstance(value, (int, float)):
-            raise ValueError(f"Parameter {param_name} must be a number")
-        elif param_type == "string" and not isinstance(value, str):
-            raise ValueError(f"Parameter {param_name} must be a string")
-        if "min" in config and value < config["min"]:
-            raise ValueError(f"Parameter {param_name} must be >= {config['min']}")
-        if "max" in config and value > config["max"]:
-            raise ValueError(f"Parameter {param_name} must be <= {config['max']}")
-        if "options" in config and value not in config["options"]:
-            raise ValueError(f"Parameter {param_name} must be one of: {config['options']}")
-
-def inject_parameters(workflow: Dict[str, Any], workflow_name: str, params: Dict[str, Any], style_id: str, user_id: str, style_lora_filename: str | None = None) -> Dict[str, Any]:
-    config = get_workflow_config()
-    workflow_config = config["workflows"][workflow_name]
-    param_definitions = workflow_config.get("parameters", {})
-    parameter_mappings = workflow_config.get("parameter_mappings", {})
-    processed_params: Dict[str, Any] = {}
-    for param_name, param_config in param_definitions.items():
-        if param_name in params:
-            processed_params[param_name] = params[param_name]
-        elif "default" in param_config:
-            processed_params[param_name] = param_config["default"]
-    processed_params["output_prefix"] = f"{user_id}/generated/{style_id}"
-    for param_name, param_value in processed_params.items():
-        mapping = parameter_mappings.get(param_name)
-        if mapping:
-            _apply_parameter_mapping(workflow, mapping, param_value, style_id, style_lora_filename, workflow_name)
-    print(f"✅ Applied {len(processed_params)} parameters to workflow {workflow_name}")
-    return workflow
-
-def _apply_parameter_mapping(workflow: Dict[str, Any], mapping: Dict[str, Any], param_value: Any, style_id: str, style_lora_filename: str | None = None, workflow_name: str | None = None) -> None:
-    special_handler = mapping.get("special_handler")
-    if special_handler == "resolution":
-        width, height = map(int, str(param_value).split('x'))
-    wm = mapping.get("width_mapping"); hm = mapping.get("height_mapping")
-    if wm: workflow[wm["node"]]["inputs"][wm["input_key"]] = width
-    if hm: workflow[hm["node"]]["inputs"][hm["input_key"]] = height
-    uwm = mapping.get("upscale_width_mapping"); uhm = mapping.get("upscale_height_mapping")
-    if uwm: workflow[uwm["node"]]["inputs"][uwm["input_key"]] = width * uwm.get("multiplier", 1)
-    if uhm: workflow[uhm["node"]]["inputs"][uhm["input_key"]] = height * uhm.get("multiplier", 1)
-    elif special_handler == "random_seed":
-        if param_value == -1:
-            import random
-            param_value = random.randint(0, 2**32 - 1)
-            workflow[mapping["node"]]["inputs"][mapping["input_key"]] = param_value
-        elif special_handler == "lora_file":
-            if style_lora_filename and style_lora_filename != "default.safetensors":
-                config = get_workflow_config()
-                node_mappings = config["workflows"].get(workflow_name, {}).get("node_mappings", {})
-                if "lora_loader" in node_mappings:
-                    lora_node = node_mappings["lora_loader"]
-                    workflow[lora_node]["inputs"]["lora_name"] = style_lora_filename
-        elif special_handler == "style_output":
-            workflow[mapping["node"]]["inputs"][mapping["input_key"]] = param_value
-        else:
-            node_id = mapping["node"]
-            if "widget_index" in mapping:
-                idx = mapping["widget_index"]
-                workflow[node_id].setdefault("widgets_values", [])
-                while len(workflow[node_id]["widgets_values"]) <= idx:
-                        workflow[node_id]["widgets_values"].append(None)
-                workflow[node_id]["widgets_values"][idx] = param_value
-            else:
-                workflow[node_id]["inputs"][mapping["input_key"]] = param_value
-        for secondary in mapping.get("secondary_mappings", []):
-            sec_node = secondary["node"]
-            if "widget_index" in secondary:
-                idx = secondary["widget_index"]
-                workflow[sec_node].setdefault("widgets_values", [])
-                while len(workflow[sec_node]["widgets_values"]) <= idx:
-                    workflow[sec_node]["widgets_values"].append(None)
-                workflow[sec_node]["widgets_values"][idx] = param_value
-            else:
-                workflow[sec_node]["inputs"][secondary["input_key"]] = param_value
-
-def execute_workflow(workflow: Dict[str, Any], style_id: str, user_id: str) -> str:
-        workflow_file = f"/tmp/workflow_{style_id}.json"
-        with open(workflow_file, 'w') as f:
-            json.dump(workflow, f)
-        env = os.environ.copy()
-        env.update({
-            'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True,backend:cudaMallocAsync',
-            'TORCH_ALLOW_TF32_CUBLAS_OVERRIDE': '1',
-            'NVIDIA_TF32_OVERRIDE': '1',
-            'SAGE_ATTENTION_BACKEND': 'triton',
-            'COMFYUI_MODEL_DEVICE': 'cuda',
-            'COMFYUI_VAE_DEVICE': 'cuda', 
-            'COMFYUI_CLIP_DEVICE': 'cuda',
-            'COMFYUI_LOWVRAM': 'false',
-            'COMFYUI_NOVRAM': 'false'
-        })
-        cmd = f"comfy run --workflow {workflow_file} --wait --timeout 1200 --verbose"
-        subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True, env=env)
-        print(f"✅ Workflow executed successfully for style {style_id}")
-        return f"/data/outputs/{user_id}/generated/{style_id}"
 
 def poll_server_health(port: int) -> None:
     import socket, urllib.request, urllib.error
@@ -485,12 +370,11 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
     from job_tracker import get_job_tracker
     tracker = get_job_tracker()
     job_id = input_data.get("job_id") or str(uuid.uuid4())
-    style_id = job_id  # keep same id for outputs
     user_id = input_data.get("user_id", "unknown")
     try:
-        tracker.create_job(input_data, style_id)
-        tracker.mark_processing(style_id)
-        print(f"🎯 Starting generation job: {style_id}")
+        tracker.create_job(input_data, job_id)
+        tracker.mark_processing(job_id)
+        print(f"🎯 Starting generation job: {job_id}")
         poll_server_health(PORT)
 
         # Expect prepared payload from EF
@@ -498,9 +382,10 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         if not prepared:
             raise RuntimeError("Missing 'prepared' payload from inference-create EF")
 
-        # Load workflow JSON from S3 and patch with params
+        # Load workflow JSON (prefer mounted /workflows). Default to WAN2.1.json when not provided
         from lib.workflow_loader import load_workflow_from_s3
-        wf = load_workflow_from_s3(prepared["workflow"])  # S3 key like workflows/2_1/flux_lora.json
+        wf_key = prepared.get("workflow") or "WAN2.1.json"
+        wf = load_workflow_from_s3(wf_key)
         from lib.workflow_patcher import compute_dimensions, patch_workflow
         p = input_data.get("params", {})
         width, height = compute_dimensions(p.get("quality", "1K"), p.get("aspect_ratio", "1:1"))
@@ -515,6 +400,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             seed=p.get("seed"),
             images_count=int(p.get("nb_takes", 1)),
             lora_filename=lora_filename,
+            bypass_nodes=prepared.get("bypass_nodes"),
         )
 
         # 3) Start WS relay for progress/preview (non-blocking)
@@ -531,8 +417,9 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             print(f"⚠️ Progress relay not started: {e}")
 
         # 4) Submit to comfyui-api generic endpoint for async execution
-        import urllib.request
-        api_base = os.environ.get("COMFY_API_BASE", "http://127.0.0.1:9000")
+        import urllib.request, urllib.error, time as _time
+        # autodetect port: prefer env, else 3000 (wrapper default), else 9000
+        api_base = os.environ.get("COMFY_API_BASE") or "http://127.0.0.1:3000"
         url = api_base.rstrip("/") + "/workflows/run"
         webhook_url = os.environ.get("WEBHOOK_URL")
         body = {
@@ -542,30 +429,46 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         }
         if webhook_url:
             body["webhook_url"] = webhook_url
-        req = urllib.request.Request(url=url, data=json.dumps(body).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
-        urllib.request.urlopen(req, timeout=10)
+        # Ensure comfyui-api is ready (avoid Connection refused on fast boots)
+        for _i in range(60):  # up to ~30s
+            try:
+                urllib.request.urlopen(api_base, timeout=0.5)
+                break
+            except Exception:
+                _time.sleep(0.5)
+        # Retry submit up to ~30s
+        last_err = None
+        for _i in range(30):
+            try:
+                req = urllib.request.Request(url=url, data=json.dumps(body).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
+                urllib.request.urlopen(req, timeout=10)
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                _time.sleep(1.0)
+        if last_err:
+            raise RuntimeError(f"comfyui-api submit failed after retries: {last_err}")
 
         # 5) Return accepted; completion goes via webhook -> EF -> DB
         return {"status": "accepted", "job_id": job_id}
     except Exception as e:
         print(f"❌ Generation failed: {str(e)}")
         try:
-            tracker.mark_failed(style_id, str(e))
+            tracker.mark_failed(job_id, str(e))
         except Exception:
             pass
-        return {"style_id": style_id, "status": "failed", "error": str(e)}
+        return {"job_id": job_id, "status": "failed", "error": str(e)}
     finally:
-        try:
-            cleanup_style_lora(style_id)
-        except Exception:
-            pass
+        pass
 
 
 @app.cls(
     gpu="H100",
     image=cuda_image,
     secrets=[aws_secret, inference_secret],
-    volumes={**user_images_mount, MODELS_PATH: models_volume},
+    volumes={**user_images_mount, **workflows_mount, MODELS_PATH: models_volume},
+    timeout=30000,
     scaledown_window=300,  # 5 minute keep-alive (will be tuned later)
     max_containers=30,
     retries=3,
@@ -586,8 +489,9 @@ class Fast:
 
 @app.cls(
     gpu="A10G",
-    volumes={**user_images_mount, MODELS_PATH: models_volume},
+    volumes={**user_images_mount, **workflows_mount, MODELS_PATH: models_volume},
     secrets=[aws_secret, inference_secret],
+    timeout=30000,
     scaledown_window=300,  # 5 minute keep-alive (will be tuned later)
     max_containers=10,
     retries=3,
@@ -618,136 +522,49 @@ class Slow:
 @modal.concurrent(max_inputs=100, target_inputs=80)
 @modal.fastapi_endpoint(method="POST", label="primeshot-inference", requires_proxy_auth=True)
 def api_endpoint(request_data: Dict[str, Any]):
-    """Accept a new inference job and submit it to comfyui-api.
+    """Accept prepared inference request and spawn GPU worker.
 
-    Supports two modes:
-    - Dynamic named workflow: provide `workflow_name` (uses COMFY_WORKFLOW_ENDPOINT)
-    - Generic S3/URL workflow: provide `workflow_s3` or `workflow_url` (hits /workflows/run)
-
-    Returns immediately with an accepted response; results arrive via webhook.
+    Contract: caller must provide `user_id`, `prepared`, and optional `params`.
+    This endpoint does NOT call inference-create EF; it just enqueues work.
     """
     from fastapi import HTTPException
-        
-    if "user_id" not in request_data:
+
+    user_id = request_data.get("user_id")
+    if not user_id:
         raise HTTPException(status_code=400, detail="Missing required parameter: user_id")
-    
-    user_id = request_data["user_id"]
-    parameters = request_data.get("parameters", {})
+    prepared = request_data.get("prepared")
+    if not prepared:
+        raise HTTPException(status_code=400, detail="Missing required parameter: prepared")
 
-    # Detect generic mode (Option B)
-    workflow_s3 = request_data.get("workflow_s3")
-    workflow_url = request_data.get("workflow_url")
-    is_generic = bool(workflow_s3 or workflow_url)
-
-    # Validate character-related LoRA only for legacy dynamic mode
-    if not is_generic and "character_id" in request_data:
-        character_id = request_data["character_id"]
-        if "lora_path" in parameters:
-            lora_path = parameters["lora_path"]
-            if lora_path != "default.safetensors":
-                expected_prefix = f"/data/{user_id}/training/{character_id}/loras/"
-                if not str(lora_path).startswith(expected_prefix):
-                    raise HTTPException(status_code=403, detail=f"LoRA path must start with {expected_prefix}")
-                if not str(lora_path).endswith(".safetensors"):
-                    raise HTTPException(status_code=400, detail="LoRA file must have .safetensors extension")
-
-    # Create job id
     job_id = request_data.get("job_id") or str(uuid.uuid4())
+    params = request_data.get("params", {})
 
-    # Build payload according to mode
-    if is_generic:
-        # New flow: do not pass workflow URLs. Build prompt + workflow in Modal via EF.
-        prep_payload = {
-            "user_id": user_id,
-            "job_id": job_id,
-            "character_id": request_data.get("character_id"),
-            "style_id": request_data.get("style_id"),
-            "wardrobe_id": request_data.get("wardrobe_id"),
-            "color_id": request_data.get("color_id"),
-            "scene_id": request_data.get("scene_id"),
-            "params": request_data.get("params", {}),
-        }
+    print(f"Received prepared: {prepared}")
 
-        # 1) Ask EF to prepare prompts and workflow key
-        from lib.prompt_client import fetch_inference_prep
-        prep = fetch_inference_prep(prep_payload)
-
-        # 2) Download workflow JSON from S3
-        from lib.workflow_loader import load_workflow_from_s3
-        wf = load_workflow_from_s3(prep["workflow_s3_key"])  # bucket from env
-
-        # 3) Compute width/height
-        from lib.workflow_patcher import compute_dimensions, patch_workflow
-        p = request_data.get("params", {})
-        width, height = compute_dimensions(p.get("quality", "1K"), p.get("aspect_ratio", "1:1"))
-
-        # 4) Patch workflow
-        patched = patch_workflow(
-            wf,
-            prompt=prep.get("prompt", ""),
-            negative_prompt=prep.get("negative_prompt", ""),
-            width=width,
-            height=height,
-            seed=prep.get("seed"),
-            images_count=int(prep.get("images_count", 1)),
-            lora_filename=prep.get("lora_s3_key"),
-        )
-
-        # 6) Trigger EF complete via existing webhook handler
-        from lib.webhook_handler import handle_webhook
-        artifacts_payload = {
-            "user_id": user_id,
-            "job_id": job_id,
-            "artifacts": {
-                "web": [],
-                "orig": [],
-            }
-        }
-        # The existing process_results uploads but returns URLs; we just notify EF to scan/persist
-        handle_webhook(artifacts_payload)
-
-        return {"status": "accepted", "job_id": job_id}
-    else:
-        workflow_name = request_data.get("workflow_name", "default_workflow")
-        payload = {
-            "user_id": user_id,
-            "job_id": job_id,
-            "workflow_name": workflow_name,
-            "parameters": parameters,
-        }
-
-    try:
-        try:
-            from lib.comfy_submission import submit_to_comfyui_api_async as _submit_async
-            _submit_async(payload)
-        except Exception:
-            submit_to_comfyui_api_async(payload)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Submission error: {e}")
-
-    # GPU priority order using class methods (renamed for clarity)
-    gpu_classes = [
-        ("H100", Fast),
-        ("A10G", Slow),
-    ]
-    
+    # Spawn on available GPU class
+    gpu_classes = [("H100", Fast), ("A10G", Slow)]
     for gpu_type, gpu_class in gpu_classes:
         try:
-            # Submit directly and let Modal queue if GPU not immediately free
             gpu = gpu_class()
-            request_payload = {**request_data, "gpu_type": gpu_type}
-            handle = gpu.run_inference.spawn(request_payload)
+            payload = {
+                "user_id": user_id,
+                "job_id": job_id,
+                "prepared": prepared,
+                "params": params,
+                "gpu_type": gpu_type,
+            }
+            handle = gpu.run_inference.spawn(payload)
             return {
-                "success": True,
+                "status": "accepted",
                 "gpu_type": gpu_type,
                 "job_handle": str(handle),
-                "message": f"Training submitted to provider on {gpu_type}. It will start when capacity is available."
+                "job_id": job_id,
             }
         except Exception as e:
             print(f"Spawn failed for {gpu_type}: {e}. Trying next class...")
             continue
 
-    raise Exception("Submission failed for all GPU classes")
+    raise HTTPException(status_code=503, detail="Submission failed for all GPU classes")
 
 
 # Webhook endpoint for comfyui-api completion callbacks
@@ -756,7 +573,8 @@ def api_endpoint(request_data: Dict[str, Any]):
         "fastapi==0.115.4",
         "boto3>=1.34.0",
         "pillow>=10.3.0",
-        "websockets>=12.0"
+        "websockets>=12.0",
+        "requests>=2.32.0"
     ]),
     secrets=[aws_secret, inference_secret]
 )
@@ -816,6 +634,7 @@ def webhook_endpoint(payload: Dict[str, Any]):
         "python-dotenv>=1.0.0"
     ]),
     scaledown_window=300,
+    timeout=720,
 )
 @modal.concurrent(max_inputs=600, target_inputs=480)
 @modal.asgi_app()
@@ -910,12 +729,13 @@ def progress():
 
 @app.function(
     gpu="H100",  # Cost-effective for UI development A10G
-    volumes={**user_images_mount, MODELS_PATH: models_volume},
-    max_containers=500,
-    timeout=3600
+    image=cuda_image,
+    volumes={**user_images_mount, **workflows_mount, MODELS_PATH: models_volume},
+    max_containers=1,
+    timeout=1300
 )
 @modal.concurrent(max_inputs=4, target_inputs=4)
-@modal.web_server(8000, startup_timeout=60)
+@modal.web_server(8000, startup_timeout=120)
 def dev_server():
     """Interactive ComfyUI development server for workflow creation."""
     print("🚀 Starting ComfyUI development server...")
@@ -986,7 +806,7 @@ def dev_server():
         'COMFYUI_LOWVRAM': 'false',
         'COMFYUI_NOVRAM': 'false'
     })
-    
+        
     # Launch ComfyUI UI server with SageAttention and H100 performance optimizations
     subprocess.Popen(
         "comfy launch -- --listen 0.0.0.0 --port 8000 --use-sage-attention --gpu-only --bf16-unet --bf16-vae --output-directory /data/outputs",
