@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Tuple
 import modal
 import modal.experimental
+from fastapi import Query
 
 sys.path.insert(0, "/root/lib")
 
@@ -207,45 +208,8 @@ def setup_model_paths_config():
         print(f"❌ Failed to copy model paths config: {str(e)}")
         return False
     
-    # Verify models are accessible
-    if os.path.exists("/models"):
-        print("🔍 Available models in /models:")
-        import subprocess
-        
-        print("\n📁 Checking /models/unet:")
-        subprocess.run("find /models/unet -name '*wan*' -type f 2>/dev/null || echo 'No flux models found in unet'", shell=True)
-        
-        print("\n📁 Checking /models/clip:")
-        subprocess.run("find /models/clip -name '*.safetensors' -type f 2>/dev/null | head -5", shell=True)
-        
-        print("\n📁 Checking /models/vae:")
-        subprocess.run("find /models/vae -name '*.safetensors' -type f 2>/dev/null | head -3", shell=True)
-        
-        print("\n📁 Checking /models/loras:")
-        subprocess.run("find /models/loras -name '*.safetensors' -type f 2>/dev/null | head -3", shell=True)
-        
-        # Check essential models
-        essential_models = [
-            ("/models/unet/wan2.1_t2v_14B_fp16.safetensors", "WAN2.1 T2V 14B"),
-            ("/models/clip/umt5_xxl_fp16.safetensors", "UMT5 XXL"),
-            ("/models/vae/wan_2.1_vae.safetensors", "WAN2.1 VAE"),
-        ]
-        
-        print("\n🔍 Model availability check:")
-        for model_path, name in essential_models:
-            if os.path.exists(model_path):
-                if os.path.isfile(model_path):
-                    size_gb = os.path.getsize(model_path) / (1024*1024*1024)
-                    print(f"✅ {name}: {size_gb:.1f}GB")
-                else:
-                    print(f"✅ {name}: Available")
-            else:
-                print(f"⚠️ {name}: Not found")
-        
-        print("✅ ComfyUI configured to use /models volume via extra_model_paths.yaml")
-        
-    else:
-        print("⚠️ /models directory not found")
+    # Models will be discovered by ComfyUI during initialization
+    print("✅ ComfyUI configured to use /models volume via extra_model_paths.yaml")
     
     return True
 
@@ -256,7 +220,10 @@ def _launch_inference_runtime(port: int) -> None:
     if not setup_model_paths_config():
         raise RuntimeError("Failed to configure model paths")
     os.makedirs("/root/comfy/ComfyUI/models/loras", exist_ok=True)
-
+    
+    # LoRA models directory will be created and populated on-demand per job
+    
+    # Set up environment variables for performance optimization
     env = os.environ.copy()
     env.update({
         'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True,backend:cudaMallocAsync',
@@ -269,7 +236,8 @@ def _launch_inference_runtime(port: int) -> None:
         'COMFYUI_LOWVRAM': 'false',
         'COMFYUI_NOVRAM': 'false'
     })
-
+    
+    # Launch ComfyUI with optimized settings
     cmd = (
         f"comfy launch --background -- --port {port} --use-sage-attention --gpu-only "
         f"--bf16-unet --bf16-vae --output-directory /data/outputs"
@@ -277,7 +245,55 @@ def _launch_inference_runtime(port: int) -> None:
     subprocess.run(cmd, shell=True, check=True, env=env)
     print("✅ ComfyUI server running with SageAttention and performance optimizations")
 
+    # Setup comfyui-api compatibility and launch
     try:
+        # Some comfyui-api builds expect ComfyUI at /opt/ComfyUI. Our install lives at /root/comfy/ComfyUI.
+        # Provide both COMFY_HOME and a compatibility symlink so description scraping works.
+        try:
+            if os.path.exists("/root/comfy/ComfyUI") and not os.path.exists("/opt/ComfyUI"):
+                os.symlink("/root/comfy/ComfyUI", "/opt/ComfyUI")
+        except Exception:
+            pass
+
+        # Ensure /bin/sh understands 'source' by pointing it to bash (comfyui-api uses 'source' in its shell command)
+        try:
+            if os.path.exists("/bin/bash"):
+                import pathlib
+                sh_path = pathlib.Path("/bin/sh")
+                try:
+                    current = os.readlink(str(sh_path)) if sh_path.is_symlink() else ""
+                except OSError:
+                    current = ""
+                if "bash" not in current:
+                    subprocess.run("ln -sf /bin/bash /bin/sh", shell=True, check=False)
+        except Exception:
+            pass
+
+        # Provide minimal ai-dock compatibility shims expected by comfyui-api (no-op env + venv)
+        try:
+            os.makedirs("/opt/ai-dock/etc", exist_ok=True)
+            os.makedirs("/opt/ai-dock/bin", exist_ok=True)
+            os.makedirs("/opt/ai-dock/venvs/comfyui/bin", exist_ok=True)
+
+            env_sh = "/opt/ai-dock/etc/environment.sh"
+            venv_set = "/opt/ai-dock/bin/venv-set.sh"
+            activate = "/opt/ai-dock/venvs/comfyui/bin/activate"
+
+            if not os.path.exists(env_sh):
+                with open(env_sh, "w") as f:
+                    f.write("#!/bin/bash\n# ai-dock env shim\n")
+                subprocess.run(f"chmod +x {env_sh}", shell=True, check=False)
+            if not os.path.exists(venv_set):
+                with open(venv_set, "w") as f:
+                    f.write("#!/bin/bash\nexport COMFYUI_VENV=/opt/ai-dock/venvs/comfyui\n")
+                subprocess.run(f"chmod +x {venv_set}", shell=True, check=False)
+            if not os.path.exists(activate):
+                with open(activate, "w") as f:
+                    f.write("#!/bin/bash\n# no-op activate\n")
+                subprocess.run(f"chmod +x {activate}", shell=True, check=False)
+        except Exception:
+            pass
+
         api_env = os.environ.copy()
         # Explicitly configure comfyui-api per docs
         api_env.setdefault("COMFYUI_BASE_URL", f"http://127.0.0.1:{port}")  # for forks expecting base URL
@@ -285,16 +301,56 @@ def _launch_inference_runtime(port: int) -> None:
         api_env.setdefault("DIRECT_ADDRESS", "127.0.0.1")
         api_env.setdefault("HOST", "::")
         api_env.setdefault("PORT", "3000")                                  # wrapper port
+        api_env.setdefault("COMFY_HOME", "/root/comfy/ComfyUI")
+        # Disable comfyui-api's internal ComfyUI spawn (we already launched it)
+        # Use /bin/true so child_process.spawn has a valid file instead of empty string
+        api_env["CMD"] = "/bin/true"
+        
         for key in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "AWS_BUCKET"]:
             if key not in api_env and key in os.environ:
                 api_env[key] = os.environ[key]
+        
         # comfyui-api default wrapper port per docs is 3000
         print("🚀 Starting comfyui-api (expect default on http://127.0.0.1:3000) ...")
-        # Do not silence logs so we can see failures
-        subprocess.Popen("cd /root/comfyui-api && npm run start", shell=True, env=api_env)
+        
+        # Prefer running the built entry directly to avoid missing npm scripts
+        js_candidates = [
+            "/root/comfyui-api/dist/index.js",
+            "/root/comfyui-api/dist/server.js",
+            "/root/comfyui-api/build/index.js",
+            "/root/comfyui-api/build/server.js",
+            "/root/comfyui-api/index.js",
+        ]
+        ts_candidates = [
+            "/root/comfyui-api/src/index.ts",
+            "/root/comfyui-api/src/server.ts",
+        ]
+        start_cmd = None
+        
+        for entry in js_candidates:
+            if os.path.exists(entry):
+                start_cmd = f"node {entry}"
+                break
+        
+        if start_cmd is None:
+            for entry in ts_candidates:
+                if os.path.exists(entry):
+                    # Run TypeScript entry with tsx via npx to avoid depending on package.json scripts
+                    start_cmd = f"npx --yes tsx {entry}"
+                    break
+        
+        if start_cmd is None:
+            # Fail fast with a clear message; do not rely on npm scripts that don't exist
+            raise RuntimeError(
+                "comfyui-api entry not found. Tried JS: dist/index.js, dist/server.js, build/index.js, build/server.js, "
+                "index.js and TS: src/index.ts, src/server.ts under /root/comfyui-api."
+            )
+        
+        subprocess.Popen(start_cmd, shell=True, env=api_env)
 
-        # Robust warmup: wait for comfyui-api to accept connections (max ~30s)
+        # Quick warmup: wait for comfyui-api to accept connections (max ~10s)
         import urllib.request as _rq, urllib.error as _err
+        
         # Probe common ports: 3000 (wrapper), 9000 (older), configurable via COMFY_API_BASE
         probe_ports = [
             os.environ.get("COMFY_API_BASE", "http://127.0.0.1:3000").rstrip("/"),
@@ -302,26 +358,53 @@ def _launch_inference_runtime(port: int) -> None:
             "http://127.0.0.1:9000",
         ]
         ready = False
-        for _ in range(60):
+        
+        for _ in range(10):  # ~10s max with faster individual probes
             for base in probe_ports:
                 try:
-                    _rq.urlopen(base + "/", timeout=0.5)
-                    os.environ["COMFY_API_BASE"] = base
-                    print(f"✅ comfyui-api is accepting connections at {base}")
-                    ready = True
-                    break
+                    # Prefer "ready"/"health" when available
+                    resp = _rq.urlopen(base + "/ready", timeout=1.0)
+                    if getattr(resp, "status", 200) == 200:
+                        os.environ["COMFY_API_BASE"] = base
+                        ready = True
+                        break
                 except Exception:
-                    continue
+                    try:
+                        resp2 = _rq.urlopen(base + "/health", timeout=1.0)
+                        if getattr(resp2, "status", 200) == 200:
+                            os.environ["COMFY_API_BASE"] = base
+                            ready = True
+                            break
+                    except Exception:
+                        try:
+                            # Fall back to root: 404/405 means server is up
+                            _rq.urlopen(base + "/", timeout=1.0)
+                            os.environ["COMFY_API_BASE"] = base
+                            ready = True
+                            break
+                        except _err.HTTPError as he:
+                            if he.code in (404, 405):
+                                os.environ["COMFY_API_BASE"] = base
+                                ready = True
+                                break
+                        except Exception:
+                            continue
+                if ready:
+                    break
+        
             if ready:
+                print(f"✅ comfyui-api is up at {os.environ.get('COMFY_API_BASE')}")
                 break
-            time.sleep(0.5)
+            time.sleep(1.0)
+        
         else:
             print("⚠️ comfyui-api did not become ready within timeout; will rely on submit-side retries")
+    
     except Exception as e:
         print(f"❌ Failed to start comfyui-api: {e}")
 
+    # Warmup both ComfyUI and comfyui-api
     try:
-        # Warmup
         import urllib.request as _rq
         _rq.urlopen(f"http://127.0.0.1:{port}/system_stats", timeout=3)
         api_base = os.environ.get("COMFY_API_BASE", "http://127.0.0.1:3000")
@@ -330,10 +413,9 @@ def _launch_inference_runtime(port: int) -> None:
         pass
 
 
-# Shared base with all inference helpers so multiple GPU classes can reuse logic
-
 def poll_server_health(port: int) -> None:
     import socket, urllib.request, urllib.error
+    
     try:
         req = urllib.request.Request(f"http://127.0.0.1:{port}/system_stats")
         urllib.request.urlopen(req, timeout=5)
@@ -342,28 +424,7 @@ def poll_server_health(port: int) -> None:
         print(f"❌ Server health check failed: {str(e)}")
         modal.experimental.stop_fetching_inputs()
         raise Exception("ComfyUI server is not healthy, stopping container")
-
- 
-
-def submit_to_comfyui_api_async(payload: Dict[str, Any]) -> None:
-    import threading, json as _json, urllib.request
-    def _submit():
-        try:
-            payload_with_hook = dict(payload)
-            webhook_url = os.environ.get("WEBHOOK_URL")
-            if webhook_url:
-                payload_with_hook["webhook_url"] = webhook_url
-            user_id = payload.get("user_id", "unknown"); job_id = payload.get("job_id", "job")
-            payload_with_hook.setdefault("s3_prefix", f"user-images/{user_id}/inference/{job_id}/")
-            base_url = os.environ.get("COMFY_API_BASE", "http://127.0.0.1:9000")
-            route = os.environ.get("COMFY_WORKFLOW_ENDPOINT", "/workflows/image_default/run")
-            url = base_url.rstrip("/") + "/" + route.lstrip("/")
-            req = urllib.request.Request(url=url, data=_json.dumps(payload_with_hook).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
-            urllib.request.urlopen(req, timeout=10)
-            print(f"📨 Submitted job to comfyui-api: {job_id}")
-        except Exception as e:
-            print(f"❌ comfyui-api submission failed: {e}")
-    threading.Thread(target=_submit, daemon=True).start()
+    
 
 def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
     import sys; sys.path.append("/root")
@@ -371,14 +432,18 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
     tracker = get_job_tracker()
     job_id = input_data.get("job_id") or str(uuid.uuid4())
     user_id = input_data.get("user_id", "unknown")
+    
     try:
         tracker.create_job(input_data, job_id)
         tracker.mark_processing(job_id)
+        
         print(f"🎯 Starting generation job: {job_id}")
+        
         poll_server_health(PORT)
 
         # Expect prepared payload from EF
         prepared = input_data.get("prepared")
+        
         if not prepared:
             raise RuntimeError("Missing 'prepared' payload from inference-create EF")
 
@@ -386,11 +451,48 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         from lib.workflow_loader import load_workflow_from_s3
         wf_key = prepared.get("workflow") or "WAN2.1.json"
         wf = load_workflow_from_s3(wf_key)
+        
         from lib.workflow_patcher import compute_dimensions, patch_workflow
         p = input_data.get("params", {})
         width, height = compute_dimensions(p.get("quality", "1K"), p.get("aspect_ratio", "1:1"))
-        # Prefer character LoRA; if absent, fall back to style LoRA (workflows may only have one loader)
-        lora_filename = prepared.get("character_lora") or prepared.get("style_lora")
+        
+        # Character/style LoRAs are absolute paths under /data from EF; link basenames into models/loras
+        char_lora = prepared.get("character_lora")
+        style_lora = prepared.get("style_lora")
+        
+        def _link_lora(abs_path: str | None) -> str | None:
+            if not abs_path:
+                return None
+            try:
+                from pathlib import Path as _P
+                import shutil as _sh
+                p = _P(abs_path)
+        
+                if not p.exists():
+                    return None
+        
+                dest_dir = _P("/root/comfy/ComfyUI/models/loras")
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest = dest_dir / p.name
+        
+                try:
+                    if dest.exists() or dest.is_symlink():
+                        dest.unlink()
+                except Exception:
+                    pass
+                try:
+                    dest.symlink_to(p)
+                except Exception:
+                    _sh.copy2(str(p), str(dest))
+                return p.name
+        
+            except Exception as _e:
+                print(f"⚠️ LoRA link failed: {_e}")
+                return None
+        
+        char_name = _link_lora(char_lora)
+        style_name = _link_lora(style_lora)
+
         patched = patch_workflow(
             wf,
             prompt=prepared.get("prompt", ""),
@@ -399,7 +501,9 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             height=height,
             seed=p.get("seed"),
             images_count=int(p.get("nb_takes", 1)),
-            lora_filename=lora_filename,
+            lora_filename=None,
+            character_lora=char_name,
+            style_lora=style_name,
             bypass_nodes=prepared.get("bypass_nodes"),
         )
 
@@ -407,58 +511,134 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         try:
             import threading
             from lib.ws_preview_relay import start_relay
+        
             client_id = str(uuid.uuid4())
             base = os.environ.get("PROGRESS_WS_URL")
+        
             if base:
                 progress_ws_url = base.replace("{job_id}", job_id) if "{job_id}" in base else base.rstrip("/") + f"/ws/broadcast/{job_id}"
                 comfy_ws_url = f"ws://127.0.0.1:{PORT}/ws?clientId={client_id}"
                 threading.Thread(target=start_relay, args=(progress_ws_url, comfy_ws_url, job_id), daemon=True).start()
+        
         except Exception as e:
             print(f"⚠️ Progress relay not started: {e}")
 
-        # 4) Submit to comfyui-api generic endpoint for async execution
+        # 4) Submit to comfyui-api /prompt endpoint for execution
         import urllib.request, urllib.error, time as _time
-        # autodetect port: prefer env, else 3000 (wrapper default), else 9000
+        
+        # autodetect port: prefer env, else 3000 (wrapper default)
         api_base = os.environ.get("COMFY_API_BASE") or "http://127.0.0.1:3000"
-        url = api_base.rstrip("/") + "/workflows/run"
+        # Use explicit override only if valid (/prompt or /workflow/*); else force /prompt
+        _env_route = os.environ.get("COMFY_WORKFLOW_ENDPOINT")
+        route = _env_route if (_env_route == "/prompt" or (_env_route or "").startswith("/workflow/")) else "/prompt"
+        submit_paths = [route]
         webhook_url = os.environ.get("WEBHOOK_URL")
+        webhook_secret = os.environ.get("WEBHOOK_SECRET")
+        
+        # Map to comfyui-api /prompt schema
         body = {
-            "workflow": patched,
-            "client_id": client_id,
-            "s3_prefix": f"user-images/{user_id}/inference/{job_id}/",
+            "id": job_id,
+            "prompt": patched,
         }
+        
         if webhook_url:
-            body["webhook_url"] = webhook_url
-        # Ensure comfyui-api is ready (avoid Connection refused on fast boots)
-        for _i in range(60):  # up to ~30s
+            # Append secret parameter for authentication
+            if webhook_secret:
+                separator = "&" if "?" in webhook_url else "?"
+                body["webhook"] = f"{webhook_url}{separator}secret={webhook_secret}"
+            else:
+                body["webhook"] = webhook_url
+        
+        bucket = os.environ.get("AWS_BUCKET")
+        
+        if bucket:
+            body["s3"] = {"bucket": bucket, "prefix": f"user-images/{user_id}/inference/{job_id}/", "async": True}
+        # Single readiness/health check before submit
+        try:
             try:
-                urllib.request.urlopen(api_base, timeout=0.5)
-                break
+                urllib.request.urlopen(api_base.rstrip('/') + "/ready", timeout=0.7)
             except Exception:
-                _time.sleep(0.5)
-        # Retry submit up to ~30s
+                try:
+                    urllib.request.urlopen(api_base.rstrip('/') + "/health", timeout=0.7)
+                except Exception:
+                    urllib.request.urlopen(api_base, timeout=0.7)
+        
+        except Exception:
+            pass
+
+        # No discovery: comfyui-api expects /prompt by default
+
         last_err = None
-        for _i in range(30):
-            try:
-                req = urllib.request.Request(url=url, data=json.dumps(body).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
-                urllib.request.urlopen(req, timeout=10)
-                last_err = None
+        success = False
+        
+        try:
+            print(f"➡️ comfyui-api submit route: {route}")
+        
+        except Exception:
+            pass
+        
+        for path in submit_paths:
+            if not path:
+                continue
+        
+            url = api_base.rstrip("/") + path
+        
+            # Short, targeted retries for connection refused (server still booting)
+            for attempt in range(6):  # ~6s total
+                try:
+                    req = urllib.request.Request(
+                        url=url,
+                        data=json.dumps(body).encode("utf-8"),
+                        headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {os.environ.get('COMFY_API_KEY')}"} if os.environ.get('COMFY_API_KEY') else {})},
+                        method="POST",
+                    )
+                    urllib.request.urlopen(req, timeout=10)
+                    print(f"📨 Submitted job to comfyui-api endpoint: {path}")
+        
+                    os.environ["COMFY_SUBMIT_PATH"] = path  # cache for subsequent jobs
+        
+                    success = True
+                    break
+        
+                except urllib.error.HTTPError as he:  # type: ignore[attr-defined]
+                    if he.code == 404:
+                        last_err = he
+                        break  # try next path
+                    else:
+                        last_err = he
+                        break
+        
+                except urllib.error.URLError as ue:  # connection refused case
+                    last_err = ue
+        
+                    if getattr(ue.reason, 'errno', None) in (111,):
+                        _time.sleep(1.0)
+                        continue
+                    break
+        
+                except Exception as e:
+                    last_err = e
+                    break
+        
+            if success:
                 break
-            except Exception as e:
-                last_err = e
-                _time.sleep(1.0)
-        if last_err:
-            raise RuntimeError(f"comfyui-api submit failed after retries: {last_err}")
+        
+        if not success:
+            raise RuntimeError(f"comfyui-api submit failed: {last_err}; candidates={submit_paths}")
 
         # 5) Return accepted; completion goes via webhook -> EF -> DB
         return {"status": "accepted", "job_id": job_id}
+    
     except Exception as e:
         print(f"❌ Generation failed: {str(e)}")
         try:
             tracker.mark_failed(job_id, str(e))
+    
         except Exception:
             pass
+    
         return {"job_id": job_id, "status": "failed", "error": str(e)}
+    
     finally:
         pass
 
@@ -530,9 +710,12 @@ def api_endpoint(request_data: Dict[str, Any]):
     from fastapi import HTTPException
 
     user_id = request_data.get("user_id")
+    
     if not user_id:
         raise HTTPException(status_code=400, detail="Missing required parameter: user_id")
+    
     prepared = request_data.get("prepared")
+    
     if not prepared:
         raise HTTPException(status_code=400, detail="Missing required parameter: prepared")
 
@@ -543,6 +726,7 @@ def api_endpoint(request_data: Dict[str, Any]):
 
     # Spawn on available GPU class
     gpu_classes = [("H100", Fast), ("A10G", Slow)]
+    
     for gpu_type, gpu_class in gpu_classes:
         try:
             gpu = gpu_class()
@@ -554,12 +738,14 @@ def api_endpoint(request_data: Dict[str, Any]):
                 "gpu_type": gpu_type,
             }
             handle = gpu.run_inference.spawn(payload)
+    
             return {
                 "status": "accepted",
                 "gpu_type": gpu_type,
                 "job_handle": str(handle),
                 "job_id": job_id,
             }
+    
         except Exception as e:
             print(f"Spawn failed for {gpu_type}: {e}. Trying next class...")
             continue
@@ -578,18 +764,34 @@ def api_endpoint(request_data: Dict[str, Any]):
     ]),
     secrets=[aws_secret, inference_secret]
 )
-@modal.fastapi_endpoint(method="POST", label="primeshot-webhook", requires_proxy_auth=True)
-def webhook_endpoint(payload: Dict[str, Any]):
+@modal.fastapi_endpoint(method="POST", label="primeshot-webhook")
+def webhook_endpoint(payload: Dict[str, Any], secret: str = Query(None)):
     """Accept comfyui-api webhook callbacks, extract S3 outputs, and return summary.
 
     Expected to receive user_id, job_id, and one or more output artifacts that
     include S3 keys/URLs for both web (1K) and orig (2K/4K) variants.
+    
+    Requires 'secret' query parameter matching WEBHOOK_SECRET.
     """
+    import os
+    
+    # Verify webhook authentication via query parameter
+    expected_secret = os.environ.get("WEBHOOK_SECRET")
+    if not expected_secret:
+        return {"status": "error", "error": "Webhook secret not configured"}
+    
+    if not secret:
+        return {"status": "error", "error": "Missing 'secret' query parameter"}
+    
+    if secret != expected_secret:
+        return {"status": "error", "error": "Invalid webhook secret"}
+    
     from lib.webhook_handler import handle_webhook
     from lib.s3_artifacts import find_s3_entries, partition_artifacts
 
     try:
         result = handle_webhook(payload)
+    
     except Exception as e:
         return {"status": "error", "error": str(e), "received": payload}
 
@@ -597,28 +799,35 @@ def webhook_endpoint(payload: Dict[str, Any]):
     try:
         import asyncio
         import websockets
+    
         async def _broadcast():
             base = os.environ.get("PROGRESS_WS_URL")
             if not base:
                 return
+    
             job_id = result.get("job_id") or "unknown"
+    
             # Allow either full URL with {job_id} placeholder or base
             if "{job_id}" in base:
                 ws_url = base.replace("{job_id}", job_id)
             else:
                 ws_url = base.rstrip("/") + f"/ws/broadcast/{job_id}"
+    
             msg = {
                 "type": "inference_complete",
                 "user_id": result.get("user_id"),
                 "job_id": job_id,
                 "artifacts": result.get("artifacts"),
             }
+    
             try:
                 async with websockets.connect(ws_url, ping_interval=None) as ws:
                     await ws.send(json.dumps(msg))
+    
             except Exception as _e:
                 print(f"⚠️ WS broadcast failed: {_e}")
         asyncio.run(_broadcast())
+    
     except Exception as _wse:
         print(f"⚠️ WS broadcast error: {_wse}")
 
@@ -657,6 +866,7 @@ def progress():
     level = getattr(logging, log_level_name, logging.WARNING)
     logger = logging.getLogger("inference_ws")
     logger.setLevel(level)
+    
     if not logger.handlers:
         handler = logging.StreamHandler()
         handler.setLevel(level)
@@ -705,12 +915,14 @@ def progress():
             # Keep the connection open; listeners don't send messages
             while True:
                 await asyncio.sleep(60)
+    
         except WebSocketDisconnect:
             manager.disconnect(websocket)
 
     @web_app.websocket("/ws/broadcast/{job_id}")
     async def websocket_broadcast_endpoint(websocket: WebSocket, job_id: str):
         await websocket.accept()
+    
         try:
             while True:
                 data = await websocket.receive_text()
@@ -718,8 +930,10 @@ def progress():
                     # Ensure JSON payload
                     json.loads(data)
                     await manager.broadcast(job_id, data)
+    
                 except Exception as e:
                     logger.error(f"Invalid broadcast payload: {e}")
+    
         except WebSocketDisconnect:
             pass
 
@@ -782,6 +996,7 @@ def dev_server():
                         os.symlink(source_path, target_path)
                         linked_count += 1
                         print(f"🔗 Linked LoRA: {safe_filename}")
+    
                     except Exception as e:
                         print(f"⚠️ Failed to link {file}: {str(e)}")
         
@@ -806,7 +1021,7 @@ def dev_server():
         'COMFYUI_LOWVRAM': 'false',
         'COMFYUI_NOVRAM': 'false'
     })
-        
+    
     # Launch ComfyUI UI server with SageAttention and H100 performance optimizations
     subprocess.Popen(
         "comfy launch -- --listen 0.0.0.0 --port 8000 --use-sage-attention --gpu-only --bf16-unet --bf16-vae --output-directory /data/outputs",

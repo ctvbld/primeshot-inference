@@ -17,6 +17,7 @@ local_test.py
 
 # Models directory
 models/
+comfyui_api/
 
 # Python cache
 __pycache__/

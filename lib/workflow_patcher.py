@@ -23,6 +23,8 @@ def patch_workflow(
     seed: int | None,
     images_count: int,
     lora_filename: str | None = None,
+    character_lora: str | None = None,
+    style_lora: str | None = None,
     bypass_nodes: list[dict] | None = None,
 ) -> Dict[str, Any]:
     """Apply minimal patches to a ComfyUI workflow JSON.
@@ -34,6 +36,19 @@ def patch_workflow(
         for node_id, node in wf.items():
             if isinstance(node, dict) and node.get("_meta", {}).get("_ui_name") == node_label:
                 node.setdefault("inputs", {})[key] = value
+
+    def set_node_input_by_title(node_title: str, key: str, value: Any) -> None:
+        updated = False
+        for node_id, node in wf.items():
+            if not isinstance(node, dict):
+                continue
+            meta = node.get("_meta", {})
+            if meta.get("title") == node_title:
+                node.setdefault("inputs", {})[key] = value
+                updated = True
+                print(f"✅ Updated {node_title} (node {node_id}) {key} = {value}")
+        if not updated:
+            print(f"⚠️ Node with title '{node_title}' not found for {key} = {value}")
 
     # Text encoders
     set_node_input("CLIPTextEncode", "text", prompt)
@@ -47,12 +62,53 @@ def patch_workflow(
     set_node_input("EmptyLatentImage", "width", int(width))
     set_node_input("EmptyLatentImage", "height", int(height))
 
-    # Optional LoRA file name
-    if lora_filename:
+    # LoRA injection
+    # Priority: explicit character/style targets by title; fallback to generic LoraLoader by _ui_name
+    if character_lora:
+        # Current workflow uses title "CharacterLoRA" for character loader
+        set_node_input_by_title("CharacterLoRA", "lora_name", character_lora)
+    if style_lora:
+        # Current workflow uses title "StyleLoRA" for optional style loader
+        set_node_input_by_title("StyleLoRA", "lora_name", style_lora)
+    if lora_filename and not character_lora and not style_lora:
+        # Back-compat single lora case
         set_node_input("LoraLoader", "lora_name", lora_filename)
 
     # NB takes: prefer batch_size if present; otherwise caller will loop
     set_node_input("KSampler", "batch_size", int(images_count))
+
+    # Auto-bypass StyleLoRA if no style_lora is provided
+    if not style_lora:
+        print("🔄 No style_lora provided, auto-bypassing StyleLoRA node...")
+        # Bypass the StyleLoRA node by forwarding its model and clip inputs
+        # This requires two operations since LoRA loaders have two outputs
+        auto_bypass_specs = [
+            {
+                "ui_name": "StyleLoRA",
+                "passthrough_input_key": "model",
+                "output_index": 0,  # model output
+                "remove": False
+            },
+            {
+                "ui_name": "StyleLoRA", 
+                "passthrough_input_key": "clip",
+                "output_index": 1,  # clip output
+                "remove": True  # Remove node after both outputs are rewired
+            }
+        ]
+        
+        for spec in auto_bypass_specs:
+            try:
+                wf = bypass_node(
+                    wf,
+                    target_ui_name=spec["ui_name"],
+                    passthrough_input_key=spec["passthrough_input_key"],
+                    output_index=spec["output_index"],
+                    remove=spec["remove"],
+                )
+            except Exception:
+                # Non-fatal: continue if StyleLoRA node doesn't exist in workflow
+                pass
 
     # Optional bypass rewiring for nodes specified by UI name
     if bypass_nodes:
@@ -97,10 +153,64 @@ def bypass_node(
 ) -> Dict[str, Any]:
     """Bypass a node by UI name by rewiring all consumers to the node's passthrough input.
 
-    - target_ui_name: UI name shown in ComfyUI (stored in _meta._ui_name)
-    - passthrough_input_key: which input of the target node should be forwarded
-    - output_index: which output slot of the target node to replace (default 0)
-    - remove: if True, delete the target node after rewiring
+    This function allows you to "skip" a node in the workflow by redirecting all connections
+    that point to the target node to instead point to one of the target node's inputs.
+
+    Args:
+        workflow: The ComfyUI workflow JSON dictionary
+        target_ui_name: UI name shown in ComfyUI (stored in _meta._ui_name)
+        passthrough_input_key: which input of the target node should be forwarded
+        output_index: which output slot of the target node to replace (default 0)
+        remove: if True, delete the target node after rewiring
+
+    HOW TO GET NODE UI NAMES FROM COMFYUI:
+    1. Open your workflow in ComfyUI
+    2. Go to Settings (gear icon) → Enable "Developer mode" 
+    3. Right-click in the workflow area → "Save (API Format)"
+    4. Save as JSON file
+    5. Open the JSON file and look for "_meta" sections:
+       {
+         "1": {
+           "_meta": {
+             "_ui_name": "CharacterLoRA",     ← This is what you use for target_ui_name
+             "title": "Load LoRA"
+           },
+           "inputs": {
+             "model": ["2", 0],              ← This shows input connections
+             "clip": ["2", 1],
+             "lora_name": "character.safetensors"
+           }
+         }
+       }
+
+    HANDLING MULTI-OUTPUT NODES (e.g., LoRA Loaders):
+    LoRA loaders typically have 2 outputs: [0]=model, [1]=clip
+    To completely bypass a LoRA loader, you need TWO bypass operations:
+
+    Example bypass_nodes array for skipping "StyleLoRA":
+    [
+        {
+            "ui_name": "StyleLoRA",
+            "passthrough_input_key": "model",    ← Forward the model input
+            "output_index": 0,                   ← For output slot 0 (model)
+            "remove": false                      ← Don't delete yet
+        },
+        {
+            "ui_name": "StyleLoRA", 
+            "passthrough_input_key": "clip",     ← Forward the clip input
+            "output_index": 1,                   ← For output slot 1 (clip)
+            "remove": true                       ← Delete node after this operation
+        }
+    ]
+
+    COMMON USE CASES:
+    - Skip optional LoRA loaders when no LoRA is specified
+    - Bypass style nodes for certain generation modes
+    - Remove processing nodes for faster inference
+    - Disable certain effects conditionally
+
+    NOTE: The order of bypass operations matters for multi-output nodes.
+    Always set remove=true only on the LAST operation for the same node.
     """
     ids = _find_node_ids_by_ui_name(workflow, target_ui_name)
     if not ids:
