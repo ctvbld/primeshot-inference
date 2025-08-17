@@ -80,6 +80,7 @@ def patch_workflow(
     # Auto-bypass StyleLoRA if no style_lora is provided
     if not style_lora:
         print("🔄 No style_lora provided, auto-bypassing StyleLoRA node...")
+        
         # Bypass the StyleLoRA node by forwarding its model and clip inputs
         # This requires two operations since LoRA loaders have two outputs
         auto_bypass_specs = [
@@ -97,6 +98,7 @@ def patch_workflow(
             }
         ]
         
+        bypass_success = False
         for spec in auto_bypass_specs:
             try:
                 wf = bypass_node(
@@ -106,9 +108,15 @@ def patch_workflow(
                     output_index=spec["output_index"],
                     remove=spec["remove"],
                 )
-            except Exception:
-                # Non-fatal: continue if StyleLoRA node doesn't exist in workflow
-                pass
+                print(f"✅ Bypassed StyleLoRA output {spec['output_index']} -> {spec['passthrough_input_key']}")
+                bypass_success = True
+            except Exception as e:
+                print(f"⚠️ Failed to bypass StyleLoRA: {e}")
+        
+        # If bypass failed, at least clear the problematic lora_name
+        if not bypass_success:
+            print("🔧 Bypass failed, attempting to clear StyleLoRA lora_name...")
+            set_node_input_by_title("StyleLoRA", "lora_name", "None")
 
     # Optional bypass rewiring for nodes specified by UI name
     if bypass_nodes:
@@ -135,10 +143,13 @@ def patch_workflow(
 
 
 def _find_node_ids_by_ui_name(workflow: Dict[str, Any], ui_name: str) -> list[str]:
+    """Find node IDs that match the given UI name or title."""
     ids: list[str] = []
     for node_id, node in workflow.items():
         if isinstance(node, dict):
-            name = node.get("_meta", {}).get("_ui_name")
+            meta = node.get("_meta", {})
+            # Check both _ui_name and title fields
+            name = meta.get("_ui_name") or meta.get("title")
             if name == ui_name:
                 ids.append(node_id)
     return ids
@@ -214,31 +225,43 @@ def bypass_node(
     """
     ids = _find_node_ids_by_ui_name(workflow, target_ui_name)
     if not ids:
+        print(f"🔍 No nodes found with ui_name/title: {target_ui_name}")
         return workflow
 
     target_id = ids[0]
     target = workflow.get(target_id)
     if not isinstance(target, dict):
+        print(f"🔍 Target node {target_id} is not a dict")
         return workflow
 
     passthrough_value = target.get("inputs", {}).get(passthrough_input_key)
     if passthrough_value is None:
+        print(f"🔍 No passthrough value found for {passthrough_input_key} in node {target_id}")
         return workflow
 
+    print(f"🔧 Bypassing {target_ui_name} (node {target_id}): {passthrough_input_key} = {passthrough_value}")
+
+    # Count rewired connections
+    rewired_count = 0
     # Rewire all inputs pointing to [target_id, output_index]
-    for node in workflow.values():
+    for node_id, node in workflow.items():
         if not isinstance(node, dict):
             continue
         inputs = node.get("inputs", {})
         for k, v in list(inputs.items()):
             if isinstance(v, list) and len(v) == 2 and v[0] == target_id and (output_index is None or v[1] == output_index):
                 inputs[k] = passthrough_value
+                rewired_count += 1
+                print(f"🔄 Rewired {node_id}.{k}: [{target_id}, {output_index}] -> {passthrough_value}")
+
+    print(f"🔧 Rewired {rewired_count} connections for {target_ui_name}")
 
     if remove:
         try:
             del workflow[target_id]
-        except Exception:
-            pass
+            print(f"🗑️ Removed node {target_id} ({target_ui_name})")
+        except Exception as e:
+            print(f"⚠️ Failed to remove node {target_id}: {e}")
 
     return workflow
 

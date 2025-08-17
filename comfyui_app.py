@@ -24,6 +24,7 @@ app = modal.App(name="primeshot-inference")
 models_volume = modal.Volume.from_name("models-vol", create_if_missing=True)
 aws_secret = modal.Secret.from_name("aws-secret")
 inference_secret = modal.Secret.from_name("inference-secret")
+supabase_secret = modal.Secret.from_name("supabase-secret")
 
 # Define paths
 MODELS_PATH = "/models"
@@ -120,7 +121,7 @@ cuda_image = (
     .pip_install("xformers>=0.0.28")  # Latest xformers for attention optimizations
     .pip_install("websockets>=12.0")  # For ComfyUI WS preview/progress relay
     # Common dependencies required by various custom nodes and S3 access
-    .pip_install("diffusers>=0.30.0", "transformers>=4.42.0", "accelerate>=0.30.0", "safetensors>=0.4.3", "boto3>=1.34.0")
+    .pip_install("diffusers>=0.30.0", "transformers>=4.42.0", "accelerate>=0.30.0", "safetensors>=0.4.3", "boto3>=1.34.0", "psutil>=6.0.0")
     .run_commands(  # install ComfyUI with NVIDIA support
         "comfy --skip-prompt install --fast-deps --nvidia"
     )
@@ -302,13 +303,22 @@ def _launch_inference_runtime(port: int) -> None:
         api_env.setdefault("HOST", "::")
         api_env.setdefault("PORT", "3000")                                  # wrapper port
         api_env.setdefault("COMFY_HOME", "/root/comfy/ComfyUI")
+        # Set OUTPUT_DIR to match where ComfyUI is actually saving files
+        api_env["OUTPUT_DIR"] = "/data/outputs"
         # Disable comfyui-api's internal ComfyUI spawn (we already launched it)
         # Use /bin/true so child_process.spawn has a valid file instead of empty string
         api_env["CMD"] = "/bin/true"
         
-        for key in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "AWS_BUCKET"]:
+        # Set all required AWS environment variables for S3 functionality  
+        # According to comfyui-api docs: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
+        aws_vars = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "AWS_DEFAULT_REGION"]
+        for key in aws_vars:
             if key not in api_env and key in os.environ:
                 api_env[key] = os.environ[key]
+        
+        # Also set AWS_BUCKET for our S3 configuration
+        if "AWS_BUCKET" in os.environ:
+            api_env["AWS_BUCKET"] = os.environ["AWS_BUCKET"]
         
         # comfyui-api default wrapper port per docs is 3000
         print("🚀 Starting comfyui-api (expect default on http://127.0.0.1:3000) ...")
@@ -346,7 +356,67 @@ def _launch_inference_runtime(port: int) -> None:
                 "index.js and TS: src/index.ts, src/server.ts under /root/comfyui-api."
             )
         
-        subprocess.Popen(start_cmd, shell=True, env=api_env)
+        # Start comfyui-api with more logging
+        print(f"🚀 Starting: {start_cmd}")
+        print(f"🔧 Environment: PORT={api_env.get('PORT')}, HOST={api_env.get('HOST')}, CMD={api_env.get('CMD')}")
+        
+        # Debug AWS credentials being passed to comfyui-api
+        aws_keys = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION', 'AWS_DEFAULT_REGION', 'AWS_BUCKET']
+        aws_env_debug = {key: ('***HIDDEN***' if 'SECRET' in key else api_env.get(key, 'NOT_SET')) for key in aws_keys}
+        print(f"🔧 AWS Environment: {aws_env_debug}")
+        
+        # Create a log file for comfyui-api output
+        log_file_path = "/tmp/comfyui_api.log"
+        
+        process = subprocess.Popen(
+            start_cmd, 
+            shell=True, 
+            env=api_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            bufsize=1
+        )
+        
+        # Start a thread to capture and log comfyui-api output in real-time
+        import threading
+        import time
+        
+        def log_output():
+            try:
+                with open(log_file_path, 'w') as log_file:
+                    log_file.write("=== ComfyUI-API Startup Log ===\n")
+                    log_file.flush()
+                    
+                    for line in iter(process.stdout.readline, ''):
+                        if line:
+                            # Write to log file
+                            log_file.write(line)
+                            log_file.flush()
+                            
+                            # Also print to Modal logs with prefix
+                            print(f"[comfyui-api] {line.strip()}")
+                            
+                            # Break if process has ended
+                            if process.poll() is not None:
+                                break
+            except Exception as e:
+                print(f"⚠️ Error capturing comfyui-api logs: {e}")
+        
+        log_thread = threading.Thread(target=log_output, daemon=True)
+        log_thread.start()
+        
+        # Give it a moment and check if process is still alive
+        time.sleep(2)
+        
+        if process.poll() is not None:
+            # Process has already exited
+            stdout, _ = process.communicate()
+            print(f"❌ comfyui-api exited early with code {process.returncode}")
+            print(f"Output: {stdout}")
+            raise RuntimeError(f"comfyui-api failed to start: exit code {process.returncode}")
+        else:
+            print(f"✅ comfyui-api process started (PID: {process.pid})")
 
         # Quick warmup: wait for comfyui-api to accept connections (max ~10s)
         import urllib.request as _rq, urllib.error as _err
@@ -428,6 +498,19 @@ def poll_server_health(port: int) -> None:
 
 def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
     import sys; sys.path.append("/root")
+    
+    # Choose Supabase creds based on env flag in input_data (same pattern as training)
+    env_tag = (input_data.get("env") or "dev").lower()
+    if env_tag not in {"dev", "prod"}:
+        env_tag = "prod"
+
+    # Override generic names so the rest of the code picks them up
+    os.environ["SUPABASE_URL"] = os.getenv(f"SUPABASE_URL_{env_tag.upper()}") or os.environ.get("SUPABASE_URL", "")
+    # Also switch service role key if provided
+    env_service_key = os.getenv(f"SUPABASE_SERVICE_ROLE_KEY_{env_tag.upper()}")
+    if env_service_key:
+        os.environ["SUPABASE_SERVICE_ROLE_KEY"] = env_service_key
+    
     from job_tracker import get_job_tracker
     tracker = get_job_tracker()
     job_id = input_data.get("job_id") or str(uuid.uuid4())
@@ -439,10 +522,51 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         
         print(f"🎯 Starting generation job: {job_id}")
         
+        # Update job status to 'running' via inference-start EF
+        try:
+            import urllib.request as _rq
+            import json
+            
+            supabase_url = os.environ.get('SUPABASE_URL')
+            service_role_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+            
+            if supabase_url and service_role_key:
+                start_url = f"{supabase_url}/functions/v1/inference-start"
+                start_body = {"job_id": job_id}
+                start_req = _rq.Request(
+                    url=start_url,
+                    data=json.dumps(start_body).encode('utf-8'),
+                    headers={
+                        'Authorization': f'Bearer {service_role_key}',
+                        'Content-Type': 'application/json',
+                        'apikey': service_role_key,
+                    },
+                    method='POST'
+                )
+                _rq.urlopen(start_req, timeout=10)
+                print(f"✅ Updated job {job_id} status to 'running'")
+            else:
+                print("⚠️ Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY; skipping status update")
+        except Exception as e:
+            print(f"⚠️ Failed to update job status to running: {e}")
+        
         poll_server_health(PORT)
 
         # Expect prepared payload from EF
         prepared = input_data.get("prepared")
+        
+        # 🔍 DETAILED LOGGING FOR DEBUGGING
+        print(f"🔍 === INFERENCE JOB {job_id} DETAILS ===")
+        print(f"📋 Input data keys: {list(input_data.keys())}")
+        print(f"👤 User ID: {user_id}")
+        print(f"🎭 Character ID: {input_data.get('character_id')}")
+        print(f"🎨 Style ID: {input_data.get('style_id')}")
+        print(f"⚙️ Environment: {env_tag}")
+        print(f"🌐 Supabase URL: {os.environ.get('SUPABASE_URL', 'NOT_SET')[:50]}...")
+        print(f"📦 Prepared payload: {'✅ Present' if prepared else '❌ Missing'}")
+        if prepared:
+            print(f"🔧 Prepared keys: {list(prepared.keys())}")
+        print(f"🔍 === END DETAILS ===")
         
         if not prepared:
             raise RuntimeError("Missing 'prepared' payload from inference-create EF")
@@ -524,10 +648,10 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             print(f"⚠️ Progress relay not started: {e}")
 
         # 4) Submit to comfyui-api /prompt endpoint for execution
-        import urllib.request, urllib.error, time as _time
+        import urllib.request, urllib.error
         
-        # autodetect port: prefer env, else 3000 (wrapper default)
-        api_base = os.environ.get("COMFY_API_BASE") or "http://127.0.0.1:3000"
+        # ComfyUI API always runs on port 3000
+        api_base = "http://127.0.0.1:3000"
         # Use explicit override only if valid (/prompt or /workflow/*); else force /prompt
         _env_route = os.environ.get("COMFY_WORKFLOW_ENDPOINT")
         route = _env_route if (_env_route == "/prompt" or (_env_route or "").startswith("/workflow/")) else "/prompt"
@@ -535,36 +659,181 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         webhook_url = os.environ.get("WEBHOOK_URL")
         webhook_secret = os.environ.get("WEBHOOK_SECRET")
         
+        # Get AWS bucket early since it's needed in job metadata
+        bucket = os.environ.get("AWS_BUCKET")
+        
+        # 🔍 API CALL LOGGING (without body - will log body details after it's created)
+        print(f"🌐 === COMFYUI API CALL SETUP ===")
+        print(f"🎯 API Base: {api_base}")
+        print(f"📍 Route: {route}")
+        print(f"🔗 Webhook URL: {webhook_url[:50] + '...' if webhook_url and len(webhook_url) > 50 else webhook_url}")
+        print(f"🔐 Webhook Secret: {'✅ Set' if webhook_secret else '❌ Missing'}")
+        print(f"🗄️ S3 Bucket: {'✅ Set' if bucket else '❌ Missing'}")
+        print(f"🌐 === END API SETUP ===")
+        
+        # Store enhanced job metadata for webhook retrieval and debugging
+        job_metadata = {
+            "user_id": user_id,
+            "character_id": input_data.get("character_id"),
+            "style_id": input_data.get("style_id"),
+            "workflow_key": wf_key,
+            "dimensions": f"{width}x{height}",
+            "nb_takes": int(p.get("nb_takes", 1)),
+            "quality": p.get("quality", "1K"),
+            "aspect_ratio": p.get("aspect_ratio", "1:1"),
+            "seed": p.get("seed"),
+            "character_lora": char_name,
+            "style_lora": style_name,
+            "api_base": api_base,
+            "webhook_url": webhook_url is not None,
+            "s3_configured": bucket is not None,
+            "started_at": time.time(),
+            "gpu_type": input_data.get("gpu_type", "unknown"),
+            "env": env_tag  # Store environment for webhook to use correct Supabase instance
+        }
+        
+        # Store in a simple in-memory cache (could use Redis in production)
+        if not hasattr(tracker, '_job_metadata'):
+            tracker._job_metadata = {}
+        tracker._job_metadata[job_id] = job_metadata
+        
+        print(f"🔍 Job metadata: {job_metadata}")
+        print(f"🌐 Environment for webhook: {env_tag}")
+        
         # Map to comfyui-api /prompt schema
         body = {
             "id": job_id,
+            "user_id": user_id,  # Include user_id for webhook
             "prompt": patched,
         }
         
-        if webhook_url:
-            # Append secret parameter for authentication
+        if bucket:
+            # Save originals to /orig/ directory - we'll manually call EF after getting S3 URLs
+            s3_config = {
+                "bucket": bucket, 
+                "prefix": f"user-images/{user_id}/inference/{job_id}/orig/", 
+                "async": False  # Upload to S3 synchronously, return S3 URLs in response
+            }
+            body["s3"] = s3_config
+            print(f"🔧 Using SYNCHRONOUS S3 mode - NO webhook in request")
+            print(f"🔧 ComfyUI API will upload to S3 and return URLs in response")
+        elif webhook_url:
+            # Only use webhook if no S3 config (fallback to async webhook mode)
             if webhook_secret:
                 separator = "&" if "?" in webhook_url else "?"
                 body["webhook"] = f"{webhook_url}{separator}secret={webhook_secret}"
             else:
                 body["webhook"] = webhook_url
+            print(f"🔧 Using ASYNC webhook mode - no S3 upload")
+            print(f"🔧 AWS Environment Check:")
+            print(f"  - AWS_ACCESS_KEY_ID: {'✅ Set' if os.environ.get('AWS_ACCESS_KEY_ID') else '❌ Missing'}")
+            print(f"  - AWS_SECRET_ACCESS_KEY: {'✅ Set' if os.environ.get('AWS_SECRET_ACCESS_KEY') else '❌ Missing'}")
+            print(f"  - AWS_REGION: {os.environ.get('AWS_REGION', 'NOT_SET')}")
+            print(f"  - AWS_DEFAULT_REGION: {os.environ.get('AWS_DEFAULT_REGION', 'NOT_SET')}")
+            print(f"  - AWS_BUCKET: {bucket}")
+            
+            # Test S3 connectivity to help debug ComfyUI API upload issues
+            print(f"🔧 Testing S3 connectivity for debugging:")
+            try:
+                import boto3
+                s3_client = boto3.client('s3')
+                
+                print(f"🔍 S3 Client Configuration:")
+                print(f"  - Region: {s3_client.meta.region_name}")
+                print(f"  - AWS Access Key ID: {os.environ.get('AWS_ACCESS_KEY_ID', 'NOT_SET')[:8]}...")
+                
+                # Test basic S3 access
+                bucket_response = s3_client.head_bucket(Bucket=bucket)
+                print(f"  ✅ S3 bucket '{bucket}' is accessible")
+                print(f"  📍 Bucket region: {bucket_response.get('ResponseMetadata', {}).get('HTTPHeaders', {}).get('x-amz-bucket-region', 'unknown')}")
+                
+                # Test if we can create the path structure by uploading a tiny test file
+                test_key = f"user-images/{user_id}/inference/{job_id}/debug_test_{int(time.time())}.txt"
+                test_content = f"Modal S3 test at {time.time()}"
+                
+                put_response = s3_client.put_object(
+                    Bucket=bucket,
+                    Key=test_key,
+                    Body=test_content.encode('utf-8'),
+                    ContentType='text/plain'
+                )
+                print(f"  ✅ PUT response: {put_response.get('ResponseMetadata', {}).get('HTTPStatusCode')}")
+                print(f"  📝 Uploaded test file: s3://{bucket}/{test_key}")
+                
+                # Verify the file actually exists by listing it
+                list_response = s3_client.list_objects_v2(
+                    Bucket=bucket, 
+                    Prefix=test_key,
+                    MaxKeys=1
+                )
+                if 'Contents' in list_response and list_response['Contents']:
+                    file_info = list_response['Contents'][0]
+                    print(f"  ✅ File verified in S3: {file_info['Key']} ({file_info['Size']} bytes)")
+                    print(f"  📅 Last modified: {file_info['LastModified']}")
+                else:
+                    print(f"  ❌ File NOT found in S3 after upload!")
+                    print(f"  🔍 List response: {list_response}")
+                
+                # Try to read it back
+                try:
+                    get_response = s3_client.get_object(Bucket=bucket, Key=test_key)
+                    content = get_response['Body'].read().decode('utf-8')
+                    print(f"  ✅ File content verified: '{content}'")
+                except Exception as get_e:
+                    print(f"  ❌ Failed to read back file: {get_e}")
+                
+                # Clean up test file
+                try:
+                    s3_client.delete_object(Bucket=bucket, Key=test_key)
+                    print(f"  🗑️ Cleaned up test file")
+                except Exception as del_e:
+                    print(f"  ⚠️ Failed to delete test file: {del_e}")
+                
+            except Exception as s3_e:
+                print(f"  ❌ S3 connectivity test failed: {s3_e}")
+                print(f"  🔍 This might be why ComfyUI API S3 upload is failing")
+                import traceback
+                print(f"  📊 Full traceback: {traceback.format_exc()}")
+            
+            # Also check if ComfyUI API can access these vars
+            print(f"🔧 ComfyUI API Environment Check (these vars need to be available to the subprocess):")
+            for key in ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION', 'AWS_DEFAULT_REGION', 'AWS_BUCKET']:
+                val = os.environ.get(key)
+                print(f"  - {key}: {'✅ Set' if val else '❌ Missing'}{' (first 8 chars: ' + val[:8] + '...)' if val and 'KEY' in key else ''}")
+        else:
+            print("⚠️ No AWS_BUCKET environment variable found - S3 uploads disabled")
         
-        bucket = os.environ.get("AWS_BUCKET")
+        # 🔍 FINAL BODY LOGGING - after all modifications
+        print(f"📊 === FINAL REQUEST BODY DETAILS ===")
+        print(f"📊 Body keys: {list(body.keys())}")
+        print(f"📏 Prompt size: {len(str(body.get('prompt', {})))} chars")
+        print(f"🆔 Job ID: {body.get('id')}")
+        print(f"👤 User ID in body: {body.get('user_id')}")
+        print(f"🔗 Webhook in body: {'✅ Set' if body.get('webhook') else '❌ Missing'}")
+        print(f"🗄️ S3 config in body: {'✅ Set' if body.get('s3') else '❌ Missing'}")
+        if body.get('s3'):
+            print(f"📁 S3 bucket: {body['s3'].get('bucket')}")
+            print(f"📂 S3 prefix: {body['s3'].get('prefix')}")
+        print(f"📊 === END FINAL BODY DETAILS ===")
         
-        if bucket:
-            body["s3"] = {"bucket": bucket, "prefix": f"user-images/{user_id}/inference/{job_id}/", "async": True}
         # Single readiness/health check before submit
         try:
             try:
-                urllib.request.urlopen(api_base.rstrip('/') + "/ready", timeout=0.7)
+                urllib.request.urlopen(api_base.rstrip('/') + "/ready", timeout=1.0)
+                print("✅ ComfyUI API ready check passed")
             except Exception:
                 try:
-                    urllib.request.urlopen(api_base.rstrip('/') + "/health", timeout=0.7)
+                    urllib.request.urlopen(api_base.rstrip('/') + "/health", timeout=1.0)
+                    print("✅ ComfyUI API health check passed")
                 except Exception:
-                    urllib.request.urlopen(api_base, timeout=0.7)
+                    urllib.request.urlopen(api_base, timeout=1.0)
+                    print("✅ ComfyUI API responded to root endpoint")
+            
+            # Small delay to ensure API is fully ready after probe
+            time.sleep(1.5)
         
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"⚠️ API readiness check failed: {e}, proceeding with retries")
 
         # No discovery: comfyui-api expects /prompt by default
 
@@ -583,8 +852,8 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         
             url = api_base.rstrip("/") + path
         
-            # Short, targeted retries for connection refused (server still booting)
-            for attempt in range(6):  # ~6s total
+            # Aggressive retries for connection refused (server still booting)
+            for attempt in range(10):  # ~15s total with backoff
                 try:
                     req = urllib.request.Request(
                         url=url,
@@ -592,10 +861,98 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                         headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {os.environ.get('COMFY_API_KEY')}"} if os.environ.get('COMFY_API_KEY') else {})},
                         method="POST",
                     )
-                    urllib.request.urlopen(req, timeout=10)
+                    response = urllib.request.urlopen(req, timeout=300)  # Longer timeout for S3 upload
+                    response_data = response.read().decode('utf-8')
+                    response_json = json.loads(response_data)
+                    
                     print(f"📨 Submitted job to comfyui-api endpoint: {path}")
+                    print(f"📨 ComfyUI API Response: {response_json}")
+                    
+                    # Check ComfyUI API logs for S3 errors
+                    print(f"🔍 Checking ComfyUI API logs for S3 upload errors:")
+                    try:
+                        recent_logs = comfy_api_logs[-30:]  # Last 30 log lines
+                        s3_error_found = False
+                        for log_line in recent_logs:
+                            if any(keyword in log_line.lower() for keyword in ['error uploading', 's3', 'upload', 'failed', 'error:']):
+                                print(f"  ⚠️ {log_line}")
+                                s3_error_found = True
+                        if not s3_error_found:
+                            print(f"  ✅ No S3 errors in recent logs")
+                    except Exception as log_e:
+                        print(f"  ⚠️ Could not check logs: {log_e}")
         
                     os.environ["COMFY_SUBMIT_PATH"] = path  # cache for subsequent jobs
+        
+                    # Process S3 URLs from synchronous response
+                    if response_json.get("images"):
+                        images = response_json["images"]
+                        print(f"🔍 Analyzing response images ({len(images)} total):")
+                        
+                        s3_urls = []
+                        base64_items = []
+                        
+                        for i, img in enumerate(images):
+                            if isinstance(img, str) and img.startswith("s3://"):
+                                s3_urls.append(img)
+                                print(f"  ✅ S3 URL {i+1}: {img}")
+                            else:
+                                base64_items.append(img)
+                                print(f"  ❌ Base64 data {i+1}: {len(str(img))} chars (S3 upload failed)")
+                        
+                        if s3_urls:
+                            print(f"✅ S3 upload successful! {len(s3_urls)} URLs received: {s3_urls}")
+                            
+                            # Call inference-complete Edge Function directly
+                            try:
+                                # Create artifacts in the expected format
+                                artifacts = {"orig": []}
+                                for s3_url in s3_urls:
+                                    if s3_url.startswith("s3://"):
+                                        # Parse s3://bucket/key
+                                        s3_parts = s3_url[5:].split("/", 1)
+                                        if len(s3_parts) == 2:
+                                            bucket_name, s3_key = s3_parts
+                                            artifacts["orig"].append({
+                                                "bucket": bucket_name,
+                                                "key": s3_key
+                                            })
+                                
+                                # Get environment for correct Supabase instance
+                                supabase_url = os.environ.get(f'SUPABASE_URL_{env_tag.upper()}') or os.environ.get('SUPABASE_URL')
+                                service_role_key = os.environ.get(f'SUPABASE_SERVICE_ROLE_KEY_{env_tag.upper()}') or os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+                                
+                                if supabase_url and service_role_key:
+                                    import requests
+                                    ef_url = f"{supabase_url}/functions/v1/inference-complete"
+                                    ef_headers = {
+                                        'Authorization': f'Bearer {service_role_key}',
+                                        'Content-Type': 'application/json',
+                                        'apikey': service_role_key,
+                                    }
+                                    ef_body = {
+                                        'job_id': job_id,
+                                        'success': True,
+                                        'artifacts': artifacts,
+                                    }
+                                    ef_resp = requests.post(ef_url, json=ef_body, headers=ef_headers, timeout=20)
+                                    if ef_resp.ok:
+                                        print(f"✅ Called inference-complete Edge Function successfully")
+                                    else:
+                                        print(f"⚠️ inference-complete EF error: {ef_resp.status_code} {ef_resp.text}")
+                                else:
+                                    print(f"⚠️ Missing Supabase credentials for {env_tag} environment")
+                                    
+                            except Exception as ef_e:
+                                print(f"⚠️ Failed to call inference-complete EF: {ef_e}")
+                        else:
+                            print(f"⚠️ No S3 URLs in response, got: {images}")
+                            print(f"🔍 This suggests ComfyUI API S3 upload failed")
+                            # Check if response contains error information
+                            if "error" in response_json:
+                                print(f"❌ ComfyUI API error: {response_json['error']}")
+                    else:
+                        print(f"⚠️ No images in ComfyUI API response: {response_json}")
         
                     success = True
                     break
@@ -611,33 +968,82 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 except urllib.error.URLError as ue:  # connection refused case
                     last_err = ue
         
-                    if getattr(ue.reason, 'errno', None) in (111,):
-                        _time.sleep(1.0)
+                    if getattr(ue.reason, 'errno', None) in (111,):  # Connection refused
+                        retry_delay = min(1.0 + (attempt * 0.5), 3.0)  # Backoff: 1s -> 3s
+                        print(f"🔄 Connection refused (attempt {attempt + 1}/10), retrying in {retry_delay}s...")
+                        time.sleep(retry_delay)
                         continue
                     break
         
                 except Exception as e:
                     last_err = e
+                    print(f"❌ Unexpected error on attempt {attempt + 1}: {e}")
                     break
         
             if success:
                 break
         
         if not success:
-            raise RuntimeError(f"comfyui-api submit failed: {last_err}; candidates={submit_paths}")
+            error_msg = f"ComfyUI API submission failed after all retries. Last error: {last_err}"
+            print(f"❌ {error_msg}")
+            print(f"🔍 Tried endpoints: {submit_paths}")
+            print(f"🔍 API Base: {api_base}")
+            print(f"🔍 Request body keys: {list(body.keys())}")
+            
+            # Try to get recent logs for debugging
+            try:
+                log_file_path = "/tmp/comfyui_api.log"
+                if os.path.exists(log_file_path):
+                    with open(log_file_path, 'r') as f:
+                        recent_logs = f.read().split('\n')[-20:]  # Last 20 lines
+                        print(f"🔍 Recent ComfyUI API logs: {recent_logs}")
+            except Exception:
+                pass
+            
+            raise RuntimeError(error_msg)
 
+        print(f"✅ Successfully submitted job {job_id} to ComfyUI API")
         # 5) Return accepted; completion goes via webhook -> EF -> DB
         return {"status": "accepted", "job_id": job_id}
     
     except Exception as e:
-        print(f"❌ Generation failed: {str(e)}")
+        error_details = {
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "job_id": job_id,
+            "user_id": user_id
+        }
+        
+        # Categorize error types for better debugging
+        if "connection refused" in str(e).lower():
+            error_details["category"] = "connection_error"
+            error_details["suggestion"] = "ComfyUI API server may not be running or ready"
+        elif "timeout" in str(e).lower():
+            error_details["category"] = "timeout_error"
+            error_details["suggestion"] = "Request timed out - server may be overloaded"
+        elif "404" in str(e):
+            error_details["category"] = "endpoint_error"
+            error_details["suggestion"] = "ComfyUI API endpoint not found - check route configuration"
+        elif "webhook" in str(e).lower():
+            error_details["category"] = "webhook_error"
+            error_details["suggestion"] = "Issue with webhook configuration or delivery"
+        else:
+            error_details["category"] = "general_error"
+            error_details["suggestion"] = "Check logs for detailed error information"
+        
+        print(f"❌ Generation failed: {error_details}")
+        
         try:
             tracker.mark_failed(job_id, str(e))
+        except Exception as tracker_e:
+            print(f"⚠️ Failed to update job tracker: {tracker_e}")
     
-        except Exception:
-            pass
-    
-        return {"job_id": job_id, "status": "failed", "error": str(e)}
+        return {
+            "job_id": job_id, 
+            "status": "failed", 
+            "error": str(e),
+            "error_details": error_details
+        }
     
     finally:
         pass
@@ -646,7 +1052,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
 @app.cls(
     gpu="H100",
     image=cuda_image,
-    secrets=[aws_secret, inference_secret],
+    secrets=[aws_secret, inference_secret, supabase_secret],
     volumes={**user_images_mount, **workflows_mount, MODELS_PATH: models_volume},
     timeout=30000,
     scaledown_window=300,  # 5 minute keep-alive (will be tuned later)
@@ -670,7 +1076,7 @@ class Fast:
 @app.cls(
     gpu="A10G",
     volumes={**user_images_mount, **workflows_mount, MODELS_PATH: models_volume},
-    secrets=[aws_secret, inference_secret],
+    secrets=[aws_secret, inference_secret, supabase_secret],
     timeout=30000,
     scaledown_window=300,  # 5 minute keep-alive (will be tuned later)
     max_containers=10,
@@ -696,7 +1102,7 @@ class Slow:
         "python-dotenv>=1.0.0",
         "anthropic>=0.34.0"
     ]),
-    secrets=[aws_secret, inference_secret],
+    secrets=[aws_secret, inference_secret, supabase_secret],
     scaledown_window=300,  # 300 seconds (5 minutes)
 )
 @modal.concurrent(max_inputs=100, target_inputs=80)
@@ -755,21 +1161,15 @@ def api_endpoint(request_data: Dict[str, Any]):
 
 # Webhook endpoint for comfyui-api completion callbacks
 @app.function(
-    image=modal.Image.debian_slim().pip_install([
-        "fastapi==0.115.4",
-        "boto3>=1.34.0",
-        "pillow>=10.3.0",
-        "websockets>=12.0",
-        "requests>=2.32.0"
-    ]),
-    secrets=[aws_secret, inference_secret]
+    image=cuda_image,  # Use the same image as main functions so lib/ is available
+    secrets=[aws_secret, inference_secret, supabase_secret]
 )
 @modal.fastapi_endpoint(method="POST", label="primeshot-webhook")
 def webhook_endpoint(payload: Dict[str, Any], secret: str = Query(None)):
     """Accept comfyui-api webhook callbacks, extract S3 outputs, and return summary.
 
     Expected to receive user_id, job_id, and one or more output artifacts that
-    include S3 keys/URLs for both web (1K) and orig (2K/4K) variants.
+    include S3 keys/URLs for multi-resolution web variants and orig (2K/4K).
     
     Requires 'secret' query parameter matching WEBHOOK_SECRET.
     """
@@ -786,12 +1186,25 @@ def webhook_endpoint(payload: Dict[str, Any], secret: str = Query(None)):
     if secret != expected_secret:
         return {"status": "error", "error": "Invalid webhook secret"}
     
-    from lib.webhook_handler import handle_webhook
-    from lib.s3_artifacts import find_s3_entries, partition_artifacts
+    # Import using absolute paths to avoid module resolution issues
+    import sys
+    import os
+    sys.path.insert(0, '/root')
+    
+    try:
+        from lib.webhook_handler import handle_webhook
+        from lib.s3_artifacts import find_s3_entries, partition_artifacts
+    except ImportError as ie:
+        print(f"Import error: {ie}")
+        print(f"Current working directory: {os.getcwd()}")
+        print(f"Python path: {sys.path}")
+        print(f"Contents of /root: {os.listdir('/root') if os.path.exists('/root') else 'N/A'}")
+        print(f"Contents of /root/lib: {os.listdir('/root/lib') if os.path.exists('/root/lib') else 'N/A'}")
+        raise
 
     try:
         result = handle_webhook(payload)
-    
+                
     except Exception as e:
         return {"status": "error", "error": str(e), "received": payload}
 
@@ -930,7 +1343,6 @@ def progress():
                     # Ensure JSON payload
                     json.loads(data)
                     await manager.broadcast(job_id, data)
-    
                 except Exception as e:
                     logger.error(f"Invalid broadcast payload: {e}")
     
