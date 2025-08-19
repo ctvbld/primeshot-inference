@@ -586,13 +586,20 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         
         def _link_lora(abs_path: str | None) -> str | None:
             if not abs_path:
+                print("🔍 _link_lora: abs_path is None or empty")
                 return None
+            
+            print(f"🔍 _link_lora: Processing path: {abs_path}")
             try:
                 from pathlib import Path as _P
                 import shutil as _sh
                 p = _P(abs_path)
-        
+                
+                print(f"🔍 _link_lora: Full path object: {p}")
+                print(f"🔍 _link_lora: Path exists? {p.exists()}")
+                
                 if not p.exists():
+                    print(f"❌ _link_lora: File not found at {abs_path}")
                     return None
         
                 dest_dir = _P("/root/comfy/ComfyUI/models/loras")
@@ -606,16 +613,29 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                     pass
                 try:
                     dest.symlink_to(p)
-                except Exception:
+                    print(f"✅ _link_lora: Symlinked {p} -> {dest}")
+                except Exception as e:
+                    print(f"🔄 _link_lora: Symlink failed, copying: {e}")
                     _sh.copy2(str(p), str(dest))
+                    print(f"✅ _link_lora: Copied {p} -> {dest}")
+                
+                print(f"🎯 _link_lora: Returning filename: {p.name}")
                 return p.name
         
             except Exception as _e:
                 print(f"⚠️ LoRA link failed: {_e}")
                 return None
         
+        print(f"🔍 About to link LoRAs:")
+        print(f"  - char_lora: {char_lora}")
+        print(f"  - style_lora: {style_lora}")
+        
         char_name = _link_lora(char_lora)
         style_name = _link_lora(style_lora)
+        
+        print(f"🎯 LoRA linking results:")
+        print(f"  - char_name: {char_name}")
+        print(f"  - style_name: {style_name}")
 
         patched = patch_workflow(
             wf,
@@ -625,6 +645,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             height=height,
             seed=p.get("seed"),
             images_count=int(p.get("nb_takes", 1)),
+            quality=p.get("quality", "1K"),  # Pass quality for upscale logic
             lora_filename=None,
             character_lora=char_name,
             style_lora=style_name,
@@ -725,81 +746,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 body["webhook"] = webhook_url
             print(f"🔧 Using ASYNC webhook mode - no S3 upload")
-            print(f"🔧 AWS Environment Check:")
-            print(f"  - AWS_ACCESS_KEY_ID: {'✅ Set' if os.environ.get('AWS_ACCESS_KEY_ID') else '❌ Missing'}")
-            print(f"  - AWS_SECRET_ACCESS_KEY: {'✅ Set' if os.environ.get('AWS_SECRET_ACCESS_KEY') else '❌ Missing'}")
-            print(f"  - AWS_REGION: {os.environ.get('AWS_REGION', 'NOT_SET')}")
-            print(f"  - AWS_DEFAULT_REGION: {os.environ.get('AWS_DEFAULT_REGION', 'NOT_SET')}")
-            print(f"  - AWS_BUCKET: {bucket}")
-            
-            # Test S3 connectivity to help debug ComfyUI API upload issues
-            print(f"🔧 Testing S3 connectivity for debugging:")
-            try:
-                import boto3
-                s3_client = boto3.client('s3')
-                
-                print(f"🔍 S3 Client Configuration:")
-                print(f"  - Region: {s3_client.meta.region_name}")
-                print(f"  - AWS Access Key ID: {os.environ.get('AWS_ACCESS_KEY_ID', 'NOT_SET')[:8]}...")
-                
-                # Test basic S3 access
-                bucket_response = s3_client.head_bucket(Bucket=bucket)
-                print(f"  ✅ S3 bucket '{bucket}' is accessible")
-                print(f"  📍 Bucket region: {bucket_response.get('ResponseMetadata', {}).get('HTTPHeaders', {}).get('x-amz-bucket-region', 'unknown')}")
-                
-                # Test if we can create the path structure by uploading a tiny test file
-                test_key = f"user-images/{user_id}/inference/{job_id}/debug_test_{int(time.time())}.txt"
-                test_content = f"Modal S3 test at {time.time()}"
-                
-                put_response = s3_client.put_object(
-                    Bucket=bucket,
-                    Key=test_key,
-                    Body=test_content.encode('utf-8'),
-                    ContentType='text/plain'
-                )
-                print(f"  ✅ PUT response: {put_response.get('ResponseMetadata', {}).get('HTTPStatusCode')}")
-                print(f"  📝 Uploaded test file: s3://{bucket}/{test_key}")
-                
-                # Verify the file actually exists by listing it
-                list_response = s3_client.list_objects_v2(
-                    Bucket=bucket, 
-                    Prefix=test_key,
-                    MaxKeys=1
-                )
-                if 'Contents' in list_response and list_response['Contents']:
-                    file_info = list_response['Contents'][0]
-                    print(f"  ✅ File verified in S3: {file_info['Key']} ({file_info['Size']} bytes)")
-                    print(f"  📅 Last modified: {file_info['LastModified']}")
-                else:
-                    print(f"  ❌ File NOT found in S3 after upload!")
-                    print(f"  🔍 List response: {list_response}")
-                
-                # Try to read it back
-                try:
-                    get_response = s3_client.get_object(Bucket=bucket, Key=test_key)
-                    content = get_response['Body'].read().decode('utf-8')
-                    print(f"  ✅ File content verified: '{content}'")
-                except Exception as get_e:
-                    print(f"  ❌ Failed to read back file: {get_e}")
-                
-                # Clean up test file
-                try:
-                    s3_client.delete_object(Bucket=bucket, Key=test_key)
-                    print(f"  🗑️ Cleaned up test file")
-                except Exception as del_e:
-                    print(f"  ⚠️ Failed to delete test file: {del_e}")
-                
-            except Exception as s3_e:
-                print(f"  ❌ S3 connectivity test failed: {s3_e}")
-                print(f"  🔍 This might be why ComfyUI API S3 upload is failing")
-                import traceback
-                print(f"  📊 Full traceback: {traceback.format_exc()}")
-            
-            # Also check if ComfyUI API can access these vars
-            print(f"🔧 ComfyUI API Environment Check (these vars need to be available to the subprocess):")
-            for key in ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION', 'AWS_DEFAULT_REGION', 'AWS_BUCKET']:
-                val = os.environ.get(key)
-                print(f"  - {key}: {'✅ Set' if val else '❌ Missing'}{' (first 8 chars: ' + val[:8] + '...)' if val and 'KEY' in key else ''}")
+            print(f"🔧 S3 Config: {s3_config}")
         else:
             print("⚠️ No AWS_BUCKET environment variable found - S3 uploads disabled")
         
@@ -903,22 +850,73 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                         if s3_urls:
                             print(f"✅ S3 upload successful! {len(s3_urls)} URLs received: {s3_urls}")
                             
-                            # Call inference-complete Edge Function directly
+                            # Process each original image to create web versions
                             try:
-                                # Create artifacts in the expected format
-                                artifacts = {"orig": []}
-                                for s3_url in s3_urls:
-                                    if s3_url.startswith("s3://"):
-                                        # Parse s3://bucket/key
-                                        s3_parts = s3_url[5:].split("/", 1)
-                                        if len(s3_parts) == 2:
-                                            bucket_name, s3_key = s3_parts
-                                            artifacts["orig"].append({
+                                import boto3
+                                from PIL import Image
+                                import io
+                                
+                                s3_client = boto3.client('s3')
+                                artifacts = {"orig": [], "web": []}
+                                
+                                for i, s3_url in enumerate(s3_urls):
+                                    if not s3_url.startswith("s3://"):
+                                        continue
+                                        
+                                    # Parse S3 URL: s3://bucket/key
+                                    bucket_name, orig_key = s3_url[5:].split("/", 1)
+                                    
+                                    print(f"🖼️ Processing image {i+1}: {orig_key}")
+                                    
+                                    # Add original to artifacts
+                                    artifacts["orig"].append({
+                                        "bucket": bucket_name,
+                                        "key": orig_key
+                                    })
+                                    
+                                    # Download original image from S3
+                                    orig_response = s3_client.get_object(Bucket=bucket_name, Key=orig_key)
+                                    orig_image_data = orig_response['Body'].read()
+                                    
+                                    # Create web versions (320px and 640px WebP)
+                                    with Image.open(io.BytesIO(orig_image_data)) as img:
+                                        # Convert to RGB if needed (for WebP compatibility)
+                                        if img.mode in ('RGBA', 'LA', 'P'):
+                                            img = img.convert('RGB')
+                                        
+                                        # Create 320px, 640px, and 1024px versions
+                                        for size, size_name in [(320, '320'), (640, '640'), (1024, '1024')]:
+                                            # Create a copy for resizing
+                                            web_img = img.copy()
+                                            web_img.thumbnail((size, size), Image.Resampling.LANCZOS)
+                                            
+                                            # Save as WebP
+                                            web_buffer = io.BytesIO()
+                                            web_img.save(web_buffer, format='WEBP', quality=85, optimize=True)
+                                            web_image_data = web_buffer.getvalue()
+                                            
+                                            # Upload web version to S3 (replace /orig/ with /web/ and add size suffix)
+                                            base_name = orig_key.replace('/orig/', '/web/').replace('.png', f'_{size_name}.webp')
+                                            s3_client.put_object(
+                                                Bucket=bucket_name,
+                                                Key=base_name,
+                                                Body=web_image_data,
+                                                ContentType='image/webp'
+                                            )
+                                            
+                                            print(f"  ✅ Created {size}px web version: s3://{bucket_name}/{base_name}")
+                                            
+                                            # Add web version to artifacts
+                                            artifacts["web"].append({
                                                 "bucket": bucket_name,
-                                                "key": s3_key
+                                                "key": base_name,
+                                                "size": f"{size}px"
                                             })
                                 
+                                print(f"📦 Created {len(artifacts['orig'])} original + {len(artifacts['web'])} web versions")
+                                
                                 # Get environment for correct Supabase instance
+                                env_tag = job_metadata.get('env', 'dev')
                                 supabase_url = os.environ.get(f'SUPABASE_URL_{env_tag.upper()}') or os.environ.get('SUPABASE_URL')
                                 service_role_key = os.environ.get(f'SUPABASE_SERVICE_ROLE_KEY_{env_tag.upper()}') or os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
                                 
@@ -938,13 +936,16 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                                     ef_resp = requests.post(ef_url, json=ef_body, headers=ef_headers, timeout=20)
                                     if ef_resp.ok:
                                         print(f"✅ Called inference-complete Edge Function successfully")
+                                        print(f"🎯 Inference pipeline completed successfully!")
                                     else:
                                         print(f"⚠️ inference-complete EF error: {ef_resp.status_code} {ef_resp.text}")
                                 else:
                                     print(f"⚠️ Missing Supabase credentials for {env_tag} environment")
                                     
                             except Exception as ef_e:
-                                print(f"⚠️ Failed to call inference-complete EF: {ef_e}")
+                                print(f"⚠️ Failed to process images or call EF: {ef_e}")
+                                import traceback
+                                print(f"📊 Full error: {traceback.format_exc()}")
                         else:
                             print(f"⚠️ No S3 URLs in response, got: {images}")
                             print(f"🔍 This suggests ComfyUI API S3 upload failed")

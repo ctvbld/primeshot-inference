@@ -4,14 +4,20 @@ from typing import Any, Dict, Tuple
 
 
 def compute_dimensions(quality: str, aspect_ratio: str) -> Tuple[int, int]:
-    base = {"1K": 1024, "2K": 2048, "4K": 4096}.get(quality, 1024)
+    # Always use 1K base for EmptyHunyuanLatentVideo generation
+    # Upscaling to 2K/4K will be handled by conditional upscale nodes
+    base_1k = 1024
+    
+    # Handle supported aspect ratios (1:1, 2:3, 3:2)
     if aspect_ratio == "1:1":
-        return base, base
-    if aspect_ratio == "3:2":
-        return base, int(round(base * 2 / 3))
-    if aspect_ratio == "2:3":
-        return int(round(base * 2 / 3)), base
-    return base, base
+        return base_1k, base_1k  # 1024x1024
+    elif aspect_ratio == "3:2":  # Landscape
+        return base_1k, int(round(base_1k * 2 / 3))  # 1024x683
+    elif aspect_ratio == "2:3":  # Portrait
+        return int(round(base_1k * 2 / 3)), base_1k  # 683x1024
+    else:
+        # Default to square for unknown ratios
+        return base_1k, base_1k
 
 
 def patch_workflow(
@@ -22,6 +28,7 @@ def patch_workflow(
     height: int,
     seed: int | None,
     images_count: int,
+    quality: str = "1K",  # Add quality parameter for upscale logic
     lora_filename: str | None = None,
     character_lora: str | None = None,
     style_lora: str | None = None,
@@ -50,7 +57,11 @@ def patch_workflow(
         if not updated:
             print(f"⚠️ Node with title '{node_title}' not found for {key} = {value}")
 
-    # Text encoders
+    # Text encoders - try by title first (more specific), then by class type
+    set_node_input_by_title("PositivePrompt", "text", prompt)
+    set_node_input_by_title("NegativePrompt", "text", negative_prompt)
+    
+    # Fallback for older workflows without specific titles
     set_node_input("CLIPTextEncode", "text", prompt)
     set_node_input("CLIPTextEncodeNeg", "text", negative_prompt)
 
@@ -58,9 +69,31 @@ def patch_workflow(
     if seed is not None:
         set_node_input("KSampler", "seed", int(seed))
 
-    # Resolution (EmptyLatentImage path)
-    set_node_input("EmptyLatentImage", "width", int(width))
-    set_node_input("EmptyLatentImage", "height", int(height))
+    # Resolution - handle different latent node types
+    updated_resolution = False
+    for node_type in ["EmptyHunyuanLatentVideo", "EmptyLatentImage", "EmptySD3LatentImage", "EmptyLTXVLatentVideo"]:
+        for node_id, node in wf.items():
+            if isinstance(node, dict) and node.get("class_type") == node_type:
+                # Try inputs first (ComfyUI format), then widgets_values (UI format)
+                if "inputs" in node:
+                    node["inputs"]["width"] = int(width)
+                    node["inputs"]["height"] = int(height)
+                    print(f"✅ Updated {node_type} (node {node_id}) dimensions = {width}x{height} (via inputs)")
+                    updated_resolution = True
+                    break
+                elif "widgets_values" in node and len(node["widgets_values"]) >= 2:
+                    node["widgets_values"][0] = int(width)   # width is usually first
+                    node["widgets_values"][1] = int(height)  # height is usually second
+                    print(f"✅ Updated {node_type} (node {node_id}) dimensions = {width}x{height} (via widgets_values)")
+                    updated_resolution = True
+                    break
+        if updated_resolution:
+            break
+    
+    # Fallback for older workflows
+    if not updated_resolution:
+        set_node_input("EmptyLatentImage", "width", int(width))
+        set_node_input("EmptyLatentImage", "height", int(height))
 
     # LoRA injection
     # Priority: explicit character/style targets by title; fallback to generic LoraLoader by _ui_name
@@ -69,13 +102,49 @@ def patch_workflow(
         set_node_input_by_title("CharacterLoRA", "lora_name", character_lora)
     if style_lora:
         # Current workflow uses title "StyleLoRA" for optional style loader
-        set_node_input_by_title("StyleLoRA", "lora_name", style_lora)
+        print(f"🎨 Attempting to apply style LoRA: {style_lora}")
+        updated_style = False
+        
+        # Try to find StyleLoRA node by title
+        for node_id, node in wf.items():
+            if isinstance(node, dict):
+                title = node.get("_meta", {}).get("title")
+                if title == "StyleLoRA":
+                    node.setdefault("inputs", {})["lora_name"] = style_lora
+                    print(f"✅ Updated StyleLoRA (node {node_id}) lora_name = {style_lora}")
+                    updated_style = True
+                    break
+        
+        if not updated_style:
+            print(f"⚠️ No StyleLoRA node found in workflow - style LoRA cannot be applied: {style_lora}")
+            print(f"📝 Available node titles: {[node.get('_meta', {}).get('title') for node_id, node in wf.items() if isinstance(node, dict) and node.get('_meta', {}).get('title')]}")
     if lora_filename and not character_lora and not style_lora:
         # Back-compat single lora case
         set_node_input("LoraLoader", "lora_name", lora_filename)
 
-    # NB takes: prefer batch_size if present; otherwise caller will loop
-    set_node_input("KSampler", "batch_size", int(images_count))
+    # NB takes: set batch_size on the appropriate node for multiple images
+    # Try common latent generation nodes that support batch_size
+    updated_batch = False
+    for node_type in ["EmptyHunyuanLatentVideo", "EmptyLatentImage", "EmptySD3LatentImage", "EmptyLTXVLatentVideo"]:
+        for node_id, node in wf.items():
+            if isinstance(node, dict) and node.get("class_type") == node_type:
+                # Try inputs first (ComfyUI format), then widgets_values (UI format)
+                if "inputs" in node and "batch_size" in node["inputs"]:
+                    node["inputs"]["batch_size"] = int(images_count)
+                    print(f"✅ Updated {node_type} (node {node_id}) batch_size = {images_count} (via inputs)")
+                    updated_batch = True
+                    break
+                elif "widgets_values" in node and len(node["widgets_values"]) >= 3:
+                    node["widgets_values"][-1] = int(images_count)  # batch_size is usually last
+                    print(f"✅ Updated {node_type} (node {node_id}) batch_size = {images_count} (via widgets_values)")
+                    updated_batch = True
+                    break
+        if updated_batch:
+            break
+    
+    # Fallback: try setting on KSampler for older workflows
+    if not updated_batch:
+        set_node_input("KSampler", "batch_size", int(images_count))
 
     # Auto-bypass StyleLoRA if no style_lora is provided
     if not style_lora:
@@ -138,6 +207,29 @@ def patch_workflow(
             except Exception:
                 # Non-fatal: continue applying remaining patches
                 pass
+
+    # TODO: Conditional upscaling based on quality setting
+    # For now, EmptyHunyuanLatentVideo always generates at 1K base resolution
+    # When upscale nodes are implemented in the workflow, add/enable them based on quality:
+    
+    if quality == "2K":
+        # TODO: Enable 2K upscale nodes when available in workflow
+        # Expected nodes: "Upscale2K", "UltimateSDUpscale", or similar
+        print(f"🔄 TODO: Enable 2K upscaling nodes (quality={quality})")
+        # set_node_input_by_title("Upscale2K", "enabled", True)
+        # set_node_input_by_title("Upscale2K", "scale_factor", 2.0)
+        
+    elif quality == "4K":
+        # TODO: Enable 4K upscale nodes when available in workflow  
+        # Expected nodes: "Upscale4K", "UltimateSDUpscale", or similar
+        print(f"🔄 TODO: Enable 4K upscaling nodes (quality={quality})")
+        # set_node_input_by_title("Upscale4K", "enabled", True)
+        # set_node_input_by_title("Upscale4K", "scale_factor", 4.0)
+        
+    else:  # quality == "1K"
+        # TODO: Ensure upscale nodes are disabled/bypassed for 1K generation
+        print(f"✅ Using base 1K generation (quality={quality}) - no upscaling needed")
+        # bypass_upscale_nodes(wf)
 
     return wf
 
