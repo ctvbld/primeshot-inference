@@ -59,11 +59,7 @@ cuda_image = (
         "libasound2", "libgtk-3-0", "libsm6", "libxext6",
         "mesa-utils", "libgl1-mesa-dev", "libgles2-mesa-dev"
     ])
-    # Install Node.js 20 LTS via NodeSource (for comfyui-api)
-    .run_commands(
-        "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -",
-        "apt-get update && apt-get install -y nodejs && npm --version && node --version"
-    )
+
     .run_commands("locale-gen en_US.UTF-8")  # Generate English locale
     .env({
         # Locale settings
@@ -120,8 +116,8 @@ cuda_image = (
     # Install optimized xformers for additional attention acceleration
     .pip_install("xformers>=0.0.28")  # Latest xformers for attention optimizations
     .pip_install("websockets>=12.0")  # For ComfyUI WS preview/progress relay
-    # Common dependencies required by various custom nodes and S3 access
-    .pip_install("diffusers>=0.30.0", "transformers>=4.42.0", "accelerate>=0.30.0", "safetensors>=0.4.3", "boto3>=1.34.0", "psutil>=6.0.0")
+    # Common dependencies required by various custom nodes
+    .pip_install("diffusers>=0.30.0", "transformers>=4.42.0", "accelerate>=0.30.0", "safetensors>=0.4.3", "psutil>=6.0.0")
     .run_commands(  # install ComfyUI with NVIDIA support
         "comfy --skip-prompt install --fast-deps --nvidia"
     )
@@ -171,13 +167,7 @@ cuda_image = (
         # Verify Python environment is clean
         "python -c 'import torch; print(f\"PyTorch: {torch.__version__}\"); import xformers; print(f\"xformers: {xformers.__version__}\")'"
     )
-    # Clone and build comfyui-api (fork: ctvbld/comfyui-api@main)
-    .run_commands(
-        "cd /root && git clone --depth=1 https://github.com/ctvbld/comfyui-api.git",
-        "cd /root/comfyui-api && npm ci",
-        "cd /root/comfyui-api && npm run build",
-        "cd /root/comfyui-api && npm prune --omit=dev"
-    )
+
     # Add workflow templates directory and job tracker
     .add_local_dir("workflows", "/root/workflows", copy=True)
     .add_local_dir("lib", "/root/lib", copy=True)
@@ -246,241 +236,25 @@ def _launch_inference_runtime(port: int) -> None:
     subprocess.run(cmd, shell=True, check=True, env=env)
     print("✅ ComfyUI server running with SageAttention and performance optimizations")
 
-    # Setup comfyui-api compatibility and launch
-    try:
-        # Some comfyui-api builds expect ComfyUI at /opt/ComfyUI. Our install lives at /root/comfy/ComfyUI.
-        # Provide both COMFY_HOME and a compatibility symlink so description scraping works.
-        try:
-            if os.path.exists("/root/comfy/ComfyUI") and not os.path.exists("/opt/ComfyUI"):
-                os.symlink("/root/comfy/ComfyUI", "/opt/ComfyUI")
-        except Exception:
-            pass
-
-        # Ensure /bin/sh understands 'source' by pointing it to bash (comfyui-api uses 'source' in its shell command)
-        try:
-            if os.path.exists("/bin/bash"):
-                import pathlib
-                sh_path = pathlib.Path("/bin/sh")
-                try:
-                    current = os.readlink(str(sh_path)) if sh_path.is_symlink() else ""
-                except OSError:
-                    current = ""
-                if "bash" not in current:
-                    subprocess.run("ln -sf /bin/bash /bin/sh", shell=True, check=False)
-        except Exception:
-            pass
-
-        # Provide minimal ai-dock compatibility shims expected by comfyui-api (no-op env + venv)
-        try:
-            os.makedirs("/opt/ai-dock/etc", exist_ok=True)
-            os.makedirs("/opt/ai-dock/bin", exist_ok=True)
-            os.makedirs("/opt/ai-dock/venvs/comfyui/bin", exist_ok=True)
-
-            env_sh = "/opt/ai-dock/etc/environment.sh"
-            venv_set = "/opt/ai-dock/bin/venv-set.sh"
-            activate = "/opt/ai-dock/venvs/comfyui/bin/activate"
-
-            if not os.path.exists(env_sh):
-                with open(env_sh, "w") as f:
-                    f.write("#!/bin/bash\n# ai-dock env shim\n")
-                subprocess.run(f"chmod +x {env_sh}", shell=True, check=False)
-            if not os.path.exists(venv_set):
-                with open(venv_set, "w") as f:
-                    f.write("#!/bin/bash\nexport COMFYUI_VENV=/opt/ai-dock/venvs/comfyui\n")
-                subprocess.run(f"chmod +x {venv_set}", shell=True, check=False)
-            if not os.path.exists(activate):
-                with open(activate, "w") as f:
-                    f.write("#!/bin/bash\n# no-op activate\n")
-                subprocess.run(f"chmod +x {activate}", shell=True, check=False)
-        except Exception:
-            pass
-
-        api_env = os.environ.copy()
-        # Explicitly configure comfyui-api per docs
-        api_env.setdefault("COMFYUI_BASE_URL", f"http://127.0.0.1:{port}")  # for forks expecting base URL
-        api_env.setdefault("COMFYUI_PORT_HOST", str(port))                   # salad tech config expects host port
-        api_env.setdefault("DIRECT_ADDRESS", "127.0.0.1")
-        api_env.setdefault("HOST", "::")
-        api_env.setdefault("PORT", "3000")                                  # wrapper port
-        api_env.setdefault("COMFY_HOME", "/root/comfy/ComfyUI")
-        # Set OUTPUT_DIR to match where ComfyUI is actually saving files
-        api_env["OUTPUT_DIR"] = "/data/outputs"
-        # Disable comfyui-api's internal ComfyUI spawn (we already launched it)
-        # Use /bin/true so child_process.spawn has a valid file instead of empty string
-        api_env["CMD"] = "/bin/true"
-        
-        # Set all required AWS environment variables for S3 functionality  
-        # According to comfyui-api docs: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
-        aws_vars = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "AWS_DEFAULT_REGION"]
-        for key in aws_vars:
-            if key not in api_env and key in os.environ:
-                api_env[key] = os.environ[key]
-        
-        # Also set AWS_BUCKET for our S3 configuration
-        if "AWS_BUCKET" in os.environ:
-            api_env["AWS_BUCKET"] = os.environ["AWS_BUCKET"]
-        
-        # comfyui-api default wrapper port per docs is 3000
-        print("🚀 Starting comfyui-api (expect default on http://127.0.0.1:3000) ...")
-        
-        # Prefer running the built entry directly to avoid missing npm scripts
-        js_candidates = [
-            "/root/comfyui-api/dist/index.js",
-            "/root/comfyui-api/dist/server.js",
-            "/root/comfyui-api/build/index.js",
-            "/root/comfyui-api/build/server.js",
-            "/root/comfyui-api/index.js",
-        ]
-        ts_candidates = [
-            "/root/comfyui-api/src/index.ts",
-            "/root/comfyui-api/src/server.ts",
-        ]
-        start_cmd = None
-        
-        for entry in js_candidates:
-            if os.path.exists(entry):
-                start_cmd = f"node {entry}"
-                break
-        
-        if start_cmd is None:
-            for entry in ts_candidates:
-                if os.path.exists(entry):
-                    # Run TypeScript entry with tsx via npx to avoid depending on package.json scripts
-                    start_cmd = f"npx --yes tsx {entry}"
-                    break
-        
-        if start_cmd is None:
-            # Fail fast with a clear message; do not rely on npm scripts that don't exist
-            raise RuntimeError(
-                "comfyui-api entry not found. Tried JS: dist/index.js, dist/server.js, build/index.js, build/server.js, "
-                "index.js and TS: src/index.ts, src/server.ts under /root/comfyui-api."
-            )
-        
-        # Start comfyui-api with more logging
-        print(f"🚀 Starting: {start_cmd}")
-        print(f"🔧 Environment: PORT={api_env.get('PORT')}, HOST={api_env.get('HOST')}, CMD={api_env.get('CMD')}")
-        
-        # Debug AWS credentials being passed to comfyui-api
-        aws_keys = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION', 'AWS_DEFAULT_REGION', 'AWS_BUCKET']
-        aws_env_debug = {key: ('***HIDDEN***' if 'SECRET' in key else api_env.get(key, 'NOT_SET')) for key in aws_keys}
-        print(f"🔧 AWS Environment: {aws_env_debug}")
-        
-        # Create a log file for comfyui-api output
-        log_file_path = "/tmp/comfyui_api.log"
-        
-        process = subprocess.Popen(
-            start_cmd, 
-            shell=True, 
-            env=api_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            universal_newlines=True,
-            bufsize=1
-        )
-        
-        # Start a thread to capture and log comfyui-api output in real-time
-        import threading
-        import time
-        
-        def log_output():
-            try:
-                with open(log_file_path, 'w') as log_file:
-                    log_file.write("=== ComfyUI-API Startup Log ===\n")
-                    log_file.flush()
-                    
-                    for line in iter(process.stdout.readline, ''):
-                        if line:
-                            # Write to log file
-                            log_file.write(line)
-                            log_file.flush()
-                            
-                            # Also print to Modal logs with prefix
-                            print(f"[comfyui-api] {line.strip()}")
-                            
-                            # Break if process has ended
-                            if process.poll() is not None:
-                                break
-            except Exception as e:
-                print(f"⚠️ Error capturing comfyui-api logs: {e}")
-        
-        log_thread = threading.Thread(target=log_output, daemon=True)
-        log_thread.start()
-        
-        # Give it a moment and check if process is still alive
-        time.sleep(2)
-        
-        if process.poll() is not None:
-            # Process has already exited
-            stdout, _ = process.communicate()
-            print(f"❌ comfyui-api exited early with code {process.returncode}")
-            print(f"Output: {stdout}")
-            raise RuntimeError(f"comfyui-api failed to start: exit code {process.returncode}")
-        else:
-            print(f"✅ comfyui-api process started (PID: {process.pid})")
-
-        # Quick warmup: wait for comfyui-api to accept connections (max ~10s)
-        import urllib.request as _rq, urllib.error as _err
-        
-        # Probe common ports: 3000 (wrapper), 9000 (older), configurable via COMFY_API_BASE
-        probe_ports = [
-            os.environ.get("COMFY_API_BASE", "http://127.0.0.1:3000").rstrip("/"),
-            "http://127.0.0.1:3000",
-            "http://127.0.0.1:9000",
-        ]
-        ready = False
-        
-        for _ in range(10):  # ~10s max with faster individual probes
-            for base in probe_ports:
-                try:
-                    # Prefer "ready"/"health" when available
-                    resp = _rq.urlopen(base + "/ready", timeout=1.0)
-                    if getattr(resp, "status", 200) == 200:
-                        os.environ["COMFY_API_BASE"] = base
-                        ready = True
-                        break
-                except Exception:
-                    try:
-                        resp2 = _rq.urlopen(base + "/health", timeout=1.0)
-                        if getattr(resp2, "status", 200) == 200:
-                            os.environ["COMFY_API_BASE"] = base
-                            ready = True
-                            break
-                    except Exception:
-                        try:
-                            # Fall back to root: 404/405 means server is up
-                            _rq.urlopen(base + "/", timeout=1.0)
-                            os.environ["COMFY_API_BASE"] = base
-                            ready = True
-                            break
-                        except _err.HTTPError as he:
-                            if he.code in (404, 405):
-                                os.environ["COMFY_API_BASE"] = base
-                                ready = True
-                                break
-                        except Exception:
-                            continue
-                if ready:
-                    break
-        
-            if ready:
-                print(f"✅ comfyui-api is up at {os.environ.get('COMFY_API_BASE')}")
-                break
-            time.sleep(1.0)
-        
-        else:
-            print("⚠️ comfyui-api did not become ready within timeout; will rely on submit-side retries")
-    
-    except Exception as e:
-        print(f"❌ Failed to start comfyui-api: {e}")
-
-    # Warmup both ComfyUI and comfyui-api
+    # ComfyUI is now ready for direct API calls
+    # Wait for ComfyUI to be ready
+    print("🔄 Waiting for ComfyUI to be ready...")
     try:
         import urllib.request as _rq
-        _rq.urlopen(f"http://127.0.0.1:{port}/system_stats", timeout=3)
-        api_base = os.environ.get("COMFY_API_BASE", "http://127.0.0.1:3000")
-        _rq.urlopen(api_base, timeout=3)
-    except Exception:
-        pass
+        import time
+        
+        for _ in range(30):  # 30 second timeout
+            try:
+                _rq.urlopen(f"http://127.0.0.1:{port}/system_stats", timeout=3)
+                print("✅ ComfyUI is ready and responding")
+                break
+            except Exception as e:
+                print(f"⏳ ComfyUI not ready yet: {e}")
+                time.sleep(1)
+        else:
+            raise RuntimeError("ComfyUI failed to become ready within 30 seconds")
+    except Exception as e:
+        print(f"❌ Failed to verify ComfyUI readiness: {e}")
 
 
 def poll_server_health(port: int) -> None:
@@ -652,43 +426,44 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             bypass_nodes=prepared.get("bypass_nodes"),
         )
 
-        # 3) Start WS relay for progress/preview (non-blocking)
+        # 3) Generate client ID for ComfyUI API
+        comfyui_base = f"http://127.0.0.1:{PORT}"
+        client_id = str(uuid.uuid4())
+
+        # 4) Start direct ComfyUI WebSocket monitoring for progress (non-blocking)
         try:
             import threading
-            from lib.ws_preview_relay import start_relay
+            from lib.ws_preview_relay import start_direct_comfyui_relay
         
-            client_id = str(uuid.uuid4())
-            base = os.environ.get("PROGRESS_WS_URL")
+            base = os.environ.get("PROGRESS_WS_URL") or "wss://creativebuild--primeshot-inference-progress.modal.run"
         
             if base:
                 progress_ws_url = base.replace("{job_id}", job_id) if "{job_id}" in base else base.rstrip("/") + f"/ws/broadcast/{job_id}"
                 comfy_ws_url = f"ws://127.0.0.1:{PORT}/ws?clientId={client_id}"
-                threading.Thread(target=start_relay, args=(progress_ws_url, comfy_ws_url, job_id), daemon=True).start()
+                
+                print(f"🔌 WebSocket Configuration for job {job_id}:")
+                print(f"  📥 ComfyUI WebSocket: {comfy_ws_url}")
+                print(f"  📤 Progress Broadcast: {progress_ws_url}")
+                print(f"  🌐 Base URL: {base}")
+                
+                threading.Thread(target=start_direct_comfyui_relay, args=(progress_ws_url, comfy_ws_url, job_id), daemon=True).start()
+                print(f"🔄 Started direct ComfyUI WebSocket monitoring for job {job_id}")
         
         except Exception as e:
             print(f"⚠️ Progress relay not started: {e}")
+            import traceback
+            print(f"📊 Full error: {traceback.format_exc()}")
 
-        # 4) Submit to comfyui-api /prompt endpoint for execution
+        # 5) Submit directly to ComfyUI /prompt endpoint for execution
         import urllib.request, urllib.error
-        
-        # ComfyUI API always runs on port 3000
-        api_base = "http://127.0.0.1:3000"
-        # Use explicit override only if valid (/prompt or /workflow/*); else force /prompt
-        _env_route = os.environ.get("COMFY_WORKFLOW_ENDPOINT")
-        route = _env_route if (_env_route == "/prompt" or (_env_route or "").startswith("/workflow/")) else "/prompt"
-        submit_paths = [route]
-        webhook_url = os.environ.get("WEBHOOK_URL")
-        webhook_secret = os.environ.get("WEBHOOK_SECRET")
         
         # Get AWS bucket early since it's needed in job metadata
         bucket = os.environ.get("AWS_BUCKET")
         
-        # 🔍 API CALL LOGGING (without body - will log body details after it's created)
-        print(f"🌐 === COMFYUI API CALL SETUP ===")
-        print(f"🎯 API Base: {api_base}")
-        print(f"📍 Route: {route}")
-        print(f"🔗 Webhook URL: {webhook_url[:50] + '...' if webhook_url and len(webhook_url) > 50 else webhook_url}")
-        print(f"🔐 Webhook Secret: {'✅ Set' if webhook_secret else '❌ Missing'}")
+        # 🔍 DIRECT COMFYUI API CALL SETUP
+        print(f"🌐 === DIRECT COMFYUI API CALL SETUP ===")
+        print(f"🎯 ComfyUI Base: {comfyui_base}")
+        print(f"🆔 Client ID: {client_id}")
         print(f"🗄️ S3 Bucket: {'✅ Set' if bucket else '❌ Missing'}")
         print(f"🌐 === END API SETUP ===")
         
@@ -705,8 +480,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             "seed": p.get("seed"),
             "character_lora": char_name,
             "style_lora": style_name,
-            "api_base": api_base,
-            "webhook_url": webhook_url is not None,
+            "comfyui_base": comfyui_base,
             "s3_configured": bucket is not None,
             "started_at": time.time(),
             "gpu_type": input_data.get("gpu_type", "unknown"),
@@ -721,289 +495,261 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         print(f"🔍 Job metadata: {job_metadata}")
         print(f"🌐 Environment for webhook: {env_tag}")
         
-        # Map to comfyui-api /prompt schema
+        # Direct ComfyUI /prompt schema - much simpler than comfyui-api
         body = {
-            "id": job_id,
-            "user_id": user_id,  # Include user_id for webhook
             "prompt": patched,
+            "client_id": client_id
         }
         
+        print(f"🔧 Direct ComfyUI API call - images will be processed after generation completes")
         if bucket:
-            # Save originals to /orig/ directory - we'll manually call EF after getting S3 URLs
-            s3_config = {
-                "bucket": bucket, 
-                "prefix": f"user-images/{user_id}/inference/{job_id}/orig/", 
-                "async": False  # Upload to S3 synchronously, return S3 URLs in response
-            }
-            body["s3"] = s3_config
-            print(f"🔧 Using SYNCHRONOUS S3 mode - NO webhook in request")
-            print(f"🔧 ComfyUI API will upload to S3 and return URLs in response")
-        elif webhook_url:
-            # Only use webhook if no S3 config (fallback to async webhook mode)
-            if webhook_secret:
-                separator = "&" if "?" in webhook_url else "?"
-                body["webhook"] = f"{webhook_url}{separator}secret={webhook_secret}"
-            else:
-                body["webhook"] = webhook_url
-            print(f"🔧 Using ASYNC webhook mode - no S3 upload")
-            print(f"🔧 S3 Config: {s3_config}")
+            print(f"🔧 Image storage will use mounted S3 filesystem at /data")
         else:
-            print("⚠️ No AWS_BUCKET environment variable found - S3 uploads disabled")
+            print("⚠️ No AWS_BUCKET environment variable found - image storage disabled")
         
         # 🔍 FINAL BODY LOGGING - after all modifications
         print(f"📊 === FINAL REQUEST BODY DETAILS ===")
         print(f"📊 Body keys: {list(body.keys())}")
         print(f"📏 Prompt size: {len(str(body.get('prompt', {})))} chars")
-        print(f"🆔 Job ID: {body.get('id')}")
-        print(f"👤 User ID in body: {body.get('user_id')}")
-        print(f"🔗 Webhook in body: {'✅ Set' if body.get('webhook') else '❌ Missing'}")
-        print(f"🗄️ S3 config in body: {'✅ Set' if body.get('s3') else '❌ Missing'}")
-        if body.get('s3'):
-            print(f"📁 S3 bucket: {body['s3'].get('bucket')}")
-            print(f"📂 S3 prefix: {body['s3'].get('prefix')}")
+        print(f"🆔 Client ID: {body.get('client_id')}")
         print(f"📊 === END FINAL BODY DETAILS ===")
         
         # Single readiness/health check before submit
         try:
-            try:
-                urllib.request.urlopen(api_base.rstrip('/') + "/ready", timeout=1.0)
-                print("✅ ComfyUI API ready check passed")
-            except Exception:
-                try:
-                    urllib.request.urlopen(api_base.rstrip('/') + "/health", timeout=1.0)
-                    print("✅ ComfyUI API health check passed")
-                except Exception:
-                    urllib.request.urlopen(api_base, timeout=1.0)
-                    print("✅ ComfyUI API responded to root endpoint")
-            
-            # Small delay to ensure API is fully ready after probe
-            time.sleep(1.5)
-        
+            urllib.request.urlopen(f"{comfyui_base}/system_stats", timeout=3.0)
+            print("✅ ComfyUI direct API ready check passed")
+            time.sleep(0.5)  # Brief pause to ensure stability
         except Exception as e:
-            print(f"⚠️ API readiness check failed: {e}, proceeding with retries")
+            print(f"⚠️ ComfyUI readiness check failed: {e}, proceeding anyway")
 
-        # No discovery: comfyui-api expects /prompt by default
-
-        last_err = None
-        success = False
+        # Submit directly to ComfyUI /prompt endpoint
+        prompt_url = f"{comfyui_base}/prompt"
         
+        print(f"➡️ Submitting to ComfyUI direct: {prompt_url}")
+        
+        # Submit prompt to ComfyUI
         try:
-            print(f"➡️ comfyui-api submit route: {route}")
-        
-        except Exception:
-            pass
-        
-        for path in submit_paths:
-            if not path:
-                continue
-        
-            url = api_base.rstrip("/") + path
-        
-            # Aggressive retries for connection refused (server still booting)
-            for attempt in range(10):  # ~15s total with backoff
+            req = urllib.request.Request(
+                url=prompt_url,
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            response = urllib.request.urlopen(req, timeout=30)
+            response_data = response.read().decode('utf-8')
+            response_json = json.loads(response_data)
+            
+            print(f"📨 Submitted job to ComfyUI: {response_json}")
+            
+            # Extract prompt_id from response for monitoring
+            prompt_id = response_json.get("prompt_id")
+            if not prompt_id:
+                raise RuntimeError(f"No prompt_id in ComfyUI response: {response_json}")
+            
+            print(f"🎯 Job submitted successfully! Prompt ID: {prompt_id}")
+            
+            # Now we need to wait for completion and handle the results
+            # Monitor job completion via ComfyUI's history endpoint
+            print(f"⏳ Waiting for ComfyUI to complete generation...")
+            
+            completed = False
+            max_wait_time = 300  # 5 minutes max wait
+            start_time = time.time()
+            
+            while not completed and (time.time() - start_time) < max_wait_time:
                 try:
-                    req = urllib.request.Request(
-                        url=url,
-                        data=json.dumps(body).encode("utf-8"),
-                        headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {os.environ.get('COMFY_API_KEY')}"} if os.environ.get('COMFY_API_KEY') else {})},
-                        method="POST",
-                    )
-                    response = urllib.request.urlopen(req, timeout=300)  # Longer timeout for S3 upload
-                    response_data = response.read().decode('utf-8')
-                    response_json = json.loads(response_data)
+                    # Check history for completion
+                    history_url = f"{comfyui_base}/history/{prompt_id}"
+                    history_resp = urllib.request.urlopen(history_url, timeout=10)
+                    history_data = json.loads(history_resp.read().decode('utf-8'))
                     
-                    print(f"📨 Submitted job to comfyui-api endpoint: {path}")
-                    print(f"📨 ComfyUI API Response: {response_json}")
-                    
-                    # Check ComfyUI API logs for S3 errors
-                    print(f"🔍 Checking ComfyUI API logs for S3 upload errors:")
-                    try:
-                        recent_logs = comfy_api_logs[-30:]  # Last 30 log lines
-                        s3_error_found = False
-                        for log_line in recent_logs:
-                            if any(keyword in log_line.lower() for keyword in ['error uploading', 's3', 'upload', 'failed', 'error:']):
-                                print(f"  ⚠️ {log_line}")
-                                s3_error_found = True
-                        if not s3_error_found:
-                            print(f"  ✅ No S3 errors in recent logs")
-                    except Exception as log_e:
-                        print(f"  ⚠️ Could not check logs: {log_e}")
-        
-                    os.environ["COMFY_SUBMIT_PATH"] = path  # cache for subsequent jobs
-        
-                    # Process S3 URLs from synchronous response
-                    if response_json.get("images"):
-                        images = response_json["images"]
-                        print(f"🔍 Analyzing response images ({len(images)} total):")
-                        
-                        s3_urls = []
-                        base64_items = []
-                        
-                        for i, img in enumerate(images):
-                            if isinstance(img, str) and img.startswith("s3://"):
-                                s3_urls.append(img)
-                                print(f"  ✅ S3 URL {i+1}: {img}")
-                            else:
-                                base64_items.append(img)
-                                print(f"  ❌ Base64 data {i+1}: {len(str(img))} chars (S3 upload failed)")
-                        
-                        if s3_urls:
-                            print(f"✅ S3 upload successful! {len(s3_urls)} URLs received: {s3_urls}")
+                    if prompt_id in history_data:
+                        job_history = history_data[prompt_id]
+                        # Check if job is complete (has outputs)
+                        if "outputs" in job_history:
+                            print(f"✅ ComfyUI generation completed!")
                             
-                            # Process each original image to create web versions
-                            try:
-                                import boto3
-                                from PIL import Image
-                                import io
-                                
-                                s3_client = boto3.client('s3')
-                                artifacts = {"orig": [], "web": []}
-                                
-                                for i, s3_url in enumerate(s3_urls):
-                                    if not s3_url.startswith("s3://"):
-                                        continue
+                            # Process outputs and upload to S3
+                            outputs = job_history["outputs"]
+                            image_files = []
+                            
+                            # Extract saved images from outputs
+                            for node_id, node_outputs in outputs.items():
+                                if "images" in node_outputs:
+                                    for img_info in node_outputs["images"]:
+                                        # ComfyUI saves images with filename and subfolder info
+                                        filename = img_info.get("filename")
+                                        subfolder = img_info.get("subfolder", "")
+                                        if filename:
+                                            # Skip temporary preview files
+                                            if "temp_" in filename.lower() or filename.startswith("ComfyUI_temp"):
+                                                print(f"⏭️ Skipping temporary preview file: {filename}")
+                                                continue
+                                                
+                                            # Construct full path to image file
+                                            if subfolder:
+                                                image_path = f"/data/outputs/{subfolder}/{filename}"
+                                            else:
+                                                image_path = f"/data/outputs/{filename}"
+                                            image_files.append(image_path)
+                                            print(f"🖼️ Found generated image: {image_path}")
+                            
+                            # Remove duplicates and sort for consistent processing
+                            image_files = sorted(list(set(image_files)))
+                            print(f"📊 Processing {len(image_files)} unique generated images")
+                            
+                            if image_files:
+                                # Process images using mounted S3 filesystem (much faster than boto3)
+                                try:
+                                    from PIL import Image
+                                    import shutil
+                                    
+                                    artifacts = {"orig": [], "web": []}
+                                    
+                                    for i, image_path in enumerate(image_files):
+                                        if not os.path.exists(image_path):
+                                            print(f"⚠️ Image file not found: {image_path}")
+                                            continue
+                                            
+                                        print(f"🖼️ Processing image {i+1}: {image_path}")
                                         
-                                    # Parse S3 URL: s3://bucket/key
-                                    bucket_name, orig_key = s3_url[5:].split("/", 1)
-                                    
-                                    print(f"🖼️ Processing image {i+1}: {orig_key}")
-                                    
-                                    # Add original to artifacts
-                                    artifacts["orig"].append({
-                                        "bucket": bucket_name,
-                                        "key": orig_key
-                                    })
-                                    
-                                    # Download original image from S3
-                                    orig_response = s3_client.get_object(Bucket=bucket_name, Key=orig_key)
-                                    orig_image_data = orig_response['Body'].read()
-                                    
-                                    # Create web versions (320px and 640px WebP)
-                                    with Image.open(io.BytesIO(orig_image_data)) as img:
-                                        # Convert to RGB if needed (for WebP compatibility)
-                                        if img.mode in ('RGBA', 'LA', 'P'):
-                                            img = img.convert('RGB')
+                                        # Use IMG-XX naming format (XX = zero-padded index)
+                                        base_name = f"IMG-{i+1:02d}"
                                         
-                                        # Create 320px, 640px, and 1024px versions
-                                        for size, size_name in [(320, '320'), (640, '640'), (1024, '1024')]:
-                                            # Create a copy for resizing
-                                            web_img = img.copy()
-                                            web_img.thumbnail((size, size), Image.Resampling.LANCZOS)
+                                        # Copy original to mounted S3 filesystem with IMG-XX naming
+                                        orig_dir = f"/data/{user_id}/inference/{job_id}/orig"
+                                        os.makedirs(orig_dir, exist_ok=True)
+                                        
+                                        # Get original file extension and create new filename
+                                        original_ext = os.path.splitext(image_path)[1]  # .png, .jpg, etc.
+                                        orig_filename = f"{base_name}{original_ext}"
+                                        orig_path = f"{orig_dir}/{orig_filename}"
+                                        shutil.copy(image_path, orig_path)  # Use copy() instead of copy2() for S3 compatibility
+                                        
+                                        # S3 key path (without the mount prefix)
+                                        orig_key = f"user-images/{user_id}/inference/{job_id}/orig/{orig_filename}"
+                                        artifacts["orig"].append({
+                                            "bucket": bucket,
+                                            "key": orig_key
+                                        })
+                                        
+                                        print(f"  ✅ Copied original to mounted S3: {orig_path}")
+                                        
+                                        # Create web versions directly on mounted S3 filesystem
+                                        web_dir = f"/data/{user_id}/inference/{job_id}/web"
+                                        os.makedirs(web_dir, exist_ok=True)
+                                        
+                                        with Image.open(image_path) as img:
+                                            # Convert to RGB if needed (for WebP compatibility)
+                                            if img.mode in ('RGBA', 'LA', 'P'):
+                                                img = img.convert('RGB')
                                             
-                                            # Save as WebP
-                                            web_buffer = io.BytesIO()
-                                            web_img.save(web_buffer, format='WEBP', quality=85, optimize=True)
-                                            web_image_data = web_buffer.getvalue()
-                                            
-                                            # Upload web version to S3 (replace /orig/ with /web/ and add size suffix)
-                                            base_name = orig_key.replace('/orig/', '/web/').replace('.png', f'_{size_name}.webp')
-                                            s3_client.put_object(
-                                                Bucket=bucket_name,
-                                                Key=base_name,
-                                                Body=web_image_data,
-                                                ContentType='image/webp'
-                                            )
-                                            
-                                            print(f"  ✅ Created {size}px web version: s3://{bucket_name}/{base_name}")
-                                            
-                                            # Add web version to artifacts
-                                            artifacts["web"].append({
-                                                "bucket": bucket_name,
-                                                "key": base_name,
-                                                "size": f"{size}px"
-                                            })
-                                
-                                print(f"📦 Created {len(artifacts['orig'])} original + {len(artifacts['web'])} web versions")
-                                
-                                # Get environment for correct Supabase instance
-                                env_tag = job_metadata.get('env', 'dev')
-                                supabase_url = os.environ.get(f'SUPABASE_URL_{env_tag.upper()}') or os.environ.get('SUPABASE_URL')
-                                service_role_key = os.environ.get(f'SUPABASE_SERVICE_ROLE_KEY_{env_tag.upper()}') or os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
-                                
-                                if supabase_url and service_role_key:
-                                    import requests
-                                    ef_url = f"{supabase_url}/functions/v1/inference-complete"
-                                    ef_headers = {
-                                        'Authorization': f'Bearer {service_role_key}',
-                                        'Content-Type': 'application/json',
-                                        'apikey': service_role_key,
-                                    }
-                                    ef_body = {
-                                        'job_id': job_id,
-                                        'success': True,
-                                        'artifacts': artifacts,
-                                    }
-                                    ef_resp = requests.post(ef_url, json=ef_body, headers=ef_headers, timeout=20)
-                                    if ef_resp.ok:
-                                        print(f"✅ Called inference-complete Edge Function successfully")
-                                        print(f"🎯 Inference pipeline completed successfully!")
+                                            # Create 480px, 720px, and 1024px versions (480px for retina 240px displays)
+                                            for size, size_name in [(480, '480'), (720, '720'), (1024, '1024')]:
+                                                # Create a copy for resizing
+                                                web_img = img.copy()
+                                                web_img.thumbnail((size, size), Image.Resampling.LANCZOS)
+                                                
+                                                # Determine file path on mounted filesystem
+                                                if size == 1024:
+                                                    # For 1024px, use base name without suffix (expected by frontend)
+                                                    web_filename = f"{base_name}.webp"
+                                                else:
+                                                    # For smaller sizes, use -w{size} suffix (expected by frontend)
+                                                    web_filename = f"{base_name}-w{size}.webp"
+                                                
+                                                web_path = f"{web_dir}/{web_filename}"
+                                                
+                                                # Save directly to mounted S3 filesystem
+                                                web_img.save(web_path, format='WEBP', quality=85, optimize=True)
+                                                
+                                                # S3 key path (without the mount prefix)
+                                                web_key = f"user-images/{user_id}/inference/{job_id}/web/{web_filename}"
+                                                
+                                                print(f"  ✅ Created {size}px web version: {web_path}")
+                                                
+                                                # Only add 1024px web version to artifacts to prevent database constraint violations
+                                                if size == 1024:
+                                                    artifacts["web"].append({
+                                                        "bucket": bucket,
+                                                        "key": web_key,
+                                                        "size": f"{size}px"
+                                                    })
+                                    
+                                    print(f"📦 Created {len(artifacts['orig'])} original + {len(artifacts['web'])} web versions using mounted S3 filesystem")
+                                    
+                                    # Call inference-complete Edge Function
+                                    env_tag = job_metadata.get('env', 'dev')
+                                    supabase_url = os.environ.get(f'SUPABASE_URL_{env_tag.upper()}') or os.environ.get('SUPABASE_URL')
+                                    service_role_key = os.environ.get(f'SUPABASE_SERVICE_ROLE_KEY_{env_tag.upper()}') or os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+                                    
+                                    if supabase_url and service_role_key:
+                                        import requests
+                                        ef_url = f"{supabase_url}/functions/v1/inference-complete"
+                                        ef_headers = {
+                                            'Authorization': f'Bearer {service_role_key}',
+                                            'Content-Type': 'application/json',
+                                            'apikey': service_role_key,
+                                        }
+                                        ef_body = {
+                                            'job_id': job_id,
+                                            'success': True,
+                                            'artifacts': artifacts,
+                                        }
+                                        ef_resp = requests.post(ef_url, json=ef_body, headers=ef_headers, timeout=20)
+                                        if ef_resp.ok:
+                                            print(f"✅ Called inference-complete Edge Function successfully")
+                                            print(f"🎯 Inference pipeline completed successfully!")
+                                        else:
+                                            print(f"⚠️ inference-complete EF error: {ef_resp.status_code} {ef_resp.text}")
                                     else:
-                                        print(f"⚠️ inference-complete EF error: {ef_resp.status_code} {ef_resp.text}")
-                                else:
-                                    print(f"⚠️ Missing Supabase credentials for {env_tag} environment")
-                                    
-                            except Exception as ef_e:
-                                print(f"⚠️ Failed to process images or call EF: {ef_e}")
-                                import traceback
-                                print(f"📊 Full error: {traceback.format_exc()}")
-                        else:
-                            print(f"⚠️ No S3 URLs in response, got: {images}")
-                            print(f"🔍 This suggests ComfyUI API S3 upload failed")
-                            # Check if response contains error information
-                            if "error" in response_json:
-                                print(f"❌ ComfyUI API error: {response_json['error']}")
-                    else:
-                        print(f"⚠️ No images in ComfyUI API response: {response_json}")
-        
-                    success = True
-                    break
-        
-                except urllib.error.HTTPError as he:  # type: ignore[attr-defined]
-                    if he.code == 404:
-                        last_err = he
-                        break  # try next path
-                    else:
-                        last_err = he
-                        break
-        
-                except urllib.error.URLError as ue:  # connection refused case
-                    last_err = ue
-        
-                    if getattr(ue.reason, 'errno', None) in (111,):  # Connection refused
-                        retry_delay = min(1.0 + (attempt * 0.5), 3.0)  # Backoff: 1s -> 3s
-                        print(f"🔄 Connection refused (attempt {attempt + 1}/10), retrying in {retry_delay}s...")
-                        time.sleep(retry_delay)
-                        continue
-                    break
-        
-                except Exception as e:
-                    last_err = e
-                    print(f"❌ Unexpected error on attempt {attempt + 1}: {e}")
-                    break
-        
-            if success:
-                break
-        
-        if not success:
-            error_msg = f"ComfyUI API submission failed after all retries. Last error: {last_err}"
-            print(f"❌ {error_msg}")
-            print(f"🔍 Tried endpoints: {submit_paths}")
-            print(f"🔍 API Base: {api_base}")
-            print(f"🔍 Request body keys: {list(body.keys())}")
+                                        print(f"⚠️ Missing Supabase credentials for {env_tag} environment")
+                                        
+                                except Exception as fs_e:
+                                    print(f"⚠️ Failed to process images using mounted S3 filesystem: {fs_e}")
+                                    import traceback
+                                    print(f"📊 Full error: {traceback.format_exc()}")
+                            else:
+                                print("⚠️ No bucket configured - skipping image storage")
+                            
+                            completed = True
+                            break
+                    
+                    # If not completed yet, wait and retry
+                    if not completed:
+                        time.sleep(2)  # Wait 2 seconds before checking again
+                        
+                except Exception as history_e:
+                    print(f"⚠️ Error checking job history: {history_e}")
+                    time.sleep(2)
             
-            # Try to get recent logs for debugging
+            if not completed:
+                raise RuntimeError(f"Job {prompt_id} did not complete within {max_wait_time} seconds")
+                
+        except Exception as e:
+            print(f"❌ Failed to submit to ComfyUI or process results: {e}")
+            raise
+        
+        print(f"✅ Successfully completed job {job_id} via direct ComfyUI API")
+        
+        # Signal WebSocket relay that job is complete
+        try:
+            from lib.ws_preview_relay import signal_job_completion, get_active_relays
+            
+            print(f"📊 Active relays before completion: {get_active_relays()}")
+            signal_job_completion(job_id)
+            print(f"📊 Active relays after completion: {get_active_relays()}")
+            print(f"✅ WebSocket relay cleanup completed for job {job_id}")
+            
+        except Exception as signal_e:
+            print(f"⚠️ Failed to signal job completion: {signal_e}")
+            # Try to force cleanup anyway
             try:
-                log_file_path = "/tmp/comfyui_api.log"
-                if os.path.exists(log_file_path):
-                    with open(log_file_path, 'r') as f:
-                        recent_logs = f.read().split('\n')[-20:]  # Last 20 lines
-                        print(f"🔍 Recent ComfyUI API logs: {recent_logs}")
-            except Exception:
-                pass
-            
-            raise RuntimeError(error_msg)
-
-        print(f"✅ Successfully submitted job {job_id} to ComfyUI API")
+                from lib.ws_preview_relay import cleanup_all_relays
+                cleanup_all_relays()
+            except Exception as cleanup_e:
+                print(f"⚠️ Failed to force cleanup relays: {cleanup_e}")
+        
         # 5) Return accepted; completion goes via webhook -> EF -> DB
         return {"status": "accepted", "job_id": job_id}
     
@@ -1018,16 +764,16 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         # Categorize error types for better debugging
         if "connection refused" in str(e).lower():
             error_details["category"] = "connection_error"
-            error_details["suggestion"] = "ComfyUI API server may not be running or ready"
+            error_details["suggestion"] = "ComfyUI server may not be running or ready"
         elif "timeout" in str(e).lower():
             error_details["category"] = "timeout_error"
             error_details["suggestion"] = "Request timed out - server may be overloaded"
         elif "404" in str(e):
             error_details["category"] = "endpoint_error"
-            error_details["suggestion"] = "ComfyUI API endpoint not found - check route configuration"
-        elif "webhook" in str(e).lower():
-            error_details["category"] = "webhook_error"
-            error_details["suggestion"] = "Issue with webhook configuration or delivery"
+            error_details["suggestion"] = "ComfyUI endpoint not found - check server configuration"
+        elif "prompt_id" in str(e).lower():
+            error_details["category"] = "generation_error"
+            error_details["suggestion"] = "Issue with ComfyUI prompt generation or processing"
         else:
             error_details["category"] = "general_error"
             error_details["suggestion"] = "Check logs for detailed error information"
@@ -1038,6 +784,15 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             tracker.mark_failed(job_id, str(e))
         except Exception as tracker_e:
             print(f"⚠️ Failed to update job tracker: {tracker_e}")
+        
+        # Clean up WebSocket relay on failure
+        try:
+            from lib.ws_preview_relay import signal_job_completion, get_active_relays
+            print(f"📊 Active relays before failure cleanup: {get_active_relays()}")
+            signal_job_completion(job_id)
+            print(f"📊 Active relays after failure cleanup: {get_active_relays()}")
+        except Exception as cleanup_e:
+            print(f"⚠️ Failed to cleanup relay on failure: {cleanup_e}")
     
         return {
             "job_id": job_id, 
@@ -1060,7 +815,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
     max_containers=30,
     retries=3,
 )
-@modal.concurrent(max_inputs=3)
+@modal.concurrent(max_inputs=1)
 class Fast:
     """Production ComfyUI class for optimized batch image generation."""
 
@@ -1160,92 +915,7 @@ def api_endpoint(request_data: Dict[str, Any]):
     raise HTTPException(status_code=503, detail="Submission failed for all GPU classes")
 
 
-# Webhook endpoint for comfyui-api completion callbacks
-@app.function(
-    image=cuda_image,  # Use the same image as main functions so lib/ is available
-    secrets=[aws_secret, inference_secret, supabase_secret]
-)
-@modal.fastapi_endpoint(method="POST", label="primeshot-webhook")
-def webhook_endpoint(payload: Dict[str, Any], secret: str = Query(None)):
-    """Accept comfyui-api webhook callbacks, extract S3 outputs, and return summary.
-
-    Expected to receive user_id, job_id, and one or more output artifacts that
-    include S3 keys/URLs for multi-resolution web variants and orig (2K/4K).
-    
-    Requires 'secret' query parameter matching WEBHOOK_SECRET.
-    """
-    import os
-    
-    # Verify webhook authentication via query parameter
-    expected_secret = os.environ.get("WEBHOOK_SECRET")
-    if not expected_secret:
-        return {"status": "error", "error": "Webhook secret not configured"}
-    
-    if not secret:
-        return {"status": "error", "error": "Missing 'secret' query parameter"}
-    
-    if secret != expected_secret:
-        return {"status": "error", "error": "Invalid webhook secret"}
-    
-    # Import using absolute paths to avoid module resolution issues
-    import sys
-    import os
-    sys.path.insert(0, '/root')
-    
-    try:
-        from lib.webhook_handler import handle_webhook
-        from lib.s3_artifacts import find_s3_entries, partition_artifacts
-    except ImportError as ie:
-        print(f"Import error: {ie}")
-        print(f"Current working directory: {os.getcwd()}")
-        print(f"Python path: {sys.path}")
-        print(f"Contents of /root: {os.listdir('/root') if os.path.exists('/root') else 'N/A'}")
-        print(f"Contents of /root/lib: {os.listdir('/root/lib') if os.path.exists('/root/lib') else 'N/A'}")
-        raise
-
-    try:
-        result = handle_webhook(payload)
-                
-    except Exception as e:
-        return {"status": "error", "error": str(e), "received": payload}
-
-    # Broadcast completion (best effort)
-    try:
-        import asyncio
-        import websockets
-    
-        async def _broadcast():
-            base = os.environ.get("PROGRESS_WS_URL")
-            if not base:
-                return
-    
-            job_id = result.get("job_id") or "unknown"
-    
-            # Allow either full URL with {job_id} placeholder or base
-            if "{job_id}" in base:
-                ws_url = base.replace("{job_id}", job_id)
-            else:
-                ws_url = base.rstrip("/") + f"/ws/broadcast/{job_id}"
-    
-            msg = {
-                "type": "inference_complete",
-                "user_id": result.get("user_id"),
-                "job_id": job_id,
-                "artifacts": result.get("artifacts"),
-            }
-    
-            try:
-                async with websockets.connect(ws_url, ping_interval=None) as ws:
-                    await ws.send(json.dumps(msg))
-    
-            except Exception as _e:
-                print(f"⚠️ WS broadcast failed: {_e}")
-        asyncio.run(_broadcast())
-    
-    except Exception as _wse:
-        print(f"⚠️ WS broadcast error: {_wse}")
-
-    return result
+# Webhook endpoint removed - no longer using webhooks, only synchronous S3 mode
 
 
 # WebSocket Progress Server for Inference
@@ -1297,12 +967,14 @@ def progress():
     )
 
     active_connections: Dict[str, List[WebSocket]] = {}
+    connection_timestamps: Dict[str, float] = {}  # Track when connections were created
 
     class ConnectionManager:
         @staticmethod
         async def connect_listener(websocket: WebSocket, job_id: str) -> None:
             await websocket.accept()
             active_connections.setdefault(job_id, []).append(websocket)
+            connection_timestamps[job_id] = time.time()  # Track connection time
 
         @staticmethod
         def disconnect(websocket: WebSocket) -> None:
@@ -1311,6 +983,7 @@ def progress():
                     sockets.remove(websocket)
                 if not sockets:
                     active_connections.pop(job_id, None)
+                    connection_timestamps.pop(job_id, None)  # Clean up timestamp
 
         @staticmethod
         async def broadcast(job_id: str, message: str) -> None:
@@ -1319,8 +992,67 @@ def progress():
                     await ws.send_text(message)
                 except Exception:
                     ConnectionManager.disconnect(ws)
+        
+        @staticmethod
+        def cleanup_stale_connections(max_age_minutes: int = 15) -> None:
+            """Clean up connections older than max_age_minutes."""
+            import time
+            current_time = time.time()
+            max_age_seconds = max_age_minutes * 60
+            
+            stale_jobs = []
+            for job_id, timestamp in list(connection_timestamps.items()):
+                if current_time - timestamp > max_age_seconds:
+                    stale_jobs.append(job_id)
+            
+            for job_id in stale_jobs:
+                logger.info(f"Cleaning up stale connection for job {job_id}")
+                active_connections.pop(job_id, None)
+                connection_timestamps.pop(job_id, None)
+            
+            if stale_jobs:
+                logger.info(f"Cleaned up {len(stale_jobs)} stale connections")
+        
+        @staticmethod
+        def get_connection_stats() -> dict:
+            """Get statistics about active connections."""
+            import time
+            current_time = time.time()
+            
+            stats = {
+                "total_jobs": len(active_connections),
+                "total_connections": sum(len(sockets) for sockets in active_connections.values()),
+                "jobs_by_age": {}
+            }
+            
+            for job_id, timestamp in connection_timestamps.items():
+                age_minutes = int((current_time - timestamp) / 60)
+                age_bucket = f"{age_minutes//5 * 5}-{age_minutes//5 * 5 + 4}min"
+                stats["jobs_by_age"][age_bucket] = stats["jobs_by_age"].get(age_bucket, 0) + 1
+            
+            return stats
 
     manager = ConnectionManager()
+
+    # Periodic cleanup task
+    async def periodic_cleanup():
+        """Periodically clean up stale connections."""
+        while True:
+            await asyncio.sleep(300)  # Run every 5 minutes
+            try:
+                manager.cleanup_stale_connections(max_age_minutes=15)
+                stats = manager.get_connection_stats()
+                logger.info(f"WebSocket stats: {stats}")
+            except Exception as e:
+                logger.error(f"Error in periodic cleanup: {e}")
+
+    # Start cleanup task
+    asyncio.create_task(periodic_cleanup())
+
+    @web_app.get("/stats")
+    async def get_stats():
+        """Get WebSocket connection statistics."""
+        return manager.get_connection_stats()
 
     @web_app.websocket("/ws/progress/{job_id}")
     async def websocket_progress_endpoint(websocket: WebSocket, job_id: str):
@@ -1361,7 +1093,7 @@ def progress():
     max_containers=1,
     timeout=1300
 )
-@modal.concurrent(max_inputs=4, target_inputs=4)
+@modal.concurrent(max_inputs=1)
 @modal.web_server(8000, startup_timeout=120)
 def dev_server():
     """Interactive ComfyUI development server for workflow creation."""

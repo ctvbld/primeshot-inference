@@ -33,6 +33,7 @@ def patch_workflow(
     character_lora: str | None = None,
     style_lora: str | None = None,
     bypass_nodes: list[dict] | None = None,
+    enable_previews: bool = True,  # Enable preview generation
 ) -> Dict[str, Any]:
     """Apply minimal patches to a ComfyUI workflow JSON.
     This assumes nodes are identified by common labels; you may adjust mapping.
@@ -231,7 +232,124 @@ def patch_workflow(
         print(f"✅ Using base 1K generation (quality={quality}) - no upscaling needed")
         # bypass_upscale_nodes(wf)
 
+    # Add preview nodes for real-time progress if enabled
+    if enable_previews:
+        print("🎨 Adding preview nodes for real-time progress")
+        _add_preview_nodes(wf)
+
     return wf
+
+
+def _add_preview_nodes(workflow: Dict[str, Any]) -> None:
+    """Add preview nodes to workflow for real-time progress visualization.
+    
+    This function injects PreviewImage nodes at key points in the workflow
+    to enable real-time preview generation during inference.
+    """
+    try:
+        # Find KSampler nodes (main generation nodes)
+        sampler_nodes = []
+        for node_id, node in workflow.items():
+            if isinstance(node, dict) and node.get("class_type") == "KSampler":
+                sampler_nodes.append((node_id, node))
+        
+        if not sampler_nodes:
+            print("⚠️ No KSampler nodes found, trying alternative sampling nodes")
+            # Look for other sampling node types
+            for node_id, node in workflow.items():
+                if isinstance(node, dict):
+                    class_type = node.get("class_type", "")
+                    if "sampler" in class_type.lower() or "sample" in class_type.lower():
+                        sampler_nodes.append((node_id, node))
+        
+        if not sampler_nodes:
+            print("⚠️ No sampling nodes found, skipping preview injection")
+            return
+        
+        print(f"🎯 Found {len(sampler_nodes)} sampling nodes for preview injection")
+        
+        # Add preview nodes for each sampler
+        preview_node_id = 9000  # Start with high ID to avoid conflicts
+        
+        for sampler_id, sampler_node in sampler_nodes:
+            # Find a VAE node to use for decoding
+            vae_node_ref = None
+            for node_id, node in workflow.items():
+                if isinstance(node, dict) and node.get("class_type") in ["VAELoader", "CheckpointLoaderSimple"]:
+                    if node.get("class_type") == "VAELoader":
+                        vae_node_ref = [node_id, 0]  # VAE output
+                    elif node.get("class_type") == "CheckpointLoaderSimple":
+                        vae_node_ref = [node_id, 2]  # VAE is typically output 2
+                    break
+            
+            if not vae_node_ref:
+                print(f"⚠️ No VAE found for preview of sampler {sampler_id}, skipping")
+                continue
+            
+            # Create VAEDecode node for preview
+            vae_decode_id = str(preview_node_id)
+            preview_node_id += 1
+            
+            workflow[vae_decode_id] = {
+                "class_type": "VAEDecode",
+                "inputs": {
+                    "samples": [sampler_id, 0],  # Connect to sampler's latent output
+                    "vae": vae_node_ref  # Connect to VAE
+                },
+                "_meta": {
+                    "title": f"PreviewDecode_{sampler_id}",
+                    "_ui_name": f"PreviewDecode_{sampler_id}"
+                }
+            }
+            
+            # Create PreviewImage node that connects to the VAEDecode
+            preview_id = str(preview_node_id)
+            preview_node_id += 1
+            
+            workflow[preview_id] = {
+                "class_type": "PreviewImage",
+                "inputs": {
+                    "images": [vae_decode_id, 0]  # Connect to VAEDecode's image output
+                },
+                "_meta": {
+                    "title": f"Preview_{sampler_id}",
+                    "_ui_name": f"Preview_{sampler_id}",
+                    "preview_enabled": True
+                }
+            }
+            
+            print(f"✅ Added VAEDecode node {vae_decode_id} and preview node {preview_id} for sampler {sampler_id}")
+        
+        # Also try to find VAE decode nodes and add previews there
+        vae_decode_nodes = []
+        for node_id, node in workflow.items():
+            if isinstance(node, dict) and node.get("class_type") == "VAEDecode":
+                vae_decode_nodes.append((node_id, node))
+        
+        for vae_id, vae_node in vae_decode_nodes:
+            preview_id = str(preview_node_id)
+            preview_node_id += 1
+            
+            # Add PreviewImage node after VAE decode (this shows actual images)
+            workflow[preview_id] = {
+                "class_type": "PreviewImage", 
+                "inputs": {
+                    "images": [vae_id, 0]  # Connect to VAE decode output
+                },
+                "_meta": {
+                    "title": f"VAEPreview_{vae_id}",
+                    "_ui_name": f"VAEPreview_{vae_id}",
+                    "preview_enabled": True
+                }
+            }
+            
+            print(f"✅ Added VAE preview node {preview_id} for VAE decode {vae_id}")
+        
+        print(f"🎨 Successfully added {preview_node_id - 9000} preview nodes to workflow")
+        
+    except Exception as e:
+        print(f"⚠️ Failed to add preview nodes: {e}")
+        # Don't fail the entire workflow if preview injection fails
 
 
 def _find_node_ids_by_ui_name(workflow: Dict[str, Any], ui_name: str) -> list[str]:
