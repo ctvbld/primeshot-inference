@@ -228,10 +228,10 @@ def _launch_inference_runtime(port: int) -> None:
         'COMFYUI_NOVRAM': 'false'
     })
     
-    # Launch ComfyUI with optimized settings
+    # Launch ComfyUI with optimized settings and preview support
     cmd = (
         f"comfy launch --background -- --port {port} --use-sage-attention --gpu-only "
-        f"--bf16-unet --bf16-vae --output-directory /data/outputs"
+        f"--bf16-unet --bf16-vae --output-directory /data/outputs --preview-method auto"
     )
     subprocess.run(cmd, shell=True, check=True, env=env)
     print("✅ ComfyUI server running with SageAttention and performance optimizations")
@@ -411,13 +411,22 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         print(f"  - char_name: {char_name}")
         print(f"  - style_name: {style_name}")
 
+        # Handle seed generation - if seed is -1 or None, generate a random seed
+        seed_value = p.get("seed")
+        if seed_value is None or seed_value == -1:
+            import random
+            seed_value = random.randint(0, 2**32 - 1)
+            print(f"🎲 Generated random seed: {seed_value} for job {job_id}")
+        else:
+            print(f"🎯 Using provided seed: {seed_value} for job {job_id}")
+
         patched = patch_workflow(
             wf,
             prompt=prepared.get("prompt", ""),
             negative_prompt=prepared.get("negative_prompt", ""),
             width=width,
             height=height,
-            seed=p.get("seed"),
+            seed=seed_value,
             images_count=int(p.get("nb_takes", 1)),
             quality=p.get("quality", "1K"),  # Pass quality for upscale logic
             lora_filename=None,
@@ -425,6 +434,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             style_lora=style_name,
             bypass_nodes=prepared.get("bypass_nodes"),
         )
+        print(f"🔧 Workflow patched with seed {seed_value} for job {job_id}")
 
         # 3) Generate client ID for ComfyUI API
         comfyui_base = f"http://127.0.0.1:{PORT}"
@@ -630,7 +640,8 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                                         orig_key = f"user-images/{user_id}/inference/{job_id}/orig/{orig_filename}"
                                         artifacts["orig"].append({
                                             "bucket": bucket,
-                                            "key": orig_key
+                                            "key": orig_key,
+                                            "seed": seed_value
                                         })
                                         
                                         print(f"  ✅ Copied original to mounted S3: {orig_path}")
@@ -673,7 +684,8 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                                                     artifacts["web"].append({
                                                         "bucket": bucket,
                                                         "key": web_key,
-                                                        "size": f"{size}px"
+                                                        "size": f"{size}px",
+                                                        "seed": seed_value
                                                     })
                                     
                                     print(f"📦 Created {len(artifacts['orig'])} original + {len(artifacts['web'])} web versions using mounted S3 filesystem")
@@ -1046,8 +1058,37 @@ def progress():
             except Exception as e:
                 logger.error(f"Error in periodic cleanup: {e}")
 
-    # Start cleanup task
-    asyncio.create_task(periodic_cleanup())
+    # Store background tasks for proper cleanup
+    background_tasks = set()
+    
+    # Startup event to initialize background tasks
+    @web_app.on_event("startup")
+    async def startup_event():
+        """Initialize background tasks when the app starts"""
+        task = asyncio.create_task(periodic_cleanup())
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+        logger.info("Started periodic cleanup task")
+    
+    # Shutdown event to clean up background tasks
+    @web_app.on_event("shutdown")
+    async def shutdown_event():
+        """Clean up background tasks when the app shuts down"""
+        logger.info("Shutting down background tasks...")
+        for task in background_tasks:
+            task.cancel()
+        await asyncio.gather(*background_tasks, return_exceptions=True)
+        logger.info("Background tasks cleaned up")
+
+    @web_app.get("/health")
+    async def health_check():
+        """Health check endpoint for the progress server."""
+        return {"status": "healthy", "service": "primeshot-inference-progress"}
+
+    @web_app.get("/api/health")
+    async def api_health_check():
+        """API health check endpoint (matches training app pattern)."""
+        return {"status": "healthy", "service": "primeshot-inference-progress", "version": "1.0.0"}
 
     @web_app.get("/stats")
     async def get_stats():
@@ -1167,9 +1208,9 @@ def dev_server():
         'COMFYUI_NOVRAM': 'false'
     })
     
-    # Launch ComfyUI UI server with SageAttention and H100 performance optimizations
+    # Launch ComfyUI UI server with SageAttention, H100 performance optimizations, and preview support
     subprocess.Popen(
-        "comfy launch -- --listen 0.0.0.0 --port 8000 --use-sage-attention --gpu-only --bf16-unet --bf16-vae --output-directory /data/outputs",
+        "comfy launch -- --listen 0.0.0.0 --port 8000 --use-sage-attention --gpu-only --bf16-unet --bf16-vae --output-directory /data/outputs --preview-method auto",
         shell=True,
         env=env
     )
