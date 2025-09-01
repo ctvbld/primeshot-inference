@@ -18,6 +18,8 @@ class WebSocketRelay:
         self.image_index = 0
         self.max_preview_size = 50 * 1024  # 50KB max per preview
         self.current_preview: Optional[str] = None
+        self.global_status: Optional[str] = None  # Track global job status
+        self.global_message: Optional[str] = None  # Track global job message
         
     def cleanup_memory(self):
         """Clean up cached preview data."""
@@ -100,17 +102,33 @@ class WebSocketRelay:
             if 'optimized_data' in locals():
                 del optimized_data
             gc.collect()
+    
+    def send_message(self, message_data: dict):
+        """Send a status message through the WebSocket relay."""
+        # Update current status and message
+        self.global_status = message_data.get('status')
+        self.global_message = message_data.get('message')
+        print(f"📝 Updated status for job {self.job_id}: {self.global_status} - {self.global_message}")
+        
+        # Queue the message for sending
+        if not hasattr(self, '_custom_messages'):
+            self._custom_messages = []
+        self._custom_messages.append(message_data)
+        print(f"📝 Queued status message for job {self.job_id}: {message_data.get('status', 'unknown')}")
 
 
-def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_sec: float = 1.5) -> None:
+def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_sec: float = 1.5, image_index: int = 0) -> None:
     """Start a memory-efficient background relay from ComfyUI WS to our progress WS broadcast endpoint."""
     
     # Keep a strong reference to prevent garbage collection during relay operation
     relay_manager = WebSocketRelay(job_id)
+    relay_manager.image_index = image_index  # Set the image index for this relay
     
     # Store relay manager in a global dict to prevent garbage collection
     if not hasattr(start_relay, '_active_relays'):
         start_relay._active_relays = {}
+    # Ensure single active relay per job: replace any previous and let it clean up
+    prev = start_relay._active_relays.get(job_id)
     start_relay._active_relays[job_id] = relay_manager
     
     # Add a completion flag
@@ -142,10 +160,11 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
             )
             print(f"✅ Connected to ComfyUI WebSocket for job {job_id}")
             
-            # Connect to progress broadcast WebSocket (to send progress) with retry logic
+            # Connect to progress broadcast WebSocket (to send progress) with enhanced retry logic
             print(f"🔌 Connecting to progress broadcast: {progress_ws_url}")
             
             # First, try to check if the progress server is healthy (try both endpoints like training app)
+            server_healthy = False
             try:
                 import urllib.request
                 import urllib.error
@@ -156,17 +175,19 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                     health_url = base_url + health_path
                     try:
                         print(f"🏥 Checking progress server health: {health_url}")
-                        with urllib.request.urlopen(health_url, timeout=10) as response:
+                        with urllib.request.urlopen(health_url, timeout=15) as response:
                             if response.status == 200:
-                                print(f"✅ Progress server is healthy")
+                                print(f"✅ Progress server is healthy at {health_path}")
+                                server_healthy = True
                                 break
                             else:
                                 print(f"⚠️ Health check {health_path} returned status {response.status}")
                     except Exception as endpoint_e:
                         print(f"⚠️ Health check {health_path} failed: {endpoint_e}")
                         continue
-                else:
-                    print(f"⚠️ All health check endpoints failed")
+                
+                if not server_healthy:
+                    print(f"⚠️ All health check endpoints failed - server may be starting up")
                     
             except Exception as health_e:
                 print(f"⚠️ Progress server health check setup failed: {health_e}")
@@ -174,46 +195,56 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
             print(f"🔄 Proceeding with WebSocket connection attempt...")
             
             broadcast_ws = None
-            max_retries = 3
-            retry_delay = 2  # Start with 2 seconds
+            max_retries = 6  # More retries for Modal cold starts
+            retry_delay = 5  # Start with 5 seconds for Modal containers
             
             for attempt in range(max_retries):
                 try:
                     print(f"🔄 Connection attempt {attempt + 1}/{max_retries} to progress broadcast")
+                    print(f"  🌐 URL: {progress_ws_url}")
+                    print(f"  ⏰ Open timeout: 90s (Modal container cold start)")
+                    
                     broadcast_ws = await websockets.connect(
                         progress_ws_url, 
-                        ping_interval=30,  # Keep connection alive (same as training)
-                        ping_timeout=20,   # Match training app timeout
-                        close_timeout=10,  # Match training app timeout
+                        ping_interval=45,  # Longer ping interval for Modal
+                        ping_timeout=30,   # Longer ping timeout for Modal
+                        close_timeout=15,  # Longer close timeout
                         max_size=max_size,
                         compression=None,
-                        open_timeout=30    # Match training app timeout (30 seconds)
+                        open_timeout=90    # Much longer timeout for Modal GPU containers (90 seconds)
                     )
-                    print(f"✅ Connected to progress broadcast for job {job_id}")
+                    print(f"✅ Connected to progress broadcast for job {job_id} on attempt {attempt + 1}")
                     break
                 except Exception as conn_e:
                     print(f"⚠️ Connection attempt {attempt + 1} failed: {conn_e}")
+                    print(f"  📊 Error type: {type(conn_e).__name__}")
+                    
                     if attempt < max_retries - 1:
-                        print(f"⏳ Retrying in {retry_delay} seconds...")
-                        await asyncio.sleep(retry_delay)
-                        retry_delay *= 2  # Exponential backoff
+                        # Add extra delay if server wasn't healthy, with Modal-appropriate delays
+                        base_delay = retry_delay * (3 if not server_healthy else 1)
+                        # Add extra time for early attempts when Modal container might still be loading
+                        cold_start_bonus = 10 if attempt < 2 else 0
+                        actual_delay = base_delay + cold_start_bonus
+                        print(f"⏳ Retrying in {actual_delay} seconds (Modal container may still be loading models)...")
+                        await asyncio.sleep(actual_delay)
+                        retry_delay = min(retry_delay * 1.3, 25)  # Gentler backoff, max 25s for Modal
                     else:
                         print(f"❌ Failed to connect to progress broadcast after {max_retries} attempts")
-                        print(f"🔄 Continuing without progress broadcast - inference will still work")
+                        print(f"⚠️ Progress updates will not be available for this job")
+                        print(f"🔍 Modal container may need more time to fully initialize")
                         broadcast_ws = None
             
             # Send initial connection message (only if broadcast_ws is connected)
             if broadcast_ws:
                 try:
-                    initial_msg = {
+                    await broadcast_ws.send(_json.dumps({
                         "job_id": job_id,
                         "job_type": "inference",
                         "status": "initializing",
                         "progress": 0,
                         "message": "WebSocket relay connected",
                         "timestamp": int(time.time() * 1000)
-                    }
-                    await broadcast_ws.send(_json.dumps(initial_msg))
+                    }))
                     print(f"📤 Sent initial connection message for job {job_id}")
                 except Exception as init_e:
                     print(f"⚠️ Failed to send initial message for job {job_id}: {init_e}")
@@ -223,7 +254,7 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
             try:
                 message_count = 0
                 start_time = time.time()
-                max_runtime = 600  # 10 minutes maximum runtime
+                max_runtime = 1800  # 30 minutes maximum runtime for Modal inference jobs
                 
                 while True:
                     # Check if manager still exists
@@ -238,26 +269,39 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                         # Send timeout completion message
                         if broadcast_ws:
                             try:
-                                timeout_msg = {
+                                await broadcast_ws.send(_json.dumps({
                                     "job_id": job_id,
                                     "job_type": "inference",
                                     "status": "closed",
                                     "final": True,
                                     "close_connection": True,
                                     "timeout": True
-                                }
-                                await broadcast_ws.send(_json.dumps(timeout_msg))
+                                }))
                                 print(f"📤 Sent timeout close signal for job {job_id}")
                             except Exception as timeout_e:
                                 print(f"⚠️ Failed to send timeout message: {timeout_e}")
                         break
+                    
+                    # Check for and send any custom messages
+                    if hasattr(manager, '_custom_messages') and manager._custom_messages:
+                        custom_messages = manager._custom_messages.copy()
+                        manager._custom_messages.clear()  # Clear the queue
+                        
+                        for custom_msg in custom_messages:
+                            if broadcast_ws:
+                                try:
+                                    print(f"🔍 Sending custom message for job {job_id}: {custom_msg}")
+                                    await broadcast_ws.send(_json.dumps(custom_msg))
+                                    print(f"📤 Sent custom message for job {job_id}: {custom_msg.get('status', 'unknown')}")
+                                except Exception as custom_e:
+                                    print(f"⚠️ Failed to send custom message for job {job_id}: {custom_e}")
                     
                     # Check if job completion was signaled externally
                     if hasattr(start_relay, '_completion_flags') and start_relay._completion_flags.get(job_id, False):
                         print(f"🏁 External completion signal received for job {job_id}")
                         # Send completion message and exit
                         try:
-                            completion_msg = {
+                            await broadcast_ws.send(_json.dumps({
                                 "job_id": job_id,
                                 "job_type": "inference",
                                 "status": "completed",
@@ -265,22 +309,11 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                 "message": "Generation completed",
                                 "timestamp": int(time.time() * 1000),
                                 "final": True  # Signal that this is the final message
-                            }
-                            await broadcast_ws.send(_json.dumps(completion_msg))
+                            }))
                             print(f"📤 Sent external completion message for job {job_id}")
                             
                             # Send a close signal after a brief delay
-                            await asyncio.sleep(0.1)
-                            close_msg = {
-                                "job_id": job_id,
-                                "job_type": "inference",
-                                "status": "closed",
-                                "message": "Connection closing",
-                                "timestamp": int(time.time() * 1000),
-                                "close_connection": True
-                            }
-                            await broadcast_ws.send(_json.dumps(close_msg))
-                            print(f"📤 Sent close signal for job {job_id}")
+                            # Do not close the broadcast mid-run; final close happens once per job
                             
                         except Exception as ext_complete_e:
                             print(f"⚠️ Failed to send external completion message for job {job_id}: {ext_complete_e}")
@@ -304,7 +337,7 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                             # Handle both text (JSON) and binary (preview image) messages
                             if isinstance(msg, bytes):
                                 # Binary message - likely a preview image from ComfyUI
-                                print(f"📸 Received binary preview data for job {job_id} (size: {len(msg)} bytes)")
+                                print(f"📸 Received binary preview data for job {job_id} (size: {len(msg)} bytes)") 
                                 
                                 # ComfyUI sends binary data with 8-byte header format
                                 try:
@@ -360,17 +393,24 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                                     optimized_preview = manager.optimize_preview_base64(preview_base64)
                                                     
                                                     if optimized_preview:
+                                                        # Store the preview in the manager so it gets included in status messages
+                                                        manager.current_preview = optimized_preview
+                                                        manager.last_preview_ts = now
+                                                        print(f"📸 Stored ComfyUI binary preview for job {job_id} (original: {len(image_data)} bytes, optimized: {len(optimized_preview)} chars)")
+                                                        
+                                                        # Send preview immediately as a separate message for real-time updates
                                                         preview_evt = {
                                                             "job_id": job_id,
                                                             "job_type": "inference",
-                                                            "status": "running",
+                                                            "status": "generating",
                                                             "preview_images": [optimized_preview],
-                                                            "preview_index": manager.image_index,
-                                                            "timestamp": int(time.time() * 1000)
+                                                            "image_index": manager.image_index,
+                                                            "webImageUrl": optimized_preview,  # Also provide as webImageUrl for direct access
+                                                            "imageUrl": optimized_preview,     # Also provide as imageUrl for fallback
+                                                            "timestamp": int(time.time() * 1000),
+                                                            "message": "Generating images"
                                                         }
                                                         await broadcast_ws.send(_json.dumps(preview_evt))
-                                                        manager.last_preview_ts = now
-                                                        manager.image_index += 1
                                                         print(f"📸 Sent ComfyUI binary preview for job {job_id} (original: {len(image_data)} bytes, optimized: {len(optimized_preview)} chars)")
                                             except Exception as preview_e:
                                                 print(f"⚠️ Failed to send binary preview for job {job_id}: {preview_e}")
@@ -388,9 +428,13 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                             data = _json.loads(msg)
                             
                             # Debug: Log message types to understand ComfyUI's format
-                            if message_count <= 5 or message_count % 25 == 0:
+                            if message_count <= 10 or message_count % 10 == 0:
                                 msg_type = data.get("type", "unknown") if isinstance(data, dict) else "non-dict"
                                 print(f"🔍 ComfyUI message #{message_count} for job {job_id}: type='{msg_type}', keys={list(data.keys()) if isinstance(data, dict) else 'N/A'}")
+                                
+                                # Log preview-related messages in detail
+                                if msg_type in ["preview", "progress"] or "preview" in str(data).lower():
+                                    print(f"🔍 PREVIEW MESSAGE: {data}")
                                 
                         except Exception as parse_e:
                             print(f"⚠️ Failed to parse ComfyUI message for job {job_id}: {parse_e}")
@@ -401,108 +445,26 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                             "job_id": job_id,
                             "job_type": "inference",
                             "timestamp": int(time.time() * 1000),  # Milliseconds
-                            "message": "Processing..."
+                            "message": "",
+                            "image_index": manager.image_index  # Always include image_index for sequential generation
                         }
                         
+                        # Only process ComfyUI messages for previews, not status
+                        # Status is now handled entirely by the unified status system
+                        
                         if isinstance(data, dict):
-                            # Handle ComfyUI progress updates (most accurate)
-                            if "progress" in data:
-                                progress_value = data.get("progress", 0)
-                                evt["progress"] = min(100, max(0, progress_value))
+                            # Always process ComfyUI messages for previews, regardless of global status
+                            # Set status from unified system if available, otherwise use default
+                            if manager.global_status and manager.global_message:
+                                evt["status"] = manager.global_status
+                                evt["message"] = manager.global_message
+                            else:
+                                # Default status for ComfyUI messages - always process for previews
+                                evt["status"] = "generating"
+                                evt["message"] = "Generating images"
                                 
-                                # Map progress to status
-                                if progress_value >= 100:
-                                    evt["status"] = "completed"
-                                    evt["message"] = "Generation completed"
-                                elif progress_value > 0:
-                                    evt["status"] = "running"
-                                    evt["message"] = f"Generating... {progress_value:.1f}%"
-                                else:
-                                    evt["status"] = "initializing"
-                                    evt["message"] = "Initializing generation..."
-                                
-                                # Check for preview data in progress messages (ComfyUI often sends previews here)
-                                if "preview" in data:
-                                    preview = data.get("preview")
-                                    print(f"🔍 Found preview in progress message for job {job_id}")
-                                elif "image" in data:
-                                    preview = data.get("image")
-                                    print(f"🔍 Found image in progress message for job {job_id}")
                             
-                            # Handle ComfyUI execution updates with progressive progress
-                            elif data.get("type") == "execution_start":
-                                evt["status"] = "running"
-                                evt["progress"] = 5
-                                evt["message"] = "Starting generation..."
-                                manager.execution_progress = 5  # Track base progress
-                                
-                            elif data.get("type") == "executing":
-                                node_id = data.get("data", {}).get("node")
-                                evt["status"] = "running"
-                                
-                                # Progressive progress based on execution count
-                                if not hasattr(manager, 'execution_progress'):
-                                    manager.execution_progress = 5
-                                
-                                # Increment progress gradually for each executing node
-                                manager.execution_progress = min(85, manager.execution_progress + 3)
-                                evt["progress"] = manager.execution_progress
-                                evt["message"] = f"Processing node {node_id}..."
-                                
-                            elif data.get("type") == "execution_cached":
-                                evt["status"] = "running"
-                                if not hasattr(manager, 'execution_progress'):
-                                    manager.execution_progress = 50
-                                else:
-                                    manager.execution_progress = min(85, manager.execution_progress + 5)
-                                evt["progress"] = manager.execution_progress
-                                evt["message"] = "Using cached results..."
-                                
-                            elif data.get("type") == "executed":
-                                # Handle executed messages (these often contain preview images)
-                                evt["status"] = "running"
-                                if not hasattr(manager, 'execution_progress'):
-                                    manager.execution_progress = 60
-                                else:
-                                    manager.execution_progress = min(95, manager.execution_progress + 5)
-                                evt["progress"] = manager.execution_progress
-                                evt["message"] = "Processing completed nodes..."
-                                
-                            elif data.get("type") == "execution_complete":
-                                evt["status"] = "completed"
-                                evt["progress"] = 100
-                                evt["message"] = "Generation completed"
-                                
-                                # Mark job as completed and break out of loop
-                                print(f"🏁 ComfyUI execution_complete received for job {job_id}")
-                                
-                                # Send the completion message
-                                if broadcast_ws:
-                                    try:
-                                        completion_message = _json.dumps(evt)
-                                        await broadcast_ws.send(completion_message)
-                                        print(f"📤 Sent completion message for job {job_id}")
-                                        
-                                        # Send a final close signal
-                                        await asyncio.sleep(0.1)
-                                        close_msg = {
-                                            "job_id": job_id,
-                                            "job_type": "inference", 
-                                            "status": "closed",
-                                            "final": True,
-                                            "close_connection": True
-                                        }
-                                        await broadcast_ws.send(_json.dumps(close_msg))
-                                        print(f"📤 Sent close signal for job {job_id}")
-                                        
-                                    except Exception as completion_e:
-                                        print(f"⚠️ Failed to send completion message: {completion_e}")
-                                
-                                # Break out of the message loop
-                                print(f"🏁 Breaking out of WebSocket loop for completed job {job_id}")
-                                break
-                            
-                            # Handle preview images with memory management
+                            # Handle preview extraction from ComfyUI messages
                             preview = None
                             
                             # Check for different preview formats from ComfyUI
@@ -514,17 +476,17 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                 print(f"🔍 Found preview in 'preview' type message for job {job_id}")
                             
                             # 2. Progress messages with preview data (most common for sampling previews)
-                            elif data.get("type") == "progress":
+                            elif data.get("type") in ["progress", "progress_state"]:
                                 progress_data = data.get("data", {})
                                 
                                 # Log progress message structure for debugging
                                 if message_count <= 10 or "preview" in str(progress_data).lower():
                                     progress_keys = list(progress_data.keys()) if isinstance(progress_data, dict) else []
-                                    print(f"🔍 Progress message keys: {progress_keys}")
+                                    print(f"🔍 {data.get('type')} message keys: {progress_keys}")
                                     
                                     # Log detailed structure if it might contain preview
                                     if any(key in str(progress_data).lower() for key in ["preview", "image", "base64"]):
-                                        print(f"🔍 Progress data structure: {type(progress_data)} with keys: {progress_keys}")
+                                        print(f"🔍 {data.get('type')} data structure: {type(progress_data)} with keys: {progress_keys}")
                                         for k, v in progress_data.items() if isinstance(progress_data, dict) else []:
                                             if isinstance(v, str) and len(v) > 100:
                                                 print(f"🔍   {k}: <string length {len(v)}>")
@@ -532,6 +494,10 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                                 print(f"🔍   {k}: dict with keys {list(v.keys())}")
                                             else:
                                                 print(f"🔍   {k}: {type(v)} = {v}")
+                                    else:
+                                        # Always log progress_state structure to see what we're missing
+                                        if data.get('type') == 'progress_state':
+                                            print(f"🔍 progress_state data: {progress_data}")
                                 
                                 # Check for preview in progress data
                                 if "preview" in progress_data:
@@ -624,7 +590,9 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                     
                                     if optimized_preview:
                                         evt["preview_images"] = [optimized_preview]
-                                        evt["preview_index"] = manager.image_index
+                                        evt["image_index"] = manager.image_index
+                                        evt["webImageUrl"] = optimized_preview  # Also provide as webImageUrl for direct access
+                                        evt["imageUrl"] = optimized_preview     # Also provide as imageUrl for fallback
                                         manager.last_preview_ts = now
                                         
                                         print(f"📸 Sending preview for job {job_id} (size: {len(optimized_preview)} chars)")
@@ -720,7 +688,7 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                         continue
                         
             finally:
-                # Send final completion message before closing (only if broadcast_ws is connected)
+                # Send final completion message and single close before shutting down (only if connected)
                 if broadcast_ws:
                     try:
                         final_msg = {
@@ -733,6 +701,17 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                         }
                         await broadcast_ws.send(_json.dumps(final_msg))
                         print(f"📤 Sent final completion message for job {job_id}")
+                        # Now send a single close signal marked final
+                        close_msg = {
+                            "job_id": job_id,
+                            "job_type": "inference",
+                            "status": "closed",
+                            "final": True,
+                            "close_connection": True
+                        }
+                        await asyncio.sleep(0.1)
+                        await broadcast_ws.send(_json.dumps(close_msg))
+                        print(f"📤 Sent final close signal for job {job_id}")
                     except Exception as final_e:
                         print(f"⚠️ Failed to send final completion message for job {job_id}: {final_e}")
                 else:
@@ -830,8 +809,82 @@ def get_active_relays() -> list:
     return []
 
 
-def start_direct_comfyui_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_sec: float = 1.5) -> None:
+def send_global_job_status(job_id: str, status: str, message: str = "") -> bool:
+    """Send a unified job status message via WebSocket only."""
+    status_data = {
+        "job_id": job_id,
+        "job_type": "inference",
+        "status": status,
+        "message": message,
+        "timestamp": int(time.time() * 1000),
+        "progress": 0 if status == "initializing" else 50 if status == "ready" else 100
+    }
+    
+    # Include current preview if available
+    if hasattr(start_relay, '_active_relays'):
+        manager = start_relay._active_relays.get(job_id)
+        if manager and manager.current_preview:
+            status_data["preview_images"] = [manager.current_preview]
+            status_data["webImageUrl"] = manager.current_preview
+            status_data["imageUrl"] = manager.current_preview
+            status_data["image_index"] = manager.image_index
+            print(f"📸 Including current preview in status message for job {job_id}")
+    
+    # Send through existing WebSocket relay only - no HTTP fallback
+    if send_custom_message_to_job(job_id, status_data):
+        print(f"📤 Sent global status via WebSocket: {status} for job {job_id}")
+        return True
+    else:
+        print(f"⚠️ No active WebSocket relay for job {job_id} - status not sent: {status}")
+        return False
+
+
+def send_custom_message_to_job(job_id: str, message_data: dict) -> bool:
+    """Send a custom message through the existing WebSocket relay for a job."""
+    if not hasattr(start_relay, '_active_relays'):
+        print(f"ℹ️ No active relay found for job {job_id} - message not sent")
+        return False
+    
+    manager = start_relay._active_relays.get(job_id)
+    if not manager:
+        print(f"ℹ️ No active relay found for job {job_id} - message not sent")
+        return False
+    
+    try:
+        # Send the custom message through the existing WebSocket connection
+        manager.send_message(message_data)
+        print(f"📤 Sent custom message to job {job_id}: {message_data.get('status', 'unknown')}")
+        return True
+    except Exception as e:
+        print(f"⚠️ Failed to send custom message to job {job_id}: {e}")
+        return False
+
+
+
+
+
+def update_relay_image_index(job_id: str, image_index: int) -> bool:
+    """Update the image index for an active WebSocket relay."""
+    if not hasattr(start_relay, '_active_relays'):
+        print(f"ℹ️ No active relays found")
+        return False
+    
+    manager = start_relay._active_relays.get(job_id)
+    if not manager:
+        print(f"ℹ️ No active relay found for job {job_id}")
+        return False
+    
+    try:
+        manager.image_index = image_index
+        print(f"📊 Updated relay image index to {image_index} for job {job_id}")
+        return True
+    except Exception as e:
+        print(f"⚠️ Failed to update relay image index for job {job_id}: {e}")
+        return False
+
+
+def start_direct_comfyui_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, image_index: int = 0, throttle_sec: float = 1.5) -> None:
     """Alias for start_relay - connects directly to ComfyUI WebSocket."""
-    start_relay(progress_ws_url, comfy_ws_url, job_id, throttle_sec)
+    start_relay(progress_ws_url, comfy_ws_url, job_id, throttle_sec, image_index)
 
 

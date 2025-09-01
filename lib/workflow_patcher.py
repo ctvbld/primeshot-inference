@@ -34,6 +34,8 @@ def patch_workflow(
     style_lora: str | None = None,
     bypass_nodes: list[dict] | None = None,
     enable_previews: bool = True,  # Enable preview generation
+    job_id: str | None = None,  # Job ID for output path isolation
+    user_id: str | None = None,  # User ID for output path isolation
 ) -> Dict[str, Any]:
     """Apply minimal patches to a ComfyUI workflow JSON.
     This assumes nodes are identified by common labels; you may adjust mapping.
@@ -246,11 +248,24 @@ def patch_workflow(
         print(f"✅ Using base 1K generation (quality={quality}) - no upscaling needed")
         # bypass_upscale_nodes(wf)
 
-    # Add preview nodes for real-time progress if enabled
-    # Preview nodes are handled by ComfyUI's built-in preview system (--preview-method auto)
-    # No need to add custom preview nodes as ComfyUI will automatically generate previews during sampling
-    if enable_previews:
-        print("🎨 ComfyUI's built-in preview system is enabled via --preview-method auto")
+    # Set job-specific output path for Save Image node to prevent concurrent job interference
+    if job_id and user_id:
+        # Use relative path from ComfyUI's default output directory
+        # ComfyUI will save to: {output_dir}/{filename_prefix}{counter}_{timestamp}.png
+        output_prefix = f"{job_id}/IMG-"
+        
+        # Update Save Image node to use job-specific path
+        updated_save_path = False
+        for node_id, node in wf.items():
+            if isinstance(node, dict) and node.get("class_type") == "SaveImage":
+                node.setdefault("inputs", {})["filename_prefix"] = output_prefix
+                print(f"✅ Updated SaveImage (node {node_id}) filename_prefix = {output_prefix}")
+                updated_save_path = True
+        
+        if not updated_save_path:
+            print(f"⚠️ No SaveImage nodes found to update output path")
+    else:
+        print(f"⚠️ Missing job_id or user_id - cannot set job-specific output path")
 
     return wf
 
