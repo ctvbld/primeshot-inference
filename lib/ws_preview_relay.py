@@ -447,8 +447,6 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                             #"image_index": manager.image_index  # Include image_index for sequential generation
                         }
                         
-                        print(f"🔒 Generation Started: {manager.generation_started}")
-                        
                         if isinstance(data, dict):
                             # Handle ComfyUI progress updates (most accurate)
                             if "progress" in data:
@@ -510,7 +508,7 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                 # Don't send "completed" status for individual images - keep generating
                                 evt["status"] = "generating"
                                 evt["progress"] = 90  # High progress but not 100%
-                                evt["message"] = f"Image {manager.current_image_index + 1} completed"
+                                evt["message"] = f"Image {manager.image_index + 1} completed"
                                 
                                 # Signal completion for the current prompt
                                 prompt_id = data.get("data", {}).get("prompt_id")
@@ -546,10 +544,6 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                 nodes = progress_data.get("nodes", {})
                                 
                                 if nodes:
-                                    running_count = sum(1 for node in nodes.values() if node.get("state") == "running")
-                                    finished_count = sum(1 for node in nodes.values() if node.get("state") == "finished")
-                                    print(f"🔍 Progress: {finished_count} finished, {running_count} running nodes")
-                                    
                                     # Store the latest progress state for fallback completion
                                     manager.last_progress_state = progress_data
                                 
@@ -584,7 +578,7 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                         # Treat as completion but don't send "completed" status for individual images
                                         evt["status"] = "generating"
                                         evt["progress"] = 90  # High progress but not 100%
-                                        evt["message"] = f"Image {manager.current_image_index + 1} completed"
+                                        evt["message"] = f"Image {manager.image_index + 1} completed"
                                         
                                         manager.completed_prompt_ids.add(prompt_id)
                                         manager.completion_data[prompt_id] = {
