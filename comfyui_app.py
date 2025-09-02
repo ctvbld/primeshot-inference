@@ -419,8 +419,7 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
                     "job_id": job_id,
                     "job_type": "inference",
                     "image_index": image_index,
-                    "webImageUrl": final_image_url,  # Frontend expects webImageUrl
-                    "imageUrl": final_image_url,     # Also provide imageUrl as fallback
+                    "final_image_url": final_image_url,
                     "status": "image_completed",
                     "timestamp": int(time.time() * 1000),
                     "message": f"Image {image_index + 1} completed and saved"
@@ -461,9 +460,9 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
                     'user_id': user_id,
                     'original_path': f"user-images/{user_id}/inference/{job_id}/orig/{base_name}{original_ext}",
                     'web_path': final_image_url,
-                    'width': 1024,  # TODO: Update based on image dimensions
-                    'height': 1024,  # TODO: Update based on image 
-                    'format': 'png',
+                    'width': 1024,  # We know this from our processing
+                    'height': 1024,  # We know this from our processing
+                    'format': 'webp',
                     'bytes': 0  # We could calculate this but it's not critical
                 }
                 
@@ -533,21 +532,17 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             # Container has been running, this is a warm start
             is_cold_start = False
         
-        # Send appropriate job status
+        # Send appropriate global job status
         try:
             from lib.ws_preview_relay import send_global_job_status
-            # Set the progress URL for the status function
-            if progress_ws_url:
-                send_global_job_status._progress_url = progress_ws_url
-            
             if is_cold_start:
                 send_global_job_status(job_id, "initializing", "Starting up container and loading models")
-                print(f"📤 Sent status 'initializing' for cold start job {job_id}")
+                print(f"📤 Sent global status 'initializing' for cold start job {job_id}")
             else:
                 send_global_job_status(job_id, "ready", "Container ready to generate")
-                print(f"📤 Sent status 'ready' for warm start job {job_id}")
+                print(f"📤 Sent global status 'ready' for warm start job {job_id}")
         except Exception as e:
-            print(f"⚠️ Failed to send job status: {e}")
+            print(f"⚠️ Failed to send global status: {e}")
         
         # Update job status to 'running' via inference-start EF
         try:
@@ -687,8 +682,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         # 3) Generate client ID for ComfyUI API
         comfyui_base = f"http://127.0.0.1:{PORT}"
         
-        # 4) Start ONE WebSocket relay for the entire job (not per image)
-        progress_ws_url = None
+        # 4) Start direct ComfyUI WebSocket monitoring for progress (non-blocking)
         try:
             import threading
             from lib.ws_preview_relay import start_direct_comfyui_relay
@@ -698,23 +692,15 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             if base:
                 progress_ws_url = base.replace("{job_id}", job_id) if "{job_id}" in base else base.rstrip("/") + f"/ws/broadcast/{job_id}"
                 
-                print(f"🔌 Starting ONE WebSocket relay for job {job_id}:")
+                print(f"🔌 WebSocket Configuration for job {job_id}:")
                 print(f"  📤 Progress Broadcast: {progress_ws_url}")
                 print(f"  🌐 Base URL: {base}")
-                
-                # Start ONE relay for the entire job - it will handle all images
-                comfy_ws_url = f"ws://127.0.0.1:{PORT}/ws"  # No client_id - relay will handle multiple clients
-                threading.Thread(
-                    target=start_direct_comfyui_relay, 
-                    args=(progress_ws_url, comfy_ws_url, job_id, 0),  # image_index=0 for job-level relay
-                    daemon=True
-                ).start()
-                print(f"✅ Started job-level WebSocket relay for {job_id}")
         
         except Exception as e:
             print(f"⚠️ Progress relay setup failed: {e}")
             import traceback
             print(f"📊 Full error: {traceback.format_exc()}")
+            base = None
             progress_ws_url = None
 
         # 5) Sequential image generation loop
@@ -755,14 +741,14 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         for image_index in range(nb_takes):
             print(f"🎯 === GENERATING IMAGE {image_index + 1}/{nb_takes} ===")
             
-            # Send status when starting first image generation
+            # Send global status when starting first image generation
             if image_index == 0:
                 try:
                     from lib.ws_preview_relay import send_global_job_status
                     send_global_job_status(job_id, "generating", "Generating images")
-                    print(f"📤 Sent status 'generating' for job {job_id}")
+                    print(f"📤 Sent global status 'generating' for job {job_id}")
                 except Exception as e:
-                    print(f"⚠️ Failed to send generating status: {e}")
+                    print(f"⚠️ Failed to send global generating status: {e}")
             
             # Generate unique seed for each image (if original seed was random)
             current_seed = seed_value + image_index if seed_value != -1 else None
@@ -772,12 +758,40 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             
             print(f"🎲 Using seed {current_seed} for image {image_index + 1}")
             
-            # Progress reporting is handled entirely by the WebSocket relay
-            # No HTTP fallback - WebSocket only for cleaner connection management
+            # Send progress update for this image
             if progress_ws_url:
-                print(f"📊 WebSocket relay handling progress: image {image_index + 1}/{nb_takes}")
-            else:
-                print(f"⚠️ No WebSocket relay configured - progress updates disabled")
+                try:
+                    import urllib.request as _rq
+                    import json
+                    
+                    progress_data = {
+                        "job_id": job_id,
+                        "status": "running",
+                        "progress": int((image_index / nb_takes) * 100),
+                        "image_index": image_index,
+                        "message": f"Generating image {image_index + 1} of {nb_takes}",
+                        "timestamp": time.time()
+                    }
+                    
+                    # Send to HTTP progress endpoint (fallback). Convert scheme and path.
+                    if "/ws/broadcast/" in progress_ws_url:
+                        post_url = (
+                            progress_ws_url
+                            .replace("wss://", "https://")
+                            .replace("ws://", "http://")
+                            .replace("/ws/broadcast/", "/api/progress/")
+                        )
+                        progress_body = json.dumps(progress_data).encode('utf-8')
+                        progress_req = _rq.Request(
+                            url=post_url,
+                            data=progress_body,
+                            headers={'Content-Type': 'application/json'},
+                            method='POST'
+                        )
+                        _rq.urlopen(progress_req, timeout=5)
+                    print(f"📊 Sent progress update: image {image_index + 1}/{nb_takes}")
+                except Exception as e:
+                    print(f"⚠️ Failed to send progress update: {e}")
             
             # Patch workflow for single image with current seed
             patched = patch_workflow(
@@ -800,7 +814,27 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             # Generate unique client ID for this image
             client_id = str(uuid.uuid4())
             
-            # WebSocket relay is already running for the entire job - no need to start per image
+            # Start WebSocket relay for this specific image
+            if progress_ws_url:
+                try:
+                    import threading
+                    from lib.ws_preview_relay import start_direct_comfyui_relay
+                    
+                    comfy_ws_url = f"ws://127.0.0.1:{PORT}/ws?clientId={client_id}"
+                    
+                    print(f"🔌 Starting WebSocket relay for image {image_index + 1}:")
+                    print(f"  📥 ComfyUI WebSocket: {comfy_ws_url}")
+                    print(f"  📤 Progress Broadcast: {progress_ws_url}")
+                    
+                    # Pass image_index to the relay so it can include it in messages
+                    threading.Thread(
+                        target=start_direct_comfyui_relay, 
+                        args=(progress_ws_url, comfy_ws_url, job_id, image_index), 
+                        daemon=True
+                    ).start()
+                    print(f"🔄 Started WebSocket monitoring for image {image_index + 1}")
+                except Exception as e:
+                    print(f"⚠️ WebSocket relay failed for image {image_index + 1}: {e}")
             
             # Submit to ComfyUI
             body = {
@@ -990,14 +1024,6 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             print(f"📊 Full error: {traceback.format_exc()}")
         
         print(f"✅ Successfully completed sequential generation job {job_id}")
-        
-        # Send final job completion status via WebSocket
-        try:
-            from lib.ws_preview_relay import send_global_job_status
-            send_global_job_status(job_id, "completed", "All images generated successfully")
-            print(f"📤 Sent final completion status for job {job_id}")
-        except Exception as status_e:
-            print(f"⚠️ Failed to send completion status: {status_e}")
         
         # Signal WebSocket relay that job is complete
         try:
@@ -1261,83 +1287,71 @@ def progress():
         allow_headers=["*"],
     )
 
-    # Track progress listeners and a single broadcaster (producer) per job
     active_connections: Dict[str, List[WebSocket]] = {}
-    broadcast_connections: Dict[str, WebSocket] = {}
-    connection_timestamps: Dict[str, float] = {}
+    connection_timestamps: Dict[str, float] = {}  # Track when connections were created
 
     class ConnectionManager:
         @staticmethod
-        async def connect_progress(websocket: WebSocket, job_id: str) -> None:
-            """Register a client listening for progress for a job."""
+        async def connect_listener(websocket: WebSocket, job_id: str) -> None:
             await websocket.accept()
-            if job_id not in active_connections:
-                active_connections[job_id] = []
-            active_connections[job_id].append(websocket)
-            connection_timestamps[job_id] = time.time()
-            logger.info(f"📱 Progress client connected for job {job_id} (listeners={len(active_connections[job_id])})")
-
-        @staticmethod
-        async def connect_broadcast(websocket: WebSocket, job_id: str) -> None:
-            """Register the producer for a job. Enforce single-producer policy."""
-            await websocket.accept()
-            # If a broadcaster already exists, close it and replace (mirrors training behavior)
-            if job_id in broadcast_connections:
-                old = broadcast_connections[job_id]
-                try:
-                    await old.close(code=1000, reason="Replaced by new broadcaster")
-                except Exception:
-                    pass
-            broadcast_connections[job_id] = websocket
-            logger.info(f"📡 Broadcast connected for job {job_id}")
+            active_connections.setdefault(job_id, []).append(websocket)
+            connection_timestamps[job_id] = time.time()  # Track connection time
 
         @staticmethod
         def disconnect(websocket: WebSocket) -> None:
-            """Remove websocket from all registries."""
-            # Remove from listeners
-            for jid, conns in list(active_connections.items()):
-                if websocket in conns:
-                    conns.remove(websocket)
-                    logger.info(f"🧹 Removed listener from job {jid} (remaining={len(conns)})")
-                    if not conns:
-                        active_connections.pop(jid, None)
-                        connection_timestamps.pop(jid, None)
-            # Remove from broadcaster
-            for jid, ws in list(broadcast_connections.items()):
-                if ws is websocket:
-                    broadcast_connections.pop(jid, None)
-                    logger.info(f"🧹 Removed broadcaster for job {jid}")
+            for job_id, sockets in list(active_connections.items()):
+                if websocket in sockets:
+                    sockets.remove(websocket)
+                if not sockets:
+                    active_connections.pop(job_id, None)
+                    connection_timestamps.pop(job_id, None)  # Clean up timestamp
 
         @staticmethod
-        async def send_to_job_listeners(job_id: str, message: str) -> None:
-            """Forward message to all listeners; prune dead sockets."""
-            listeners = active_connections.get(job_id, []).copy()
-            if not listeners:
-                return
-            dead: List[WebSocket] = []
-            for ws in listeners:
+        async def broadcast(job_id: str, message: str) -> None:
+            for ws in list(active_connections.get(job_id, [])):
                 try:
                     await ws.send_text(message)
                 except Exception:
-                    dead.append(ws)
-            for ws in dead:
-                ConnectionManager.disconnect(ws)
-
+                    ConnectionManager.disconnect(ws)
+        
         @staticmethod
-        async def cleanup_job(job_id: str) -> None:
-            """Close and remove all connections for job on completion."""
-            for ws in active_connections.get(job_id, []).copy():
-                try:
-                    await ws.close(code=1000, reason="Job completed")
-                except Exception:
-                    pass
-                ConnectionManager.disconnect(ws)
-            if job_id in broadcast_connections:
-                try:
-                    await broadcast_connections[job_id].close(code=1000, reason="Job completed")
-                except Exception:
-                    pass
-                broadcast_connections.pop(job_id, None)
+        def cleanup_stale_connections(max_age_minutes: int = 15) -> None:
+            """Clean up connections older than max_age_minutes."""
+            import time
+            current_time = time.time()
+            max_age_seconds = max_age_minutes * 60
+            
+            stale_jobs = []
+            for job_id, timestamp in list(connection_timestamps.items()):
+                if current_time - timestamp > max_age_seconds:
+                    stale_jobs.append(job_id)
+            
+            for job_id in stale_jobs:
+                logger.info(f"Cleaning up stale connection for job {job_id}")
+                active_connections.pop(job_id, None)
+                connection_timestamps.pop(job_id, None)
+            
+            if stale_jobs:
+                logger.info(f"Cleaned up {len(stale_jobs)} stale connections")
+        
+        @staticmethod
+        def get_connection_stats() -> dict:
+            """Get statistics about active connections."""
+            import time
+            current_time = time.time()
+            
+            stats = {
+                "total_jobs": len(active_connections),
+                "total_connections": sum(len(sockets) for sockets in active_connections.values()),
+                "jobs_by_age": {}
+            }
+            
+            for job_id, timestamp in connection_timestamps.items():
+                age_minutes = int((current_time - timestamp) / 60)
+                age_bucket = f"{age_minutes//5 * 5}-{age_minutes//5 * 5 + 4}min"
+                stats["jobs_by_age"][age_bucket] = stats["jobs_by_age"].get(age_bucket, 0) + 1
+            
+            return stats
 
     manager = ConnectionManager()
 
@@ -1387,46 +1401,51 @@ def progress():
 
     @web_app.get("/stats")
     async def get_stats():
-        return {
-            "listeners": {k: len(v) for k, v in active_connections.items()},
-            "broadcasters": list(broadcast_connections.keys())
-        }
+        """Get WebSocket connection statistics."""
+        return manager.get_connection_stats()
 
     from fastapi import Request
     @web_app.post("/api/progress/{job_id}")
     async def http_progress(job_id: str, request: Request):
+        """HTTP fallback: accept JSON progress and rebroadcast to WS listeners."""
         try:
-            body = await request.body()
+            payload_bytes = await request.body()
+            # Validate minimally by ensuring it's JSON
             import json as _j
-            _j.loads(body)
-            await manager.send_to_job_listeners(job_id, body.decode("utf-8"))
+            _j.loads(payload_bytes)
+            payload_text = payload_bytes.decode("utf-8")
+            await manager.broadcast(job_id, payload_text)
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
     @web_app.websocket("/ws/progress/{job_id}")
     async def websocket_progress_endpoint(websocket: WebSocket, job_id: str):
-        await manager.connect_progress(websocket, job_id)
+        await manager.connect_listener(websocket, job_id)
         try:
-            # Keep connection open by awaiting no-op receives (mirrors training)
+            # Keep the connection open; listeners don't send messages
             while True:
-                await websocket.receive_text()
+                await asyncio.sleep(60)
+    
         except WebSocketDisconnect:
             manager.disconnect(websocket)
 
     @web_app.websocket("/ws/broadcast/{job_id}")
     async def websocket_broadcast_endpoint(websocket: WebSocket, job_id: str):
-        await manager.connect_broadcast(websocket, job_id)
+        await websocket.accept()
+    
         try:
             while True:
                 data = await websocket.receive_text()
                 try:
+                    # Ensure JSON payload
                     json.loads(data)
-                    await manager.send_to_job_listeners(job_id, data)
-                except json.JSONDecodeError:
-                    logger.error(f"❌ Invalid JSON for job {job_id}")
+                    await manager.broadcast(job_id, data)
+                except Exception as e:
+                    logger.error(f"Invalid broadcast payload: {e}")
+    
         except WebSocketDisconnect:
-            manager.disconnect(websocket)
+            pass
 
     return web_app
 
