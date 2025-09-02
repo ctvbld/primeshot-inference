@@ -10,7 +10,7 @@ import gc
 from typing import Optional, Dict, Any
 
 class WebSocketRelay:
-    """Simple WebSocket relay with efficient memory management."""
+    """Simple WebSocket relay with efficient memory management and status state machine."""
     
     def __init__(self, job_id: str):
         self.job_id = job_id
@@ -18,8 +18,19 @@ class WebSocketRelay:
         self.image_index = 0
         self.max_preview_size = 50 * 1024  # 50KB max per preview
         self.current_preview: Optional[str] = None
-        self.global_status: Optional[str] = None  # Track global job status
-        self.global_message: Optional[str] = None  # Track global job message
+        self.generation_started = False
+        # Event-based completion signaling
+        import threading
+        self.completion_event = threading.Event()
+        self.completed_prompt_ids = set()  # Track completed prompt IDs
+        self.completion_data = {}  # Store full completion data by prompt_id
+        self.last_activity_time = time.time()  # Track last activity for timeout detection
+        self.last_progress_state = {}  # Track last seen progress state for fallback completion
+        
+    def update_image_index(self, new_index: int):
+        """Update the current image index being processed."""
+        self.image_index = new_index
+
         
     def cleanup_memory(self):
         """Clean up cached preview data."""
@@ -27,6 +38,8 @@ class WebSocketRelay:
             del self.current_preview
             self.current_preview = None
         gc.collect()
+    
+
         
     def optimize_preview_base64(self, base64_data: str) -> Optional[str]:
         """Optimize base64 image with aggressive memory management."""
@@ -85,7 +98,7 @@ class WebSocketRelay:
                     # Store current preview
                     self.current_preview = result
                     
-                    print(f"📸 Optimized preview: {len(base64_data)} → {len(result)} chars")
+
                     return result
                     
             except Exception as img_e:
@@ -105,18 +118,16 @@ class WebSocketRelay:
     
     def send_message(self, message_data: dict):
         """Send a custom message through the WebSocket relay."""
-        # Check if this is a global status message
-        if message_data.get('global', False):
-            self.global_status = message_data.get('status')
-            self.global_message = message_data.get('message')
-            print(f"📝 Updated global status for job {self.job_id}: {self.global_status} - {self.global_message}")
-        
-        # This method will be called by the send_custom_message_to_job function
-        # The actual WebSocket sending will be handled by the relay loop
+        # Simple rule: if already generating, only allow "generating", "image_completed", "completed", and "failed" statuses
+        allowed_statuses = ["generating", "image_completed", "completed", "failed"]
+        if self.generation_started and message_data.get('status') not in allowed_statuses:
+            print(f"🚫 Ignored status '{message_data.get('status')}' - already generating for job {self.job_id}")
+            return
+            
+        # Queue the message to be sent by the relay loop
         if not hasattr(self, '_custom_messages'):
             self._custom_messages = []
         self._custom_messages.append(message_data)
-        print(f"📝 Queued custom message for job {self.job_id}: {message_data.get('status', 'unknown')}")
 
 
 def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_sec: float = 1.5, image_index: int = 0) -> None:
@@ -133,6 +144,14 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
     prev = start_relay._active_relays.get(job_id)
     start_relay._active_relays[job_id] = relay_manager
     
+    # Check for stored generating status and apply it to the new relay
+    if hasattr(send_global_job_status, '_global_statuses') and job_id in send_global_job_status._global_statuses:
+        stored_status = send_global_job_status._global_statuses[job_id]
+        # Apply generating flag if it's "generating"
+        if stored_status["status"] == "generating":
+            relay_manager.generation_started = True
+
+    
     # Add a completion flag
     if not hasattr(start_relay, '_completion_flags'):
         start_relay._completion_flags = {}
@@ -145,8 +164,6 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
             return
             
         print(f"🔌 Starting WebSocket relay for job {job_id}")
-        print(f"  📥 ComfyUI WebSocket: {comfy_ws_url}")
-        print(f"  📤 Progress broadcast: {progress_ws_url}")
             
         try:
             # Configure WebSocket with memory limits
@@ -228,9 +245,9 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                     await broadcast_ws.send(_json.dumps({
                         "job_id": job_id,
                         "job_type": "inference",
-                        "status": "initializing",
+                        "status": "starting",
                         "progress": 0,
-                        "message": "WebSocket relay connected",
+                        "message": "Starting up",
                         "timestamp": int(time.time() * 1000)
                     }))
                     print(f"📤 Sent initial connection message for job {job_id}")
@@ -380,6 +397,11 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                                     optimized_preview = manager.optimize_preview_base64(preview_base64)
                                                     
                                                     if optimized_preview:
+                                                        # Switch to "generating" status on first base64 image
+                                                        if not manager.generation_started:
+                                                            manager.generation_started = True
+                                                            print(f"🎯 SWITCHED TO GENERATING - LOCKED FOREVER for job {job_id}")
+                                                        
                                                         preview_evt = {
                                                             "job_id": job_id,
                                                             "job_type": "inference",
@@ -425,30 +447,24 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                             #"image_index": manager.image_index  # Include image_index for sequential generation
                         }
                         
-                        # Check if we have a global status that should override ComfyUI messages
-                        use_global_status = manager.global_status is not None
-                        print(f"🔥🔥🔥 Data: {data}")
+                        print(f"🔒 Generation Started: {manager.generation_started}")
+                        
                         if isinstance(data, dict):
                             # Handle ComfyUI progress updates (most accurate)
                             if "progress" in data:
                                 progress_value = data.get("progress", 0)
                                 evt["progress"] = min(100, max(0, progress_value))
                                 
-                                # Use global status if available, otherwise map progress to status
-                                if use_global_status:
-                                    evt["status"] = manager.global_status
-                                    evt["message"] = manager.global_message or "Processing"
+                                # Update activity time
+                                manager.last_activity_time = time.time()
+                                
+                                # Simple flag check - if generating, ALWAYS use generating status
+                                if manager.generation_started:
+                                    evt["status"] = "generating"
+                                    evt["message"] = "Generating"
                                 else:
-                                    # Fallback to progress-based status mapping
-                                    if progress_value >= 100:
-                                        evt["status"] = "completed"
-                                        evt["message"] = "Completed"
-                                    elif progress_value > 0:
-                                        evt["status"] = "running"
-                                        evt["message"] = f"Generating"
-                                    else:
-                                        evt["status"] = "initializing"
-                                        evt["message"] = "Initializing"
+                                    evt["status"] = "starting"
+                                    evt["message"] = "Starting up"
                                 
                                 # Check for preview data in progress messages (ComfyUI often sends previews here)
                                 if "preview" in data:
@@ -460,50 +476,54 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                             
                             # Handle ComfyUI execution updates with progressive progress
                             elif data.get("type") == "execution_start":
-                                if use_global_status:
-                                    evt["status"] = manager.global_status
-                                    evt["message"] = manager.global_message or "Processing"
-                                else:
-                                    evt["status"] = "initializing"
-                                    evt["message"] = "Initializing"
-                                evt["progress"] = 5
-                                manager.execution_progress = 5  # Track base progress
-                                
-                            elif data.get("type") == "executing" or data.get("type") == "execution_cached":
-                                # Progressive progress based on execution count
-                                if not hasattr(manager, 'execution_progress'):
-                                    manager.execution_progress = 5
-                                
-                                # Increment progress gradually for each executing node
-                                manager.execution_progress = min(100, manager.execution_progress + 5)
-                                evt["progress"] = manager.execution_progress
-                                
-                                if use_global_status:
-                                    evt["status"] = manager.global_status
-                                    evt["message"] = manager.global_message or "Processing"
+                                if manager.generation_started:
+                                    evt["status"] = "generating"
+                                    evt["message"] = "Generating"
                                 else:
                                     evt["status"] = "starting"
-                                    evt["message"] = f"Starting up"
+                                    evt["message"] = "Starting up"
+                                evt["progress"] = 5
+                                
+                            elif data.get("type") == "executing" or data.get("type") == "execution_cached":
+                                if manager.generation_started:
+                                    evt["status"] = "generating"
+                                    evt["message"] = "Generating"
+                                else:
+                                    evt["status"] = "starting"
+                                    evt["message"] = "Starting up"
+                                evt["progress"] = 10
                                 
                             elif data.get("type") == "executed":
-                                # Handle executed messages (these often contain preview images)
-                                if not hasattr(manager, 'execution_progress'):
-                                    manager.execution_progress = 60
+                                if manager.generation_started:
+                                    evt["status"] = "generating"
+                                    evt["message"] = "Generating"
                                 else:
-                                    manager.execution_progress = min(95, manager.execution_progress + 5)
-                                evt["progress"] = manager.execution_progress
+                                    evt["status"] = "starting"
+                                    evt["message"] = "Starting up"
+                                evt["progress"] = 50
                                 
-                                if use_global_status:
-                                    evt["status"] = manager.global_status
-                                    evt["message"] = manager.global_message or "Processing"
-                                else:
-                                    evt["status"] = "running"
-                                    evt["message"] = "Processing completed nodes..."
+                            elif data.get("type") == "execution_complete" or data.get("type") == "execution_success":
+                                event_type = data.get("type")
+                                print(f"🏁 {event_type.upper()} received for job {job_id}!")
+                                print(f"🏁 Full {event_type} data: {data}")
                                 
-                            elif data.get("type") == "execution_complete":
-                                evt["status"] = "completed"
-                                evt["progress"] = 100
-                                evt["message"] = "Generation completed"
+                                # Don't send "completed" status for individual images - keep generating
+                                evt["status"] = "generating"
+                                evt["progress"] = 90  # High progress but not 100%
+                                evt["message"] = f"Image {manager.current_image_index + 1} completed"
+                                
+                                # Signal completion for the current prompt
+                                prompt_id = data.get("data", {}).get("prompt_id")
+                                if prompt_id:
+                                    manager.completed_prompt_ids.add(prompt_id)
+                                    # Store the full completion data (contains outputs!)
+                                    manager.completion_data[prompt_id] = data.get("data", {})
+                                    print(f"🎯 Prompt {prompt_id} completed for job {job_id}")
+                                    print(f"📊 Stored completion data keys: {list(data.get('data', {}).keys())}")
+                                
+                                # Signal the completion event (but don't break the loop)
+                                manager.completion_event.set()
+                                print(f"🔔 Signaled completion event for job {job_id}")
                                 
                                 # Mark job as completed and break out of loop
                                 print(f"🏁 ComfyUI execution_complete received for job {job_id}")
@@ -517,9 +537,75 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                     except Exception as completion_e:
                                         print(f"⚠️ Failed to send completion message: {completion_e}")
                                 
-                                # Break out of the message loop
-                                print(f"🏁 Breaking out of WebSocket loop for completed job {job_id}")
-                                break
+                                # Don't break - keep relay alive for next images
+                                print(f"🏁 Image completed but keeping relay alive for job {job_id}")
+                            
+                            elif data.get("type") == "progress_state":
+                                # Store progress state for fallback completion detection
+                                progress_data = data.get("data", {})
+                                nodes = progress_data.get("nodes", {})
+                                
+                                if nodes:
+                                    running_count = sum(1 for node in nodes.values() if node.get("state") == "running")
+                                    finished_count = sum(1 for node in nodes.values() if node.get("state") == "finished")
+                                    print(f"🔍 Progress: {finished_count} finished, {running_count} running nodes")
+                                    
+                                    # Store the latest progress state for fallback completion
+                                    manager.last_progress_state = progress_data
+                                
+                                # Update activity time
+                                manager.last_activity_time = time.time()
+                            
+                            else:
+                                # Log ALL unhandled event types to debug missing execution_complete
+                                event_type = data.get("type", "unknown")
+                                print(f"🔍 Unhandled ComfyUI event type '{event_type}' for job {job_id}")
+                                
+                                # Log the full data for unknown events to see if execution_complete is being missed
+                                if event_type not in ["progress", "status", "progress_state"]:
+                                    print(f"🔍 Full unknown event data: {data}")
+                                
+                                # Check if this might be a completion event with a different structure
+                                if "complete" in event_type.lower() or "finish" in event_type.lower() or "done" in event_type.lower() or "success" in event_type.lower():
+                                    print(f"🚨 POTENTIAL COMPLETION EVENT DETECTED: {event_type}")
+                                    print(f"🚨 Full data: {data}")
+                                    
+                                    # Try to extract prompt_id and treat as completion
+                                    prompt_id = None
+                                    event_data = data.get("data", {})
+                                    
+                                    # Try different ways to get prompt_id
+                                    if isinstance(event_data, dict):
+                                        prompt_id = event_data.get("prompt_id") or event_data.get("id") or event_data.get("prompt")
+                                    
+                                    if prompt_id:
+                                        print(f"🎯 Found prompt_id in {event_type} event: {prompt_id}")
+                                        
+                                        # Treat as completion but don't send "completed" status for individual images
+                                        evt["status"] = "generating"
+                                        evt["progress"] = 90  # High progress but not 100%
+                                        evt["message"] = f"Image {manager.current_image_index + 1} completed"
+                                        
+                                        manager.completed_prompt_ids.add(prompt_id)
+                                        manager.completion_data[prompt_id] = {
+                                            "prompt_id": prompt_id,
+                                            "outputs": {},  # Will use history fallback
+                                            "completion_source": event_type
+                                        }
+                                        manager.completion_event.set()
+                                        
+                                        print(f"🔔 Signaled completion via {event_type} event for job {job_id}")
+                                        
+                                        # Send completion message
+                                        if broadcast_ws:
+                                            try:
+                                                completion_message = _json.dumps(evt)
+                                                await broadcast_ws.send(completion_message)
+                                                print(f"📤 Sent completion message via {event_type} for job {job_id}")
+                                            except Exception as completion_e:
+                                                print(f"⚠️ Failed to send completion message: {completion_e}")
+                                    else:
+                                        print(f"⚠️ No prompt_id found in {event_type} event")
                             
                             # Handle preview images with memory management
                             preview = None
@@ -646,6 +732,11 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                         evt["image_index"] = manager.image_index
                                         manager.last_preview_ts = now
                                         
+                                        # Switch to "generating" status on first base64 image
+                                        if not manager.generation_started:
+                                            manager.generation_started = True
+                                            print(f"🎯 SWITCHED TO GENERATING - LOCKED FOREVER for job {job_id}")
+                                        
                                         print(f"📸 Sending preview for job {job_id} (size: {len(optimized_preview)} chars)")
                                     
                                     # Clean up original preview data immediately
@@ -718,8 +809,8 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                         
                     except websockets.exceptions.ConnectionClosed:
                         print(f"🔌 ComfyUI WebSocket connection closed for job {job_id}")
-                        # Send final completion message if we haven't already
-                        if not start_relay._completion_flags.get(job_id, False):
+                        # Only send completion if job is actually flagged as complete
+                        if start_relay._completion_flags.get(job_id, False):
                             try:
                                 final_msg = {
                                     "job_id": job_id,
@@ -733,6 +824,8 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                 print(f"📤 Sent final message on connection close for job {job_id}")
                             except Exception as final_close_e:
                                 print(f"⚠️ Failed to send final message on close for job {job_id}: {final_close_e}")
+                        else:
+                            print(f"🔌 ComfyUI connection closed but job {job_id} not flagged as complete - not sending completion")
                         break
                     except Exception as msg_e:
                         print(f"⚠️ Message processing error for job {job_id}: {msg_e}")
@@ -834,6 +927,11 @@ def signal_job_completion(job_id: str) -> None:
             if manager:
                 manager.cleanup_memory()
                 print(f"✅ Force cleanup completed for job {job_id}")
+        
+        # Clean up stored global status
+        if hasattr(send_global_job_status, '_global_statuses') and job_id in send_global_job_status._global_statuses:
+            send_global_job_status._global_statuses.pop(job_id, None)
+            print(f"🧹 Cleaned up stored global status for job {job_id}")
     else:
         print(f"⚠️ No active relay found to signal completion for job {job_id}")
 
@@ -849,6 +947,11 @@ def cleanup_all_relays() -> None:
             start_relay._completion_flags.pop(job_id, None) if hasattr(start_relay, '_completion_flags') else None
             if manager:
                 manager.cleanup_memory()
+        
+        # Clean up all stored global statuses
+        if hasattr(send_global_job_status, '_global_statuses'):
+            send_global_job_status._global_statuses.clear()
+            print(f"🧹 Cleaned up all stored global statuses")
         
         print(f"✅ Cleaned up all active relays")
 
@@ -881,6 +984,122 @@ def send_custom_message_to_job(job_id: str, message_data: dict) -> bool:
         return False
 
 
+def update_job_image_index(job_id: str, image_index: int):
+    """Update the image index for an active job relay."""
+    if hasattr(start_relay, '_active_relays') and job_id in start_relay._active_relays:
+        manager = start_relay._active_relays[job_id]
+        manager.update_image_index(image_index)
+        print(f"📸 Updated image index to {image_index} for job {job_id}")
+    else:
+        print(f"⚠️ No active relay found to update image index for job {job_id}")
+
+def get_prompt_completion_data(job_id: str, prompt_id: str) -> dict:
+    """Get the completion data for a specific prompt (contains outputs, etc.)."""
+    if not hasattr(start_relay, '_active_relays') or job_id not in start_relay._active_relays:
+        print(f"⚠️ No active relay found for job {job_id} to get completion data")
+        return {}
+    
+    manager = start_relay._active_relays[job_id]
+    completion_data = manager.completion_data.get(prompt_id, {})
+    
+    if completion_data:
+        print(f"📊 Retrieved completion data for prompt {prompt_id}: {list(completion_data.keys())}")
+    else:
+        print(f"⚠️ No completion data found for prompt {prompt_id}")
+    
+    return completion_data
+
+def wait_for_prompt_completion(job_id: str, prompt_id: str, timeout: float = 600) -> bool:
+    """Wait for a specific prompt to complete using event-based signaling instead of polling."""
+    import time
+    
+    if not hasattr(start_relay, '_active_relays') or job_id not in start_relay._active_relays:
+        print(f"⚠️ No active relay found for job {job_id} to wait for completion")
+        return False
+    
+    manager = start_relay._active_relays[job_id]
+    
+    # Check if already completed
+    if prompt_id in manager.completed_prompt_ids:
+        print(f"✅ Prompt {prompt_id} already completed for job {job_id}")
+        return True
+    
+    print(f"⏳ Waiting for prompt {prompt_id} completion via WebSocket events (timeout: {timeout}s)")
+    
+    # Wait for completion event with timeout
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        # Wait for the event with a short timeout to allow checking prompt_id
+        if manager.completion_event.wait(timeout=1.0):
+            # Event was set, check if our specific prompt completed
+            if prompt_id in manager.completed_prompt_ids:
+                print(f"🎯 Prompt {prompt_id} completed for job {job_id}")
+                # Clear the event so it's ready for the next image
+                manager.completion_event.clear()
+                print(f"🔄 Cleared completion event for next image in job {job_id}")
+                return True
+            elif len(manager.completed_prompt_ids) == 0:
+                # Completion event was set but no specific prompt_id was recorded
+                # This might be a fallback completion (e.g., from progress_state)
+                print(f"🎯 Generic completion detected for job {job_id}, assuming prompt {prompt_id} completed")
+                manager.completed_prompt_ids.add(prompt_id)  # Add it for consistency
+                # Clear the event so it's ready for the next image
+                manager.completion_event.clear()
+                print(f"🔄 Cleared completion event for next image in job {job_id}")
+                return True
+            else:
+                # Different prompt completed, clear event and continue waiting
+                manager.completion_event.clear()
+                print(f"🔄 Different prompt completed, continuing to wait for {prompt_id}")
+        
+        # Check for inactivity-based completion (fallback)
+        current_time = time.time()
+        time_since_activity = current_time - manager.last_activity_time
+        
+        # If we've been generating and no activity for 5 seconds, check if we should complete
+        if manager.generation_started and time_since_activity > 5:
+            # Check if the last progress state indicates completion
+            last_progress = manager.last_progress_state
+            if last_progress:
+                nodes = last_progress.get("nodes", {})
+                progress_prompt_id = last_progress.get("prompt_id")
+                
+                # CRITICAL: Only use fallback if the progress_state prompt_id matches what we're waiting for
+                if nodes and progress_prompt_id == prompt_id:
+                    running_count = sum(1 for node in nodes.values() if node.get("state") == "running")
+                    finished_count = sum(1 for node in nodes.values() if node.get("state") == "finished")
+                    
+                    # If we have finished nodes and no running nodes, assume completion
+                    if finished_count > 0 and running_count == 0:
+                        print(f"🕐 No activity for {time_since_activity:.1f}s + all nodes finished for prompt {prompt_id}, assuming completion")
+                        print(f"🎯 Using fallback completion from progress_state: {finished_count} finished, {running_count} running")
+                        
+                        manager.completed_prompt_ids.add(prompt_id)
+                        
+                        # Store minimal completion data
+                        manager.completion_data[prompt_id] = {
+                            "prompt_id": prompt_id,
+                            "outputs": {},  # Will use history fallback
+                            "completion_source": "inactivity_fallback"
+                        }
+                        
+                        manager.completion_event.set()
+                        return True
+                    else:
+                        print(f"🔄 Progress state shows {running_count} running nodes for prompt {prompt_id}, still waiting...")
+                elif progress_prompt_id != prompt_id:
+                    print(f"🔄 Progress state is for different prompt ({progress_prompt_id}), waiting for {prompt_id}...")
+            
+            # Original fallback if no progress state available or timeout
+            if time_since_activity > 15:
+                print(f"🕐 No activity for {time_since_activity:.1f}s, assuming completion for prompt {prompt_id}")
+                manager.completed_prompt_ids.add(prompt_id)
+                manager.completion_event.set()
+                return True
+    
+    print(f"⏰ Timeout waiting for prompt {prompt_id} completion for job {job_id}")
+    return False
+
 def send_global_job_status(job_id: str, status: str, message: str = "") -> bool:
     """Send a global job status message (not per-image status)."""
     global_status_data = {
@@ -892,6 +1111,16 @@ def send_global_job_status(job_id: str, status: str, message: str = "") -> bool:
         "global": True,  # Flag to indicate this is job-level, not image-level
         "progress": 0 if status == "initializing" else 50 if status == "ready" else 100
     }
+    
+    # Store the global status for future relay initialization
+    if not hasattr(send_global_job_status, '_global_statuses'):
+        send_global_job_status._global_statuses = {}
+    send_global_job_status._global_statuses[job_id] = {
+        "status": status,
+        "message": message,
+        "timestamp": int(time.time() * 1000)
+    }
+    print(f"💾 Stored global status for job {job_id}: {status} - {message}")
     
     # Try to send through existing relay first
     if send_custom_message_to_job(job_id, global_status_data):

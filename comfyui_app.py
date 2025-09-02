@@ -280,14 +280,13 @@ def poll_server_health(port: int) -> None:
         raise Exception("ComfyUI server is not healthy, stopping container")
     
 
-def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket, progress_ws_url):
+def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket, progress_ws_url, failure_tracker=None):
     """
     Process and save a single generated image to S3, then send WebSocket notification.
     This runs asynchronously to not block the next generation.
+    Returns True if successful, False if failed.
     """
-    print(f"🔄 THREAD STARTED: Starting S3 processing for image {image_index + 1} of job {job_id}")
-    print(f"🔍 THREAD: img_info={img_info}")
-    print(f"🔍 THREAD: progress_ws_url={progress_ws_url}")
+    print(f"🔄 Processing image {image_index + 1} for job {job_id}")
     try:
         import os
         import shutil
@@ -300,13 +299,14 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
         subfolder = img_info.get("subfolder", "")
         
         if not filename:
-            print(f"⚠️ No filename for image {image_index + 1}")
-            return
+            if failure_tracker:
+                failure_tracker['failed_images'].add(image_index)
+                failure_tracker['errors'].append(f"Image {image_index + 1}: No filename provided")
+            return False
             
         # Skip temporary preview files
         if "temp_" in filename.lower() or filename.startswith("ComfyUI_temp"):
-            print(f"⏭️ Skipping temporary preview file: {filename}")
-            return
+            return True  # Not a failure, just skipping
             
         # Construct full path to image file from ComfyUI's output directory
         # ComfyUI saves to: /root/comfy/ComfyUI/output/{job_id}/IMG-{counter}_{timestamp}.png
@@ -316,10 +316,12 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
             image_path = f"/root/comfy/ComfyUI/output/{filename}"
             
         if not os.path.exists(image_path):
-            print(f"⚠️ Image file not found: {image_path}")
-            return
+            if failure_tracker:
+                failure_tracker['failed_images'].add(image_index)
+                failure_tracker['errors'].append(f"Image {image_index + 1}: File not found at {image_path}")
+            return False
             
-        print(f"🖼️ Processing image {image_index + 1}: {image_path}")
+
         
         # Extract base name and extension from the image file
         base_name = os.path.splitext(os.path.basename(filename))[0]  # e.g., "IMG-_00001_"
@@ -390,24 +392,22 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
                             save_ok = True
                             break
                     except Exception as _s_e:
-                        print(f"⚠️ WEBP save failed (attempt {attempt+1}) for {web_path}: {_s_e}")
+                        pass  # Will retry
                     # brief delay before retry
                     import time as _t
                     _t.sleep(0.1 * (attempt + 1))
                 if not save_ok:
-                    print(f"❌ Failed to save WEBP after retries: {web_path}")
+                    if failure_tracker:
+                        failure_tracker['failed_images'].add(image_index)
+                        failure_tracker['errors'].append(f"Image {image_index + 1}: Failed to save {size}px WebP to S3")
                     continue
-                
-                print(f"  ✅ Created {size}px web version: {web_path}")
                 
                 # Store the 1024px version URL for WebSocket notification
                 if size == 1024:
                     # Construct the S3 URL that the frontend expects
                     final_image_url = f"user-images/{user_id}/inference/{job_id}/web/{web_filename}"
         
-        print(f"📦 Completed S3 processing for image {image_index + 1}")
-        print(f"🔍 final_image_url: {final_image_url}")
-        print(f"🔍 progress_ws_url: {progress_ws_url}")
+
         
         # Send WebSocket notification with final image URL through existing broadcast connection
         if final_image_url:
@@ -472,32 +472,45 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
                         ef_resp = requests.post(ef_url, json=ef_body, headers=ef_headers, timeout=10)
                         if ef_resp.ok:
                             ef_ok = True
-                            print(f"✅ Saved image {image_index + 1} to database via Edge Function")
+
                             break
                         else:
-                            print(f"⚠️ EF save attempt {attempt+1} failed: {ef_resp.status_code} {ef_resp.text}")
+                            pass  # Will retry
                     except Exception as _ef_e:
-                        print(f"⚠️ EF save attempt {attempt+1} exception: {_ef_e}")
+                        pass  # Will retry
                     import time as _t
                     _t.sleep(0.2 * (attempt + 1))
                 if not ef_ok:
-                    print(f"❌ Could not persist image {image_index + 1} after retries")
-            else:
-                print(f"⚠️ Missing Supabase credentials or final_image_url for database save")
+                    if failure_tracker:
+                        failure_tracker['failed_images'].add(image_index)
+                        failure_tracker['errors'].append(f"Image {image_index + 1}: Failed to save to database after retries")
                 
         except Exception as ef_e:
-            print(f"⚠️ Failed to save image {image_index + 1} via Edge Function: {ef_e}")
-            import traceback
-            print(f"📊 Edge Function error: {traceback.format_exc()}")
+            if failure_tracker:
+                failure_tracker['failed_images'].add(image_index)
+                failure_tracker['errors'].append(f"Image {image_index + 1}: Edge Function error: {str(ef_e)}")
+        
+        # If we got here and have a final_image_url, consider it successful
+        if final_image_url:
+            return True
+        else:
+            if failure_tracker:
+                failure_tracker['failed_images'].add(image_index)
+                failure_tracker['errors'].append(f"Image {image_index + 1}: No final image URL generated")
+            return False
                 
     except Exception as e:
-        print(f"❌ Failed to process image {image_index + 1}: {e}")
-        import traceback
-        print(f"📊 Full error: {traceback.format_exc()}")
+        if failure_tracker:
+            failure_tracker['failed_images'].add(image_index)
+            failure_tracker['errors'].append(f"Image {image_index + 1}: Processing error: {str(e)}")
+        return False
 
 
 def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
     import sys; sys.path.append("/root")
+    
+    # Initialize variables that are used in exception handlers
+    created_lora_filenames: list[str] = []
     
     # Choose Supabase creds based on env flag in input_data (same pattern as training)
     env_tag = (input_data.get("env") or "dev").lower()
@@ -532,17 +545,12 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             # Container has been running, this is a warm start
             is_cold_start = False
         
-        # Send appropriate global job status
+        # Send initial "starting" status for all jobs
         try:
             from lib.ws_preview_relay import send_global_job_status
-            if is_cold_start:
-                send_global_job_status(job_id, "initializing", "Starting up container and loading models")
-                print(f"📤 Sent global status 'initializing' for cold start job {job_id}")
-            else:
-                send_global_job_status(job_id, "ready", "Container ready to generate")
-                print(f"📤 Sent global status 'ready' for warm start job {job_id}")
+            send_global_job_status(job_id, "starting", "Starting up")
         except Exception as e:
-            print(f"⚠️ Failed to send global status: {e}")
+            pass  # Non-critical
         
         # Update job status to 'running' via inference-start EF
         try:
@@ -566,7 +574,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                     method='POST'
                 )
                 _rq.urlopen(start_req, timeout=10)
-                print(f"✅ Updated job {job_id} status to 'running'")
+
             else:
                 print("⚠️ Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY; skipping status update")
         except Exception as e:
@@ -577,18 +585,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         # Expect prepared payload from EF
         prepared = input_data.get("prepared")
         
-        # 🔍 DETAILED LOGGING FOR DEBUGGING
-        print(f"🔍 === INFERENCE JOB {job_id} DETAILS ===")
-        print(f"📋 Input data keys: {list(input_data.keys())}")
-        print(f"👤 User ID: {user_id}")
-        print(f"🎭 Character ID: {input_data.get('character_id')}")
-        print(f"🎨 Style ID: {input_data.get('style_id')}")
-        print(f"⚙️ Environment: {env_tag}")
-        print(f"🌐 Supabase URL: {os.environ.get('SUPABASE_URL', 'NOT_SET')[:50]}...")
-        print(f"📦 Prepared payload: {'✅ Present' if prepared else '❌ Missing'}")
-        if prepared:
-            print(f"🔧 Prepared keys: {list(prepared.keys())}")
-        print(f"🔍 === END DETAILS ===")
+
         
         if not prepared:
             raise RuntimeError("Missing 'prepared' payload from inference-create EF")
@@ -607,24 +604,17 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         style_lora = prepared.get("style_lora")
         
         # Track unique filenames we create so we can clean them up after the job finishes
-        created_lora_filenames: list[str] = []
+        # (created_lora_filenames is initialized at function start)
 
         def _link_lora(abs_path: str | None) -> str | None:
             if not abs_path:
-                print("🔍 _link_lora: abs_path is None or empty")
                 return None
-            
-            print(f"🔍 _link_lora: Processing path: {abs_path}")
             try:
                 from pathlib import Path as _P
                 import shutil as _sh
                 p = _P(abs_path)
                 
-                print(f"🔍 _link_lora: Full path object: {p}")
-                print(f"🔍 _link_lora: Path exists? {p.exists()}")
-                
                 if not p.exists():
-                    print(f"❌ _link_lora: File not found at {abs_path}")
                     return None
         
                 dest_dir = _P("/root/comfy/ComfyUI/models/loras")
@@ -641,43 +631,30 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                     pass
                 try:
                     dest.symlink_to(p)
-                    print(f"✅ _link_lora: Symlinked {p} -> {dest}")
                 except Exception as e:
-                    print(f"🔄 _link_lora: Symlink failed, copying: {e}")
                     _sh.copy2(str(p), str(dest))
-                    print(f"✅ _link_lora: Copied {p} -> {dest}")
                 
                 created_lora_filenames.append(unique_name)
-                print(f"🎯 _link_lora: Returning unique filename: {unique_name}")
                 return unique_name
         
             except Exception as _e:
-                print(f"⚠️ LoRA link failed: {_e}")
                 return None
         
-        print(f"🔍 About to link LoRAs:")
-        print(f"  - char_lora: {char_lora}")
-        print(f"  - style_lora: {style_lora}")
+
         
         char_name = _link_lora(char_lora)
         style_name = _link_lora(style_lora)
         
-        print(f"🎯 LoRA linking results:")
-        print(f"  - char_name: {char_name}")
-        print(f"  - style_name: {style_name}")
+
 
         # Handle seed generation - if seed is -1 or None, generate a random seed
         seed_value = p.get("seed")
         if seed_value is None or seed_value == -1:
             import random
             seed_value = random.randint(0, 2**32 - 1)
-            print(f"🎲 Generated random seed: {seed_value} for job {job_id}")
-        else:
-            print(f"🎯 Using provided seed: {seed_value} for job {job_id}")
-
+        
         # Get number of images to generate
         nb_takes = int(p.get("nb_takes", 1))
-        print(f"🎯 Sequential generation: {nb_takes} images for job {job_id}")
 
         # 3) Generate client ID for ComfyUI API
         comfyui_base = f"http://127.0.0.1:{PORT}"
@@ -692,9 +669,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             if base:
                 progress_ws_url = base.replace("{job_id}", job_id) if "{job_id}" in base else base.rstrip("/") + f"/ws/broadcast/{job_id}"
                 
-                print(f"🔌 WebSocket Configuration for job {job_id}:")
-                print(f"  📤 Progress Broadcast: {progress_ws_url}")
-                print(f"  🌐 Base URL: {base}")
+
         
         except Exception as e:
             print(f"⚠️ Progress relay setup failed: {e}")
@@ -705,6 +680,13 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
 
         # 5) Sequential image generation loop
         all_generated_images = []
+        
+        # Track S3 processing failures and threads
+        s3_failure_tracker = {
+            'failed_images': set(),
+            'errors': []
+        }
+        s3_processing_threads = []
         import urllib.request, urllib.error
         
         # Get AWS bucket early since it's needed in job metadata
@@ -737,18 +719,40 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         
         print(f"🔍 Job metadata: {job_metadata}")
         
+        # Start ONE WebSocket relay for the ENTIRE job (not per image)
+        if progress_ws_url:
+            try:
+                import threading
+                from lib.ws_preview_relay import start_relay
+                
+                # Use a single client ID for the entire job
+                job_client_id = str(uuid.uuid4())
+                comfy_ws_url = f"ws://127.0.0.1:{PORT}/ws?clientId={job_client_id}"
+                
+                print(f"🔌 WebSocket Configuration for job {job_id}:")
+                print(f"  📤 Progress Broadcast: {progress_ws_url}")
+                print(f"  🌐 Base URL: {progress_ws_url.split('/ws/broadcast/')[0]}")
+                
+                # Start the relay for the entire job
+                start_relay(progress_ws_url, comfy_ws_url, job_id, throttle_sec=1.5, image_index=0)
+                print(f"🔄 Started WebSocket relay for entire job {job_id}")
+            except Exception as e:
+                print(f"⚠️ WebSocket relay failed for job {job_id}: {e}")
+        
         # Sequential generation loop
         for image_index in range(nb_takes):
             print(f"🎯 === GENERATING IMAGE {image_index + 1}/{nb_takes} ===")
             
-            # Send global status when starting first image generation
-            if image_index == 0:
+            # Update the WebSocket relay with the current image index
+            if progress_ws_url:
                 try:
-                    from lib.ws_preview_relay import send_global_job_status
-                    send_global_job_status(job_id, "generating", "Generating images")
-                    print(f"📤 Sent global status 'generating' for job {job_id}")
+                    from lib.ws_preview_relay import update_job_image_index
+                    update_job_image_index(job_id, image_index)
                 except Exception as e:
-                    print(f"⚠️ Failed to send global generating status: {e}")
+                    print(f"⚠️ Failed to update image index: {e}")
+            
+            # Send global status when starting first image generation
+            # Status will be automatically switched to "generating" when first base64 image is received
             
             # Generate unique seed for each image (if original seed was random)
             current_seed = seed_value + image_index if seed_value != -1 else None
@@ -811,30 +815,8 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 user_id=user_id,  # Pass user_id for output path isolation
             )
             
-            # Generate unique client ID for this image
-            client_id = str(uuid.uuid4())
-            
-            # Start WebSocket relay for this specific image
-            if progress_ws_url:
-                try:
-                    import threading
-                    from lib.ws_preview_relay import start_direct_comfyui_relay
-                    
-                    comfy_ws_url = f"ws://127.0.0.1:{PORT}/ws?clientId={client_id}"
-                    
-                    print(f"🔌 Starting WebSocket relay for image {image_index + 1}:")
-                    print(f"  📥 ComfyUI WebSocket: {comfy_ws_url}")
-                    print(f"  📤 Progress Broadcast: {progress_ws_url}")
-                    
-                    # Pass image_index to the relay so it can include it in messages
-                    threading.Thread(
-                        target=start_direct_comfyui_relay, 
-                        args=(progress_ws_url, comfy_ws_url, job_id, image_index), 
-                        daemon=True
-                    ).start()
-                    print(f"🔄 Started WebSocket monitoring for image {image_index + 1}")
-                except Exception as e:
-                    print(f"⚠️ WebSocket relay failed for image {image_index + 1}: {e}")
+            # Use the same client ID for all images in this job
+            client_id = job_client_id
             
             # Submit to ComfyUI
             body = {
@@ -874,120 +856,156 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 
                 print(f"🎯 Image {image_index + 1} submitted! Prompt ID: {prompt_id}")
                 
-                # Wait for this specific image to complete
+                # Wait for this specific image to complete using WebSocket events
                 print(f"⏳ Waiting for image {image_index + 1} to complete...")
                 
-                # Monitor completion via ComfyUI history endpoint
-                max_wait_time = 600  # 10 minutes per image
-                start_time = time.time()
-                completed = False
+                # Use event-based completion instead of polling
+                from lib.ws_preview_relay import wait_for_prompt_completion, get_prompt_completion_data
+                completed = wait_for_prompt_completion(job_id, prompt_id, timeout=600)
                 
-                while not completed and (time.time() - start_time) < max_wait_time:
-                    try:
-                        history_url = f"{comfyui_base}/history/{prompt_id}"
-                        history_response = urllib.request.urlopen(history_url, timeout=10)
-                        history_data = json.loads(history_response.read().decode('utf-8'))
+                if completed:
+                    print(f"✅ Image {image_index + 1} completed!")
+                    
+                    # Get the completion data directly from WebSocket (no HTTP request needed!)
+                    completion_data = get_prompt_completion_data(job_id, prompt_id)
+                    
+                    if completion_data and completion_data.get("outputs"):
+                        # Process the completed image using WebSocket data
+                        outputs = completion_data.get("outputs", {})
+                        print(f"🔍 DEBUG: Using WebSocket completion data for image {image_index + 1}")
+                    else:
+                        # Fallback to history endpoint for outputs (even if we have completion confirmation)
+                        completion_source = completion_data.get("completion_source", "unknown") if completion_data else "none"
+                        print(f"⚠️ WebSocket completion data has no outputs (source: {completion_source}), falling back to history endpoint")
                         
-                        if prompt_id in history_data:
-                            print(f"✅ Image {image_index + 1} completed!")
-                            completed = True
+                        try:
+                            history_url = f"{comfyui_base}/history/{prompt_id}"
+                            history_response = urllib.request.urlopen(history_url, timeout=10)
+                            history_data = json.loads(history_response.read().decode('utf-8'))
                             
-                            # Process the completed image
-                            image_data = history_data[prompt_id]
-                            outputs = image_data.get("outputs", {})
-                            
-                            print(f"🔍 DEBUG: ComfyUI history outputs for image {image_index + 1}:")
-                            print(f"🔍 DEBUG: Available output nodes: {list(outputs.keys())}")
-                            for node_id, node_output in outputs.items():
-                                print(f"🔍 DEBUG: Node {node_id} output keys: {list(node_output.keys())}")
-                                if "images" in node_output:
-                                    print(f"🔍 DEBUG: Node {node_id} images: {node_output['images']}")
-                            
-                            # Find generated images in outputs
-                            generated_images = []
-                            for node_id, node_output in outputs.items():
-                                if "images" in node_output:
-                                    for img in node_output["images"]:
-                                        generated_images.append({
-                                            "filename": img.get("filename"),
-                                            "subfolder": img.get("subfolder", ""),
-                                            "type": img.get("type", "output"),
-                                            "image_index": image_index
-                                        })
-                            
-                            print(f"🖼️ Found {len(generated_images)} images for image {image_index + 1}")
-                            if generated_images:
-                                print(f"🔍 DEBUG: First image details: {generated_images[0]}")
-                            
-                            # DEBUG: Check if files exist in ComfyUI output directory
-                            comfyui_output_dir = "/root/comfy/ComfyUI/output"
-                            print(f"🔍 DEBUG: Checking ComfyUI output directory: {comfyui_output_dir}")
-                            try:
-                                if os.path.exists(comfyui_output_dir):
-                                    files_in_dir = os.listdir(comfyui_output_dir)
-                                    print(f"🔍 DEBUG: Files in ComfyUI output: {files_in_dir}")
+                            if prompt_id in history_data:
+                                image_data = history_data[prompt_id]
+                                outputs = image_data.get("outputs", {})
+                                print(f"🔍 DEBUG: Using fallback history data for image {image_index + 1}")
+                            else:
+                                print(f"⚠️ Prompt {prompt_id} not found in history for image {image_index + 1}")
+                                print(f"🔍 DEBUG: Available history keys: {list(history_data.keys()) if isinstance(history_data, dict) else 'Not a dict'}")
+                                
+                                # If we have completion confirmation but no history, the image might still be processing
+                                # Let's wait a bit and try again
+                                if completion_data:
+                                    print(f"🔄 Completion detected but no history yet, waiting 2s and retrying...")
+                                    time.sleep(2)
                                     
-                                    # Check job-specific subdirectory
-                                    job_subdir = f"{comfyui_output_dir}/{job_id}"
-                                    if os.path.exists(job_subdir):
-                                        job_files = os.listdir(job_subdir)
-                                        print(f"🔍 DEBUG: Files in job subdirectory {job_id}: {job_files}")
+                                    # Retry once
+                                    history_response = urllib.request.urlopen(history_url, timeout=10)
+                                    history_data = json.loads(history_response.read().decode('utf-8'))
+                                    
+                                    if prompt_id in history_data:
+                                        image_data = history_data[prompt_id]
+                                        outputs = image_data.get("outputs", {})
+                                        print(f"🔍 DEBUG: Using retry history data for image {image_index + 1}")
                                     else:
-                                        print(f"🔍 DEBUG: Job subdirectory {job_id} does not exist!")
+                                        print(f"⚠️ Prompt {prompt_id} still not found in history after retry")
+                                        raise RuntimeError(f"Prompt {prompt_id} not found in ComfyUI history after retry")
                                 else:
-                                    print(f"🔍 DEBUG: ComfyUI output directory does not exist!")
-                            except Exception as e:
-                                print(f"🔍 DEBUG: Error checking ComfyUI output directory: {e}")
+                                    raise RuntimeError(f"Prompt {prompt_id} not found in ComfyUI history")
+                        except Exception as e:
+                            print(f"⚠️ Error getting fallback history data for image {image_index + 1}: {e}")
+                            raise RuntimeError(f"Failed to get completion data for image {image_index + 1}: {e}")
+                    
+                    print(f"🔍 DEBUG: ComfyUI outputs for image {image_index + 1}:")
+                    print(f"🔍 DEBUG: Available output nodes: {list(outputs.keys())}")
+                    for node_id, node_output in outputs.items():
+                        print(f"🔍 DEBUG: Node {node_id} output keys: {list(node_output.keys())}")
+                        if "images" in node_output:
+                            print(f"🔍 DEBUG: Node {node_id} images: {node_output['images']}")
+                    
+                    # Find generated images in outputs
+                    generated_images = []
+                    for node_id, node_output in outputs.items():
+                        if "images" in node_output:
+                            for img in node_output["images"]:
+                                generated_images.append({
+                                    "filename": img.get("filename"),
+                                    "subfolder": img.get("subfolder", ""),
+                                    "type": img.get("type", "output"),
+                                    "image_index": image_index
+                                })
+                    
+                    print(f"🖼️ Found {len(generated_images)} images for image {image_index + 1}")
+                    if generated_images:
+                        print(f"🔍 DEBUG: First image details: {generated_images[0]}")
+                        
+                        # DEBUG: Check if files exist in ComfyUI output directory
+                        comfyui_output_dir = "/root/comfy/ComfyUI/output"
+                        print(f"🔍 DEBUG: Checking ComfyUI output directory: {comfyui_output_dir}")
+                        try:
+                            if os.path.exists(comfyui_output_dir):
+                                files_in_dir = os.listdir(comfyui_output_dir)
+                                print(f"🔍 DEBUG: Files in ComfyUI output: {files_in_dir}")
+                                
+                                # Check job-specific subdirectory
+                                job_subdir = f"{comfyui_output_dir}/{job_id}"
+                                if os.path.exists(job_subdir):
+                                    job_files = os.listdir(job_subdir)
+                                    print(f"🔍 DEBUG: Files in job subdirectory {job_id}: {job_files}")
+                                else:
+                                    print(f"🔍 DEBUG: Job subdirectory {job_id} does not exist!")
+                            else:
+                                print(f"🔍 DEBUG: ComfyUI output directory does not exist!")
+                        except Exception as e:
+                            print(f"🔍 DEBUG: Error checking ComfyUI output directory: {e}")
+                        
+                        all_generated_images.extend(generated_images)
+                        
+                        # Immediately process and save this image to S3 (async)
+                        if generated_images:
+                            try:
+                                import threading
+                                print(f"🔍 About to start async S3 processing for image {image_index + 1}")
+                                print(f"🔍 Generated image info: {generated_images[0]}")
+                                print(f"🔍 Parameters: image_index={image_index}, job_id={job_id}, user_id={user_id}, bucket={bucket}")
+                                
+                                # Start async S3 processing for this image
+                                thread = threading.Thread(
+                                    target=process_and_save_single_image,
+                                    args=(generated_images[0], image_index, job_id, user_id, bucket, progress_ws_url, s3_failure_tracker),
+                                    daemon=True
+                                )
+                                thread.start()
+                                s3_processing_threads.append(thread)
+                            except Exception as save_e:
+                                pass  # S3 processing will be tracked by failure_tracker
                             
-                            all_generated_images.extend(generated_images)
-                            
-                            # Immediately process and save this image to S3 (async)
-                            if generated_images:
-                                try:
-                                    import threading
-                                    print(f"🔍 About to start async S3 processing for image {image_index + 1}")
-                                    print(f"🔍 Generated image info: {generated_images[0]}")
-                                    print(f"🔍 Parameters: image_index={image_index}, job_id={job_id}, user_id={user_id}, bucket={bucket}")
-                                    
-                                    # Start async S3 processing for this image
-                                    threading.Thread(
-                                        target=process_and_save_single_image,
-                                        args=(generated_images[0], image_index, job_id, user_id, bucket, progress_ws_url),
-                                        daemon=True
-                                    ).start()
-                                    print(f"🚀 Started async S3 processing for image {image_index + 1}")
-                                except Exception as save_e:
-                                    print(f"⚠️ Failed to start async S3 processing for image {image_index + 1}: {save_e}")
-                                    import traceback
-                                    print(f"📊 Full error: {traceback.format_exc()}")
-                            
-                        else:
-                            # Still processing, wait a bit
-                            time.sleep(2)
-                            
-                    except Exception as e:
-                        print(f"⚠️ Error checking completion for image {image_index + 1}: {e}")
-                        time.sleep(2)
-                
-                if not completed:
-                    print(f"❌ Image {image_index + 1} timed out after {max_wait_time} seconds")
+                    else:
+                        raise RuntimeError(f"No generated images found for image {image_index + 1}")
+                else:
                     raise RuntimeError(f"Image {image_index + 1} generation timed out")
                     
             except Exception as e:
-                print(f"❌ Failed to generate image {image_index + 1}: {e}")
                 raise RuntimeError(f"Image {image_index + 1} generation failed: {e}")
-            
-            print(f"✅ === COMPLETED IMAGE {image_index + 1}/{nb_takes} ===")
         
-        print(f"🎉 All {nb_takes} images generated successfully!")
-        print(f"📊 Total generated images: {len(all_generated_images)}")
+        # Wait for all S3 processing threads to complete and check for failures
+        for thread in s3_processing_threads:
+            thread.join(timeout=30)  # Wait up to 30 seconds per thread
+        
+        # Check if any images failed to save
+        if s3_failure_tracker['failed_images']:
+            failed_count = len(s3_failure_tracker['failed_images'])
+            total_count = nb_takes
+            error_summary = "; ".join(s3_failure_tracker['errors'][:3])  # First 3 errors
+            if len(s3_failure_tracker['errors']) > 3:
+                error_summary += f" (and {len(s3_failure_tracker['errors']) - 3} more errors)"
+            
+            raise RuntimeError(f"Failed to save {failed_count}/{total_count} images to S3: {error_summary}")
         
         # Images are now processed asynchronously during generation
         # We only need to call inference-complete Edge Function to mark the job as done
         if not all_generated_images:
             raise RuntimeError("No images were generated")
         
-        print(f"📊 Sequential generation completed. Images processed asynchronously during generation.")
+
         
         # Call inference-complete Edge Function to mark the job as completed
         # (Individual images were already saved to S3 asynchronously during generation)
@@ -1091,6 +1109,24 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             tracker.mark_failed(job_id, str(e))
         except Exception as tracker_e:
             print(f"⚠️ Failed to update job tracker: {tracker_e}")
+        
+        # Send failure notification via WebSocket before cleanup
+        try:
+            from lib.ws_preview_relay import send_custom_message_to_job
+            failure_message = {
+                "job_id": job_id,
+                "job_type": "inference",
+                "status": "failed",
+                "progress": 0,
+                "message": f"Generation failed: {error_details.get('suggestion', str(e))}",
+                "timestamp": int(time.time() * 1000),
+                "error": str(e),
+                "error_type": error_details.get("error_type", "Unknown")
+            }
+            send_custom_message_to_job(job_id, failure_message)
+            print(f"📤 Sent failure notification via WebSocket for job {job_id}")
+        except Exception as ws_fail_e:
+            print(f"⚠️ Failed to send failure notification via WebSocket: {ws_fail_e}")
         
         # Clean up WebSocket relay on failure
         try:
