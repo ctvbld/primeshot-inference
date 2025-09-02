@@ -310,7 +310,7 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                 "job_type": "inference",
                                 "status": "completed",
                                 "progress": 100,
-                                "message": "Generation completed",
+                                "message": "Completed",
                                 "timestamp": int(time.time() * 1000),
                                 "final": True  # Signal that this is the final message
                             }))
@@ -811,7 +811,7 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                     "job_type": "inference",
                                     "status": "completed",
                                     "progress": 100,
-                                    "message": "Generation completed (connection closed)",
+                                    "message": "Completed (connection closed)",
                                     "timestamp": int(time.time() * 1000)
                                 }
                                 await broadcast_ws.send(_json.dumps(final_msg))
@@ -834,7 +834,7 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                             "job_type": "inference",
                             "status": "completed",
                             "progress": 100,
-                            "message": "Generation completed",
+                            "message": "Completed",
                             "timestamp": int(time.time() * 1000)
                         }
                         await broadcast_ws.send(_json.dumps(final_msg))
