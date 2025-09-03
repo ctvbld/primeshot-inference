@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Dict, Any, List, Tuple
 import modal
 import modal.experimental
-from fastapi import Query
 
 sys.path.insert(0, "/root/lib")
 
@@ -25,6 +24,10 @@ models_volume = modal.Volume.from_name("models-vol", create_if_missing=True)
 aws_secret = modal.Secret.from_name("aws-secret")
 inference_secret = modal.Secret.from_name("inference-secret")
 supabase_secret = modal.Secret.from_name("supabase-secret")
+
+# Central GPU selection with fixed fallbacks
+GPU_PREFERENCE_LIST = ["h200", "h100"]
+DEFAULT_GPU_TYPE = "H200"
 
 # Define paths
 MODELS_PATH = "/models"
@@ -460,9 +463,9 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
                     'user_id': user_id,
                     'original_path': f"user-images/{user_id}/inference/{job_id}/orig/{base_name}{original_ext}",
                     'web_path': final_image_url,
-                    'width': 1024,  # We know this from our processing
-                    'height': 1024,  # We know this from our processing
-                    'format': 'webp',
+                    'width': 1024,  # TODO: Change this to the actual width of the image when we have the final workflow
+                    'height': 1024,  # TODO: Change this to the actual height of the image when we have the final workflow
+                    'format': 'png',
                     'bytes': 0  # We could calculate this but it's not critical
                 }
                 
@@ -1163,18 +1166,18 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @app.cls(
-    gpu="H100",
+    gpu=GPU_PREFERENCE_LIST,
     image=cuda_image,
     secrets=[aws_secret, inference_secret, supabase_secret],
     volumes={**user_images_mount, **workflows_mount, MODELS_PATH: models_volume},
     timeout=30000,
     scaledown_window=300,  # 5 minute keep-alive (will be tuned later)
-    max_containers=30,
+    max_containers=40,
     retries=3,
 )
 @modal.concurrent(max_inputs=1)
-class Fast:
-    """Production ComfyUI class for optimized batch image generation."""
+class InferenceWorker:
+    """Production ComfyUI worker for image generation."""
 
     @modal.enter()
     def setup_environment(self):
@@ -1185,27 +1188,6 @@ class Fast:
     def run_inference(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         return main(input_data)
 
-
-@app.cls(
-    gpu="A10G",
-    volumes={**user_images_mount, **workflows_mount, MODELS_PATH: models_volume},
-    secrets=[aws_secret, inference_secret, supabase_secret],
-    timeout=30000,
-    scaledown_window=300,  # 5 minute keep-alive (will be tuned later)
-    max_containers=10,
-    retries=3,
-)
-@modal.concurrent(max_inputs=1)
-class Slow:
-    @modal.enter()
-    def setup_environment(self):
-        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
-        _launch_inference_runtime(PORT)
-
-    @modal.method()
-    def run_inference(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        return main(input_data)
-    
 
 @app.function(
     image=modal.Image.debian_slim().pip_install([
@@ -1243,31 +1225,25 @@ def api_endpoint(request_data: Dict[str, Any]):
 
     print(f"Received prepared: {prepared}")
 
-    # Spawn on available GPU class
-    gpu_classes = [("H100", Fast), ("A10G", Slow)]
-    
-    for gpu_type, gpu_class in gpu_classes:
-        try:
-            gpu = gpu_class()
-            payload = {
-                "user_id": user_id,
-                "job_id": job_id,
-                "prepared": prepared,
-                "params": params,
-                "gpu_type": gpu_type,
-            }
-            handle = gpu.run_inference.spawn(payload)
-    
-            return {
-                "status": "accepted",
-                "gpu_type": gpu_type,
-                "job_handle": str(handle),
-                "job_id": job_id,
-            }
-    
-        except Exception as e:
-            print(f"Spawn failed for {gpu_type}: {e}. Trying next class...")
-            continue
+    try:
+        gpu = InferenceWorker()
+        payload = {
+            "user_id": user_id,
+            "job_id": job_id,
+            "prepared": prepared,
+            "params": params,
+            "gpu_type": DEFAULT_GPU_TYPE,
+        }
+        handle = gpu.run_inference.spawn(payload)
+
+        return {
+            "status": "accepted",
+            "gpu_type": DEFAULT_GPU_TYPE,
+            "job_handle": str(handle),
+            "job_id": job_id,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Submission failed: {e}")
 
     raise HTTPException(status_code=503, detail="Submission failed for all GPU classes")
 

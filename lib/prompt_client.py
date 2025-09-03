@@ -13,12 +13,13 @@ def fetch_inference_prep(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not supabase_url or not service_role_key:
         raise RuntimeError("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
     url = f"{supabase_url}/functions/v1/inference-prepare"
+    webhook_secret = os.environ.get('WEBHOOK_SECRET') or os.environ.get('INFERENCE_WEBHOOK_SECRET')
     req = urllib.request.Request(
         url=url,
         data=json.dumps(payload).encode('utf-8'),
         headers={
             'Content-Type': 'application/json',
-            'Authorization': f'Bearer {service_role_key}',
+            'Authorization': f'Bearer {webhook_secret or service_role_key}',
             'apikey': service_role_key,
         },
         method='POST',
