@@ -26,6 +26,7 @@ class WebSocketRelay:
         self.completion_data = {}  # Store full completion data by prompt_id
         self.last_activity_time = time.time()  # Track last activity for timeout detection
         self.last_progress_state = {}  # Track last seen progress state for fallback completion
+        self.last_prompt_id: Optional[str] = None  # Track most recent prompt_id for graceful close
         
     def update_image_index(self, new_index: int):
         """Update the current image index being processed."""
@@ -490,6 +491,10 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                     evt["status"] = "starting"
                                     evt["message"] = "Starting up"
                                 evt["progress"] = 10
+                                # Record prompt_id if present for graceful close
+                                pid = (data.get("data", {}) or {}).get("prompt_id")
+                                if isinstance(pid, str) and pid:
+                                    manager.last_prompt_id = pid
                                 
                             elif data.get("type") == "executed":
                                 if manager.generation_started:
@@ -516,6 +521,8 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                     manager.completed_prompt_ids.add(prompt_id)
                                     # Store the full completion data (contains outputs!)
                                     manager.completion_data[prompt_id] = data.get("data", {})
+                                    # Track last seen prompt id
+                                    manager.last_prompt_id = prompt_id
                                     print(f"🎯 Prompt {prompt_id} completed for job {job_id}")
                                     print(f"📊 Stored completion data keys: {list(data.get('data', {}).keys())}")
                                 
@@ -819,7 +826,20 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                             except Exception as final_close_e:
                                 print(f"⚠️ Failed to send final message on close for job {job_id}: {final_close_e}")
                         else:
-                            print(f"🔌 ComfyUI connection closed but job {job_id} not flagged as complete - not sending completion")
+                            print(f"🔌 ComfyUI connection closed but job {job_id} not flagged as complete - triggering graceful completion fallback")
+                            # Graceful fallback: if we have a recent prompt_id, treat as completed
+                            try:
+                                if manager.last_prompt_id and manager.last_prompt_id not in manager.completed_prompt_ids:
+                                    manager.completed_prompt_ids.add(manager.last_prompt_id)
+                                    manager.completion_data[manager.last_prompt_id] = {
+                                        "prompt_id": manager.last_prompt_id,
+                                        "outputs": {},
+                                        "completion_source": "connection_closed"
+                                    }
+                                    manager.completion_event.set()
+                                    print(f"🔔 Set completion for prompt {manager.last_prompt_id} due to connection close")
+                            except Exception as _grace_e:
+                                print(f"⚠️ Graceful close completion fallback failed: {_grace_e}")
                         break
                     except Exception as msg_e:
                         print(f"⚠️ Message processing error for job {job_id}: {msg_e}")

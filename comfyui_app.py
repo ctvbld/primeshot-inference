@@ -25,8 +25,7 @@ aws_secret = modal.Secret.from_name("aws-secret")
 inference_secret = modal.Secret.from_name("inference-secret")
 supabase_secret = modal.Secret.from_name("supabase-secret")
 
-# Central GPU selection with fixed fallbacks
-GPU_PREFERENCE_LIST = ["h200", "h100"]
+# Central GPU names (hardcoded routing)
 DEFAULT_GPU_TYPE = "H200"
 
 # Define paths
@@ -470,23 +469,31 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
                 }
                 
                 ef_ok = False
+                ef_status = None
+                ef_text = None
                 for attempt in range(3):
                     try:
-                        ef_resp = requests.post(ef_url, json=ef_body, headers=ef_headers, timeout=10)
+                        # Increase timeout to better tolerate dev/ngrok slowness
+                        ef_resp = requests.post(ef_url, json=ef_body, headers=ef_headers, timeout=30)
+                        ef_status = ef_resp.status_code
                         if ef_resp.ok:
                             ef_ok = True
-
                             break
                         else:
-                            pass  # Will retry
+                            ef_text = ef_resp.text
                     except Exception as _ef_e:
-                        pass  # Will retry
+                        ef_text = str(_ef_e)
                     import time as _t
-                    _t.sleep(0.2 * (attempt + 1))
+                    _t.sleep(0.5 * (attempt + 1))
                 if not ef_ok:
+                    # Non-fatal: we already saved to S3 and notified via WS. Log warning only.
+                    warn_msg = (
+                        f"Image {image_index + 1}: Edge Function save warning (status={ef_status}): {ef_text}"
+                    )
+                    print(f"⚠️ {warn_msg}")
                     if failure_tracker:
-                        failure_tracker['failed_images'].add(image_index)
-                        failure_tracker['errors'].append(f"Image {image_index + 1}: Failed to save to database after retries")
+                        # Do not mark as failed; record warning for diagnostics.
+                        failure_tracker['errors'].append(warn_msg)
                 
         except Exception as ef_e:
             if failure_tracker:
@@ -600,6 +607,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         
         from lib.workflow_patcher import compute_dimensions, patch_workflow
         p = input_data.get("params", {})
+        settings_override = input_data.get("settings_override") or {}
         width, height = compute_dimensions(p.get("quality", "1K"), p.get("aspect_ratio", "1:1"))
         
         # Character/style LoRAs are absolute paths under /data from EF; link into models/loras
@@ -800,6 +808,43 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 except Exception as e:
                     print(f"⚠️ Failed to send progress update: {e}")
             
+            # Apply settings_override to CharacterLoRA and StyleLoRA nodes before patching
+            try:
+                char_strengths = (settings_override.get("character") or {}) if isinstance(settings_override, dict) else {}
+                style_strengths = (settings_override.get("style") or {}) if isinstance(settings_override, dict) else {}
+
+                def _clamp01(val):
+                    try:
+                        v = float(val)
+                    except Exception:
+                        return None
+                    v = max(0.0, min(1.0, round(v, 1)))
+                    return v
+
+                if isinstance(wf, dict):
+                    for node_id, node in wf.items():
+                        try:
+                            meta = node.get("_meta", {}) if isinstance(node, dict) else {}
+                            title = meta.get("title")
+                            if title == "CharacterLoRA" and isinstance(node.get("inputs"), dict):
+                                sm = _clamp01(char_strengths.get("strength_model"))
+                                sc = _clamp01(char_strengths.get("strength_clip"))
+                                if sm is not None:
+                                    node["inputs"]["strength_model"] = sm
+                                if sc is not None:
+                                    node["inputs"]["strength_clip"] = sc
+                            if title == "StyleLoRA" and isinstance(node.get("inputs"), dict):
+                                sm = _clamp01(style_strengths.get("strength_model"))
+                                sc = _clamp01(style_strengths.get("strength_clip"))
+                                if sm is not None:
+                                    node["inputs"]["strength_model"] = sm
+                                if sc is not None:
+                                    node["inputs"]["strength_clip"] = sc
+                        except Exception:
+                            pass
+            except Exception as _ovr_e:
+                print(f"⚠️ Failed to apply settings_override: {_ovr_e}")
+
             # Patch workflow for single image with current seed
             patched = patch_workflow(
                 wf,
@@ -875,7 +920,6 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                     if completion_data and completion_data.get("outputs"):
                         # Process the completed image using WebSocket data
                         outputs = completion_data.get("outputs", {})
-                        print(f"🔍 DEBUG: Using WebSocket completion data for image {image_index + 1}")
                     else:
                         # Fallback to history endpoint for outputs (even if we have completion confirmation)
                         completion_source = completion_data.get("completion_source", "unknown") if completion_data else "none"
@@ -1131,6 +1175,34 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as ws_fail_e:
             print(f"⚠️ Failed to send failure notification via WebSocket: {ws_fail_e}")
         
+        # Update database job status to failed via inference-complete EF
+        try:
+            import requests
+            env = (env_tag if 'env_tag' in locals() else (input_data.get("env") or "dev")).lower()
+            supabase_url = os.environ.get(f'SUPABASE_URL_{env.upper()}') or os.environ.get('SUPABASE_URL')
+            service_role_key = os.environ.get(f'SUPABASE_SERVICE_ROLE_KEY_{env.upper()}') or os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+            if supabase_url and service_role_key:
+                ef_url = f"{supabase_url}/functions/v1/inference-complete"
+                ef_headers = {
+                    'Authorization': f'Bearer {service_role_key}',
+                    'Content-Type': 'application/json',
+                    'apikey': service_role_key,
+                }
+                ef_body = {
+                    'job_id': job_id,
+                    'success': False,
+                    'error_message': str(e)
+                }
+                ef_resp = requests.post(ef_url, json=ef_body, headers=ef_headers, timeout=20)
+                if ef_resp.ok:
+                    print(f"✅ Marked job {job_id} as failed via inference-complete EF")
+                else:
+                    print(f"⚠️ inference-complete EF failure update error: {ef_resp.status_code} {ef_resp.text}")
+            else:
+                print("⚠️ Missing Supabase credentials; cannot mark job failed in DB")
+        except Exception as ef_fail:
+            print(f"⚠️ Failed to update job failure via inference-complete EF: {ef_fail}")
+        
         # Clean up WebSocket relay on failure
         try:
             from lib.ws_preview_relay import signal_job_completion, get_active_relays
@@ -1166,18 +1238,42 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @app.cls(
-    gpu=GPU_PREFERENCE_LIST,
+    gpu="H200",  # Fast
     image=cuda_image,
     secrets=[aws_secret, inference_secret, supabase_secret],
     volumes={**user_images_mount, **workflows_mount, MODELS_PATH: models_volume},
     timeout=30000,
-    scaledown_window=300,  # 5 minute keep-alive (will be tuned later)
+    scaledown_window=300,
     max_containers=40,
     retries=3,
 )
 @modal.concurrent(max_inputs=1)
-class InferenceWorker:
-    """Production ComfyUI worker for image generation."""
+class Fast:
+    """H200 worker (Fast)."""
+
+    @modal.enter()
+    def setup_environment(self):
+        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+        _launch_inference_runtime(PORT)
+
+    @modal.method()
+    def run_inference(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        return main(input_data)
+
+
+@app.cls(
+    gpu="H100",  # Quick
+    image=cuda_image,
+    secrets=[aws_secret, inference_secret, supabase_secret],
+    volumes={**user_images_mount, **workflows_mount, MODELS_PATH: models_volume},
+    timeout=30000,
+    scaledown_window=300,
+    max_containers=40,
+    retries=3,
+)
+@modal.concurrent(max_inputs=1)
+class Quick:
+    """H100 worker (Quick)."""
 
     @modal.enter()
     def setup_environment(self):
@@ -1222,30 +1318,51 @@ def api_endpoint(request_data: Dict[str, Any]):
 
     job_id = request_data.get("job_id") or str(uuid.uuid4())
     params = request_data.get("params", {})
+    settings_override = request_data.get("settings_override")
 
     print(f"Received prepared: {prepared}")
 
+    # Try Fast (H200) first, fall back to Quick (H100) if spawn fails
     try:
-        gpu = InferenceWorker()
+        gpu = Fast()
         payload = {
             "user_id": user_id,
             "job_id": job_id,
             "prepared": prepared,
             "params": params,
-            "gpu_type": DEFAULT_GPU_TYPE,
+            "settings_override": settings_override,
+            "gpu_type": "H200",
         }
         handle = gpu.run_inference.spawn(payload)
-
+        print(f"✅ Submitted inference to Fast (H200) for job {job_id}")
         return {
             "status": "accepted",
-            "gpu_type": DEFAULT_GPU_TYPE,
+            "gpu_type": "H200",
             "job_handle": str(handle),
             "job_id": job_id,
         }
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Submission failed: {e}")
-
-    raise HTTPException(status_code=503, detail="Submission failed for all GPU classes")
+        print(f"Spawn failed for Fast (H200): {e}. Falling back to Quick (H100)...")
+        try:
+            gpu = Quick()
+            payload = {
+                "user_id": user_id,
+                "job_id": job_id,
+                "prepared": prepared,
+                "params": params,
+                "settings_override": settings_override,
+                "gpu_type": "H100",
+            }
+            handle = gpu.run_inference.spawn(payload)
+            print(f"✅ Submitted inference to Quick (H100) for job {job_id}")
+            return {
+                "status": "accepted",
+                "gpu_type": "H100",
+                "job_handle": str(handle),
+                "job_id": job_id,
+            }
+        except Exception as e2:
+            raise HTTPException(status_code=503, detail=f"Submission failed for all GPU classes: {e2}")
 
 
 # Webhook endpoint removed - no longer using webhooks, only synchronous S3 mode
