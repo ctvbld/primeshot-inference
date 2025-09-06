@@ -443,9 +443,9 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
             import requests
             import os
             
-            # Get Supabase credentials
-            supabase_url = os.environ.get('SUPABASE_URL_DEV') or os.environ.get('SUPABASE_URL')
-            service_role_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY_DEV') or os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+            # Get Supabase credentials (use the overridden environment variables)
+            supabase_url = os.environ.get('SUPABASE_URL')
+            service_role_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
             
             if supabase_url and service_role_key and final_image_url:
                 # Call inference-save-image Edge Function
@@ -524,15 +524,32 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
     
     # Choose Supabase creds based on env flag in input_data (same pattern as training)
     env_tag = (input_data.get("env") or "dev").lower()
-    if env_tag not in {"dev", "prod"}:
+    if env_tag not in {"dev", "staging", "prod"}:
         env_tag = "prod"
 
+    print(f"🔍 DEBUG: Environment resolution:")
+    print(f"🔍 DEBUG: input env = {input_data.get('env')}")
+    print(f"🔍 DEBUG: resolved env_tag = {env_tag}")
+    
+    # Get original values before override
+    original_url = os.environ.get("SUPABASE_URL", "")
+    original_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+    
+    # Get environment-specific values
+    env_url = os.getenv(f"SUPABASE_URL_{env_tag.upper()}")
+    env_key = os.getenv(f"SUPABASE_SERVICE_ROLE_KEY_{env_tag.upper()}")
+    
+    print(f"🔍 DEBUG: Original SUPABASE_URL = {original_url}")
+    print(f"🔍 DEBUG: Environment-specific SUPABASE_URL_{env_tag.upper()} = {env_url}")
+    print(f"🔍 DEBUG: Original SUPABASE_SERVICE_ROLE_KEY = {'***' + original_key[-4:] if original_key else 'None'}")
+    print(f"🔍 DEBUG: Environment-specific SUPABASE_SERVICE_ROLE_KEY_{env_tag.upper()} = {'***' + env_key[-4:] if env_key else 'None'}")
+
     # Override generic names so the rest of the code picks them up
-    os.environ["SUPABASE_URL"] = os.getenv(f"SUPABASE_URL_{env_tag.upper()}") or os.environ.get("SUPABASE_URL", "")
-    # Also switch service role key if provided
-    env_service_key = os.getenv(f"SUPABASE_SERVICE_ROLE_KEY_{env_tag.upper()}")
-    if env_service_key:
-        os.environ["SUPABASE_SERVICE_ROLE_KEY"] = env_service_key
+    os.environ["SUPABASE_URL"] = env_url or original_url
+    os.environ["SUPABASE_SERVICE_ROLE_KEY"] = env_key or original_key
+    
+    print(f"🔍 DEBUG: Final SUPABASE_URL = {os.environ.get('SUPABASE_URL')}")
+    print(f"🔍 DEBUG: Final SUPABASE_SERVICE_ROLE_KEY = {'***' + os.environ.get('SUPABASE_SERVICE_ROLE_KEY', '')[-4:] if os.environ.get('SUPABASE_SERVICE_ROLE_KEY') else 'None'}")
     
     from job_tracker import get_job_tracker
     tracker = get_job_tracker()
@@ -570,9 +587,18 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             supabase_url = os.environ.get('SUPABASE_URL')
             service_role_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
             
+            print(f"🔍 DEBUG: Environment variables for inference-start:")
+            print(f"🔍 DEBUG: env_tag = {env_tag}")
+            print(f"🔍 DEBUG: SUPABASE_URL = {supabase_url}")
+            print(f"🔍 DEBUG: SUPABASE_SERVICE_ROLE_KEY = {'***' + service_role_key[-4:] if service_role_key else 'None'}")
+            
             if supabase_url and service_role_key:
                 start_url = f"{supabase_url}/functions/v1/inference-start"
                 start_body = {"job_id": job_id}
+                
+                print(f"🔍 DEBUG: Calling inference-start at: {start_url}")
+                print(f"🔍 DEBUG: Request body: {start_body}")
+                
                 start_req = _rq.Request(
                     url=start_url,
                     data=json.dumps(start_body).encode('utf-8'),
@@ -583,12 +609,17 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                     },
                     method='POST'
                 )
-                _rq.urlopen(start_req, timeout=10)
+                
+                response = _rq.urlopen(start_req, timeout=10)
+                response_text = response.read().decode('utf-8')
+                print(f"✅ inference-start response: {response.status} - {response_text}")
 
             else:
                 print("⚠️ Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY; skipping status update")
         except Exception as e:
             print(f"⚠️ Failed to update job status to running: {e}")
+            import traceback
+            print(f"🔍 DEBUG: Full error traceback: {traceback.format_exc()}")
         
         poll_server_health(PORT)
 
@@ -831,16 +862,21 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                                 sc = _clamp01(char_strengths.get("strength_clip"))
                                 if sm is not None:
                                     node["inputs"]["strength_model"] = sm
+                                    print(f"🔍 DEBUG: Updated CharacterLoRA strength_model: {sm}")
                                 if sc is not None:
                                     node["inputs"]["strength_clip"] = sc
+                                    print(f"🔍 DEBUG: Updated CharacterLoRA strength_clip: {sc}")
                             if title == "StyleLoRA" and isinstance(node.get("inputs"), dict):
                                 sm = _clamp01(style_strengths.get("strength_model"))
                                 sc = _clamp01(style_strengths.get("strength_clip"))
                                 if sm is not None:
                                     node["inputs"]["strength_model"] = sm
+                                    print(f"🔍 DEBUG: Updated StyleLoRA strength_model: {sm}")
                                 if sc is not None:
                                     node["inputs"]["strength_clip"] = sc
-                        except Exception:
+                                    print(f"🔍 DEBUG: Updated StyleLoRA strength_clip: {sc}")
+                        except Exception as e:
+                            print(f"⚠️ Failed to apply settings_override for node {node_id}: {e}")
                             pass
             except Exception as _ovr_e:
                 print(f"⚠️ Failed to apply settings_override: {_ovr_e}")
@@ -1057,9 +1093,13 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         # Call inference-complete Edge Function to mark the job as completed
         # (Individual images were already saved to S3 asynchronously during generation)
         try:
-            env_tag = job_metadata.get('env', 'dev')
-            supabase_url = os.environ.get(f'SUPABASE_URL_{env_tag.upper()}') or os.environ.get('SUPABASE_URL')
-            service_role_key = os.environ.get(f'SUPABASE_SERVICE_ROLE_KEY_{env_tag.upper()}') or os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+            # Use the overridden environment variables (already set based on env_tag in main function)
+            supabase_url = os.environ.get('SUPABASE_URL')
+            service_role_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+            
+            print(f"🔍 DEBUG: inference-complete call:")
+            print(f"🔍 DEBUG: SUPABASE_URL = {supabase_url}")
+            print(f"🔍 DEBUG: SUPABASE_SERVICE_ROLE_KEY = {'***' + service_role_key[-4:] if service_role_key else 'None'}")
             
             if supabase_url and service_role_key:
                 import requests
@@ -1074,6 +1114,10 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                     'job_id': job_id,
                     'success': True
                 }
+                
+                print(f"🔍 DEBUG: Calling inference-complete at: {ef_url}")
+                print(f"🔍 DEBUG: Request body: {ef_body}")
+                
                 ef_resp = requests.post(ef_url, json=ef_body, headers=ef_headers, timeout=20)
                 if ef_resp.ok:
                     print(f"✅ Called inference-complete Edge Function successfully")
@@ -1081,7 +1125,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 else:
                     print(f"⚠️ inference-complete EF error: {ef_resp.status_code} {ef_resp.text}")
             else:
-                print(f"⚠️ Missing Supabase credentials for {env_tag} environment")
+                print(f"⚠️ Missing Supabase credentials for environment")
                 
         except Exception as ef_e:
             print(f"⚠️ Failed to call inference-complete Edge Function: {ef_e}")
@@ -1319,8 +1363,10 @@ def api_endpoint(request_data: Dict[str, Any]):
     job_id = request_data.get("job_id") or str(uuid.uuid4())
     params = request_data.get("params", {})
     settings_override = request_data.get("settings_override")
+    env = request_data.get("env")  # Get env parameter from request
 
     print(f"Received prepared: {prepared}")
+    print(f"Received env: {env}")
 
     # Try Fast (H200) first, fall back to Quick (H100) if spawn fails
     try:
@@ -1331,6 +1377,7 @@ def api_endpoint(request_data: Dict[str, Any]):
             "prepared": prepared,
             "params": params,
             "settings_override": settings_override,
+            "env": env,  # Pass env to GPU worker
             "gpu_type": "H200",
         }
         handle = gpu.run_inference.spawn(payload)
@@ -1351,6 +1398,7 @@ def api_endpoint(request_data: Dict[str, Any]):
                 "prepared": prepared,
                 "params": params,
                 "settings_override": settings_override,
+                "env": env,  # Pass env to GPU worker
                 "gpu_type": "H100",
             }
             handle = gpu.run_inference.spawn(payload)
