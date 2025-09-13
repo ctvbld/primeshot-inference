@@ -173,10 +173,13 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
             # Connect to ComfyUI WebSocket (to receive progress)
             print(f"🔌 Connecting to ComfyUI WebSocket: {comfy_ws_url}")
             comfy_ws = await websockets.connect(
-                comfy_ws_url, 
-                ping_interval=30,  # Keep connection alive
+                comfy_ws_url,
+                ping_interval=30,   # Keep connection alive
+                ping_timeout=20,    # Avoid hanging connections
+                close_timeout=10,   # Faster closes
+                open_timeout=30,    # Bound connect attempts
                 max_size=max_size,
-                compression=None  # Disable compression to save memory
+                compression=None    # Disable compression to save memory
             )
             print(f"✅ Connected to ComfyUI WebSocket for job {job_id}")
             
@@ -505,6 +508,22 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                     evt["message"] = "Starting up"
                                 evt["progress"] = 50
                                 
+                                # Check if this is a save node execution - strong signal of completion
+                                executed_data = data.get("data", {})
+                                node_id = executed_data.get("node")
+                                if node_id and "output" in executed_data:
+                                    output_data = executed_data.get("output", {})
+                                    # Check if this node produced saved images
+                                    if any("images" in v for v in output_data.values() if isinstance(v, dict)):
+                                        print(f"🎯 Detected save node execution for node {node_id}")
+                                        # This is likely our completion event
+                                        prompt_id = executed_data.get("prompt_id") or manager.last_prompt_id
+                                        if prompt_id:
+                                            manager.completed_prompt_ids.add(prompt_id)
+                                            manager.completion_data[prompt_id] = executed_data
+                                            manager.completion_event.set()
+                                            print(f"🔔 Signaled completion via save node execution for prompt {prompt_id}")
+                                
                             elif data.get("type") == "execution_complete" or data.get("type") == "execution_success":
                                 event_type = data.get("type")
                                 print(f"🏁 {event_type.upper()} received for job {job_id}!")
@@ -697,6 +716,7 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                 exec_data = data.get("data", {})
                                 if "output" in exec_data and isinstance(exec_data["output"], dict):
                                     # Look for images in the output
+                                    has_saved_images = False
                                     for output_key, output_value in exec_data["output"].items():
                                         if isinstance(output_value, dict) and "images" in output_value:
                                             images = output_value["images"]
@@ -710,6 +730,14 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                                         print(f"🔍 Found preview image data in executed message for job {job_id}")
                                                     elif "filename" in first_image:
                                                         print(f"🔍 Found preview image filename in executed message: {first_image['filename']}")
+                                                        has_saved_images = True
+                                                        # This is a strong signal of completion - image has been saved
+                                                        prompt_id = exec_data.get("prompt_id") or manager.last_prompt_id
+                                                        if prompt_id and prompt_id not in manager.completed_prompt_ids:
+                                                            print(f"🎯 Detected saved image output, marking prompt {prompt_id} as complete")
+                                                            manager.completed_prompt_ids.add(prompt_id)
+                                                            manager.completion_data[prompt_id] = exec_data
+                                                            manager.completion_event.set()
                                                 elif isinstance(first_image, str):
                                                     preview = first_image
                                                     print(f"🔍 Found preview image string in executed message for job {job_id}")
@@ -810,7 +838,7 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                         
                     except websockets.exceptions.ConnectionClosed:
                         print(f"🔌 ComfyUI WebSocket connection closed for job {job_id}")
-                        # Only send completion if job is actually flagged as complete
+                        # If job is marked complete, send final and exit; otherwise try graceful completion + reconnect
                         if start_relay._completion_flags.get(job_id, False):
                             try:
                                 final_msg = {
@@ -821,10 +849,12 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                     "message": "Completed (connection closed)",
                                     "timestamp": int(time.time() * 1000)
                                 }
-                                await broadcast_ws.send(_json.dumps(final_msg))
-                                print(f"📤 Sent final message on connection close for job {job_id}")
+                                if broadcast_ws:
+                                    await broadcast_ws.send(_json.dumps(final_msg))
+                                    print(f"📤 Sent final message on connection close for job {job_id}")
                             except Exception as final_close_e:
                                 print(f"⚠️ Failed to send final message on close for job {job_id}: {final_close_e}")
+                            break
                         else:
                             print(f"🔌 ComfyUI connection closed but job {job_id} not flagged as complete - triggering graceful completion fallback")
                             # Graceful fallback: if we have a recent prompt_id, treat as completed
@@ -840,7 +870,23 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                     print(f"🔔 Set completion for prompt {manager.last_prompt_id} due to connection close")
                             except Exception as _grace_e:
                                 print(f"⚠️ Graceful close completion fallback failed: {_grace_e}")
-                        break
+                            # Attempt to reconnect to ComfyUI WS and continue
+                            try:
+                                print(f"🔄 Attempting to reconnect to ComfyUI WebSocket for job {job_id}...")
+                                comfy_ws = await websockets.connect(
+                                    comfy_ws_url,
+                                    ping_interval=30,
+                                    ping_timeout=20,
+                                    close_timeout=10,
+                                    open_timeout=30,
+                                    max_size=max_size,
+                                    compression=None
+                                )
+                                print(f"🔄 Reconnected to ComfyUI WebSocket for job {job_id}")
+                                continue
+                            except Exception as re_ws_e:
+                                print(f"❌ Reconnect to ComfyUI WS failed for job {job_id}: {re_ws_e}")
+                                break
                     except Exception as msg_e:
                         print(f"⚠️ Message processing error for job {job_id}: {msg_e}")
                         continue

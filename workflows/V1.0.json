@@ -1,0 +1,510 @@
+{
+  "3": {
+    "inputs": {
+      "text": "",
+      "clip": [
+        "14",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "PositivePrompt"
+    }
+  },
+  "4": {
+    "inputs": {
+      "text": "plastic-like skin texture, oily appearance, unnatural texture, 3d render, cgi, doll, deformed, disfigured, poorly drawn, poor anatomy, bad hands, nude, bad hands, deformed, face asymmetry, eyes asymmetry, deformed eyes, deformed mouth, unwanted hair artifacts on face, grain, noise, artifacts, nipple, brand, text, writings, logo, initials, low quality, blurry face, ugly, poorly drawn hands, deformed face, extra limbs, bad anatomy, low resolution, unrealistic, cartoonish, watermark, text, signature, distorted proportions, creepy, glitch, jpeg artifacts,",
+      "clip": [
+        "14",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)"
+    }
+  },
+  "5": {
+    "inputs": {
+      "width": [
+        "39",
+        0
+      ],
+      "height": [
+        "39",
+        1
+      ],
+      "length": 1,
+      "batch_size": 1
+    },
+    "class_type": "EmptyHunyuanLatentVideo",
+    "_meta": {
+      "title": "EmptyHunyuanLatentVideo"
+    }
+  },
+  "7": {
+    "inputs": {
+      "unet_name": "wan2.1_t2v_14B_fp16.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Charger Modèle Diffusion"
+    }
+  },
+  "8": {
+    "inputs": {
+      "vae_name": "wan_2.1_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Charger VAE"
+    }
+  },
+  "9": {
+    "inputs": {
+      "samples": [
+        "43",
+        0
+      ],
+      "vae": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "14": {
+    "inputs": {
+      "lora_name": "e595aa3a-343a-4425-9fc0-332d236d6ee2_training_5958dd32-f5a8-40dd-b73f-37ee0c516372_loras_lora_20250822_195758_038eda7d.safetensors",
+      "strength_model": 1,
+      "strength_clip": 1,
+      "model": [
+        "38",
+        0
+      ],
+      "clip": [
+        "38",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "CharacterLora"
+    }
+  },
+  "38": {
+    "inputs": {
+      "lora_name": "training_goldennoir_loras_lora_20250908_111346_2cf10b54.safetensors",
+      "strength_model": 0.5,
+      "strength_clip": 0.5,
+      "model": [
+        "125:45",
+        0
+      ],
+      "clip": [
+        "125:45",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "StyleLora"
+    }
+  },
+  "39": {
+    "inputs": {
+      "megapixel": "1.0",
+      "aspect_ratio": "1:1 (Perfect Square)",
+      "divisible_by": "64",
+      "custom_ratio": false,
+      "custom_aspect_ratio": "1:1"
+    },
+    "class_type": "FluxResolutionNode",
+    "_meta": {
+      "title": "ResolutionCalc"
+    }
+  },
+  "42": {
+    "inputs": {
+      "text": "Static, motionless, still, ugly, bad quality, worst quality, poorly drawn, low resolution, lack of details, blurry face",
+      "clip": [
+        "14",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "NegativePrompt"
+    }
+  },
+  "43": {
+    "inputs": {
+      "seed": 214306755485117,
+      "steps": 10,
+      "cfg": 1,
+      "nag_scale": 1,
+      "nag_tau": 2.5,
+      "nag_alpha": 0.25,
+      "nag_sigma_end": 0,
+      "sampler_name": "res_2s",
+      "scheduler": "bong_tangent",
+      "denoise": 1,
+      "model": [
+        "14",
+        0
+      ],
+      "positive": [
+        "3",
+        0
+      ],
+      "negative": [
+        "4",
+        0
+      ],
+      "nag_negative": [
+        "42",
+        0
+      ],
+      "latent_image": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "KSamplerWithNAG",
+    "_meta": {
+      "title": "KSamplerWithNAG"
+    }
+  },
+  "44": {
+    "inputs": {
+      "shift": 5,
+      "model": [
+        "7",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingSD3",
+    "_meta": {
+      "title": "ModèleÉchantillonnageSD3"
+    }
+  },
+  "130": {
+    "inputs": {
+      "filename_prefix": "orig_",
+      "file_type": "PNG",
+      "remove_metadata": true,
+      "images": [
+        "124:110",
+        0
+      ]
+    },
+    "class_type": "SaveImagePlus",
+    "_meta": {
+      "title": "SaveOrig"
+    }
+  },
+  "132": {
+    "inputs": {
+      "size": 1024,
+      "mode": true,
+      "images": [
+        "124:110",
+        0
+      ]
+    },
+    "class_type": "easy imageScaleDownToSize",
+    "_meta": {
+      "title": "Image Scale Down To Size"
+    }
+  },
+  "133": {
+    "inputs": {
+      "filename_prefix": "web_",
+      "file_type": "WEBP (lossless)",
+      "remove_metadata": true,
+      "images": [
+        "132",
+        0
+      ]
+    },
+    "class_type": "SaveImagePlus",
+    "_meta": {
+      "title": "SaveWeb"
+    }
+  },
+  "125:22": {
+    "inputs": {
+      "clip_name": "umt5_xxl_fp16.safetensors",
+      "type": "wan",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Charger CLIP"
+    }
+  },
+  "125:30": {
+    "inputs": {
+      "lora_name": "Wan2.1_T2V_14B_FusionX_LoRA.safetensors",
+      "strength_model": 0.4,
+      "strength_clip": 0.4,
+      "model": [
+        "44",
+        0
+      ],
+      "clip": [
+        "125:22",
+        0
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "Charger LoRA"
+    }
+  },
+  "125:29": {
+    "inputs": {
+      "lora_name": "Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors",
+      "strength_model": 0.4,
+      "strength_clip": 0.4,
+      "model": [
+        "125:30",
+        0
+      ],
+      "clip": [
+        "125:30",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "Charger LoRA"
+    }
+  },
+  "125:45": {
+    "inputs": {
+      "lora_name": "FusionX_FaceNaturalizer.safetensors",
+      "strength_model": 0.6,
+      "strength_clip": 0.6,
+      "model": [
+        "125:29",
+        0
+      ],
+      "clip": [
+        "125:29",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "Charger LoRA"
+    }
+  },
+  "123:92": {
+    "inputs": {
+      "upscale_model": [
+        "123:50",
+        0
+      ],
+      "image": [
+        "123:55",
+        0
+      ]
+    },
+    "class_type": "ImageUpscaleWithModel",
+    "_meta": {
+      "title": "Agrandir l'Image (à l'aide du Modèle)"
+    }
+  },
+  "123:49": {
+    "inputs": {
+      "seed": 123042156572844,
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 0.85,
+      "model": [
+        "14",
+        0
+      ],
+      "positive": [
+        "3",
+        0
+      ],
+      "negative": [
+        "4",
+        0
+      ],
+      "latent_image": [
+        "123:48",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "123:48": {
+    "inputs": {
+      "pixels": [
+        "123:46",
+        0
+      ],
+      "vae": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode"
+    }
+  },
+  "123:55": {
+    "inputs": {
+      "samples": [
+        "123:49",
+        0
+      ],
+      "vae": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "123:47": {
+    "inputs": {
+      "upscale_model": [
+        "123:50",
+        0
+      ],
+      "image": [
+        "9",
+        0
+      ]
+    },
+    "class_type": "ImageUpscaleWithModel",
+    "_meta": {
+      "title": "Agrandir l'Image (à l'aide du Modèle)"
+    }
+  },
+  "123:50": {
+    "inputs": {
+      "model_name": "4x_NMKD-Siax_200k.pth"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {
+      "title": "Charger le modèle de mise à l'échelle"
+    }
+  },
+  "123:46": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "scale_by": 0.3,
+      "image": [
+        "123:47",
+        0
+      ]
+    },
+    "class_type": "ImageScaleBy",
+    "_meta": {
+      "title": "UpscaleBy"
+    }
+  },
+  "123:91": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "scale_by": 0.4,
+      "image": [
+        "123:92",
+        0
+      ]
+    },
+    "class_type": "ImageScaleBy",
+    "_meta": {
+      "title": "ResizeBy"
+    }
+  },
+  "124:118": {
+    "inputs": {
+      "vibrance": 0,
+      "saturation": 0,
+      "protect_skin_tones": true,
+      "strength": 1,
+      "image": [
+        "124:121",
+        0
+      ]
+    },
+    "class_type": "VibranceNode",
+    "_meta": {
+      "title": "VibSat"
+    }
+  },
+  "124:121": {
+    "inputs": {
+      "leak_intensity": 0,
+      "leak_color": "warm",
+      "leak_count": 2,
+      "leak_position": "random",
+      "blur_amount": 0,
+      "custom_hue": 0,
+      "image": [
+        "123:91",
+        0
+      ]
+    },
+    "class_type": "LightLeaksNode",
+    "_meta": {
+      "title": "LightLeaks"
+    }
+  },
+  "124:110": {
+    "inputs": {
+      "grain_intensity": 0.1,
+      "grain_size": 1,
+      "film_type": "35mm",
+      "color_grain": true,
+      "vintage_tone": 0,
+      "vignette": 0,
+      "image": [
+        "124:116",
+        0
+      ]
+    },
+    "class_type": "FilmGrainNode",
+    "_meta": {
+      "title": "FilmGrain"
+    }
+  },
+  "124:116": {
+    "inputs": {
+      "output_channel": "Red",
+      "red_source": 30,
+      "green_source": 59,
+      "blue_source": 11,
+      "constant": 0,
+      "monochrome": true,
+      "preserve_luminosity": false,
+      "image": [
+        "124:118",
+        0
+      ]
+    },
+    "class_type": "ChannelMixerNode",
+    "_meta": {
+      "title": "ChannelMixer"
+    }
+  }
+}

@@ -31,6 +31,8 @@ DEFAULT_GPU_TYPE = "H200"
 # Define paths
 MODELS_PATH = "/models"
 PORT: int = 8000
+# GPU type for dev_server UI (H100 queues can be long). Override via DEV_SERVER_GPU.
+DEV_SERVER_GPU_TYPE = os.getenv("DEV_SERVER_GPU", "H100")
 
 # S3 mount for user LoRAs and outputs
 # Mount user-images/ prefix at /data for all relevant functions
@@ -138,29 +140,35 @@ cuda_image = (
         "cd /root/comfy/ComfyUI/custom_nodes/ControlAltAI-Nodes && pip install . --no-input"
     )
     .run_commands(
-        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/kijai/ComfyUI-KJNodes",
-        "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-KJNodes && pip install -r requirements.txt --no-input"
-    )
-    .run_commands(
        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/yolain/ComfyUI-Easy-Use",
        "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-Easy-Use && pip install -r requirements.txt --no-input"
     )
-    .run_commands(
-        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/vrgamegirl19/comfyui-vrgamedevgirl",
-        "cd /root/comfy/ComfyUI/custom_nodes/comfyui-vrgamedevgirl && pip install -r requirements.txt --no-input"
-    )
-    .run_commands(
-        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/kaibioinfo/ComfyUI_AdvancedRefluxControl"
-    )
+    # START TO UNUSED NODES
+    # .run_commands(
+    #     "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/kijai/ComfyUI-KJNodes",
+    #     "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-KJNodes && pip install -r requirements.txt --no-input"
+    # )
+    # .run_commands(
+    #     "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/vrgamegirl19/comfyui-vrgamedevgirl",
+    #     "cd /root/comfy/ComfyUI/custom_nodes/comfyui-vrgamedevgirl && pip install -r requirements.txt --no-input"
+    # )
+    # END TO UNUSED NODES
     # Install RES4LYF advanced sampling nodes
     .run_commands(
         "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/ClownsharkBatwing/RES4LYF.git",
         "cd /root/comfy/ComfyUI/custom_nodes/RES4LYF && pip install -r requirements.txt --no-input 2>/dev/null || echo 'No requirements.txt found for RES4LYF'"
     )
-    # Install bilbox-comfyui photo prompt and post-processing nodes
+    # Install post-processing nodes
     .run_commands(
-        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/syllebra/bilbox-comfyui.git", 
-        "cd /root/comfy/ComfyUI/custom_nodes/bilbox-comfyui && pip install -r requirements.txt --no-input"
+        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/orion4d/ComfyUI-Image-Effects.git", 
+        "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-Image-Effects && pip install -r requirements.txt --no-input"
+    )
+    # NAG restores effective negative prompting in few-step diffusion models, and complements CFG in multi-step sampling for improved quality and control.
+    .run_commands(
+        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/ChenDarYen/ComfyUI-NAG"
+    )
+    .run_commands(
+        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/Goktug/comfyui-saveimage-plus.git"
     )
     # Post-installation compatibility fixes for attention mask issues
     .run_commands(
@@ -282,6 +290,203 @@ def poll_server_health(port: int) -> None:
         raise Exception("ComfyUI server is not healthy, stopping container")
     
 
+def find_generated_images(
+    job_id: str,
+    output_dir: str = "/root/comfy/ComfyUI/output",
+    max_attempts: int = 10,
+    delay_seconds: float = 1.0
+) -> list[dict]:
+    """Find generated images in ComfyUI output directory with retries.
+    
+    Returns list of image info dicts with filename, subfolder, type fields.
+    """
+    import glob
+    
+    found_images = []
+    job_output_dir = os.path.join(output_dir, job_id)
+    
+    for attempt in range(max_attempts):
+        # Check job-specific directory first
+        if os.path.exists(job_output_dir):
+            files = [f for f in os.listdir(job_output_dir) 
+                    if f.endswith(('.png', '.webp', '.jpg', '.jpeg'))]
+            if files:
+                print(f"✅ Found {len(files)} files in job directory after {attempt + 1} attempts")
+                for filename in files:
+                    found_images.append({
+                        "filename": filename,
+                        "subfolder": job_id,
+                        "type": "output"
+                    })
+                return found_images
+        
+        # Check parent directory for job-prefixed files
+        if os.path.exists(output_dir):
+            parent_files = [f for f in os.listdir(output_dir) 
+                          if f.startswith(job_id) and f.endswith(('.png', '.webp', '.jpg', '.jpeg'))]
+            if parent_files:
+                print(f"✅ Found {len(parent_files)} files in parent directory")
+                for filename in parent_files:
+                    found_images.append({
+                        "filename": filename,
+                        "subfolder": "",
+                        "type": "output"
+                    })
+                return found_images
+            
+            # Also check for web_/orig_ prefixed files (recent files only)
+            all_files = glob.glob(os.path.join(output_dir, "*"))
+            image_files = [f for f in all_files 
+                         if os.path.splitext(f)[1].lower() in {'.png', '.webp', '.jpg', '.jpeg'}]
+            
+            # Sort by modification time and check recent files
+            if image_files:
+                image_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+                current_time = time.time()
+                for filepath in image_files[:20]:  # Check only 20 most recent
+                    # If file was created in last 30 seconds
+                    if current_time - os.path.getmtime(filepath) < 30:
+                        basename = os.path.basename(filepath)
+                        if basename.startswith(('web_', 'orig_')):
+                            found_images.append({
+                                "filename": basename,
+                                "subfolder": "",
+                                "type": "output"
+                            })
+                if found_images:
+                    print(f"✅ Found {len(found_images)} recent files")
+                    return found_images
+        
+        if attempt < max_attempts - 1:
+            print(f"⏳ Directory scan attempt {attempt + 1}/{max_attempts}, waiting {delay_seconds}s...")
+            time.sleep(delay_seconds)
+            delay_seconds = min(delay_seconds * 1.5, 3.0)  # Exponential backoff
+    
+    return found_images
+
+
+def get_image_outputs(
+    job_id: str,
+    prompt_id: str,
+    comfyui_base: str,
+    timeout: int = 600
+) -> tuple[dict, str]:
+    """Get image outputs using multiple methods with fallback.
+    
+    Returns (outputs_dict, source) where source indicates the method used.
+    """
+    from lib.ws_preview_relay import wait_for_prompt_completion, get_prompt_completion_data
+    
+    start_time = time.time()
+    
+    # Method 1: WebSocket completion data
+    print(f"⏳ Waiting for completion via WebSocket...")
+    completed = wait_for_prompt_completion(job_id, prompt_id, timeout=timeout)
+    
+    if completed:
+        print(f"✅ WebSocket reported completion (took {time.time() - start_time:.1f}s)")
+        completion_data = get_prompt_completion_data(job_id, prompt_id)
+        
+        if completion_data and completion_data.get("outputs"):
+            return completion_data["outputs"], "websocket"
+    
+    # Method 2: ComfyUI History API
+    print(f"⚠️ WebSocket data incomplete, trying history API...")
+    history_start = time.time()
+    history_url = f"{comfyui_base}/history/{prompt_id}"
+    
+    for attempt in range(8):
+        try:
+            response = urllib.request.urlopen(history_url, timeout=10)
+            history_data = json.loads(response.read().decode('utf-8'))
+            
+            if prompt_id in history_data:
+                outputs = history_data[prompt_id].get("outputs", {})
+                if outputs:
+                    print(f"✅ Got outputs from history (took {time.time() - history_start:.1f}s)")
+                    return outputs, "history"
+        except Exception as e:
+            if attempt == 0:
+                print(f"⚠️ History API error: {e}")
+        
+        backoff = min(0.25 * (2 ** attempt), 2.0)
+        time.sleep(backoff)
+    
+    # Method 3: Directory scanning
+    print(f"⚠️ History unavailable, scanning output directory...")
+    dir_start = time.time()
+    found_images = find_generated_images(job_id)
+    
+    if found_images:
+        print(f"✅ Found images via directory scan (took {time.time() - dir_start:.1f}s)")
+        # Build outputs structure
+        outputs = {
+            "directory_scan": {"images": found_images}
+        }
+        return outputs, "directory"
+    
+    # All methods failed
+    total_time = time.time() - start_time
+    raise RuntimeError(f"Failed to get outputs after {total_time:.1f}s - all methods exhausted")
+
+
+def categorize_and_process_images(
+    generated_images: list[dict],
+    image_index: int,
+    job_id: str,
+    user_id: str,
+    bucket: str,
+    progress_ws_url: str,
+    failure_tracker: dict
+) -> list:
+    """Categorize images by type and start async S3 upload threads.
+    
+    Returns list of threading.Thread objects to wait on.
+    """
+    import threading
+    
+    threads = []
+    
+    # Categorize images
+    web_img = None
+    orig_img = None
+    
+    for img in generated_images:
+        fname = str(img.get("filename", "")).lower()
+        if fname.startswith("web_") or fname.endswith(".webp"):
+            web_img = img
+        elif fname.startswith("orig_") or fname.endswith(".png"):
+            orig_img = img
+    
+    # Use first image as web if none found
+    if web_img is None and generated_images:
+        web_img = generated_images[0]
+    
+    # Process web image
+    if web_img:
+        print(f"🔍 Starting async S3 processing (web) for image {image_index + 1}")
+        thread = threading.Thread(
+            target=process_and_save_single_image,
+            args=(web_img, image_index, job_id, user_id, bucket, progress_ws_url, failure_tracker),
+            daemon=True
+        )
+        thread.start()
+        threads.append(thread)
+    
+    # Process orig image if different from web
+    if orig_img and orig_img != web_img:
+        print(f"🔍 Starting async S3 processing (orig) for image {image_index + 1}")
+        thread = threading.Thread(
+            target=process_and_save_single_image,
+            args=(orig_img, image_index, job_id, user_id, bucket, progress_ws_url, failure_tracker),
+            daemon=True
+        )
+        thread.start()
+        threads.append(thread)
+    
+    return threads
+
+
 def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket, progress_ws_url, failure_tracker=None):
     """
     Process and save a single generated image to S3, then send WebSocket notification.
@@ -329,89 +534,105 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
         base_name = os.path.splitext(os.path.basename(filename))[0]  # e.g., "IMG-_00001_"
         original_ext = os.path.splitext(image_path)[1]  # .png, .jpg, etc.
         
-        # Clean up the base name to get proper IMG-XX format
-        # ComfyUI generates: "IMG-_00001_" -> we want "IMG-01"
-        if base_name.startswith("IMG-_") and base_name.endswith("_"):
-            # Extract the number: "IMG-_00001_" -> "00001"
-            number_str = base_name[5:-1]  # Remove "IMG-_" and trailing "_"
-            try:
-                # Convert to int and back to get clean number: "00001" -> 1 -> "01"
-                image_num = int(number_str)
-                base_name = f"IMG-{image_num:02d}"  # Format as IMG-01, IMG-02, etc.
-            except ValueError:
-                # Fallback: use image_index if parsing fails
-                base_name = f"IMG-{image_index + 1:02d}"
-        else:
-            # Fallback: use image_index for any other format
-            base_name = f"IMG-{image_index + 1:02d}"
+        # Use deterministic per-take numbering regardless of ComfyUI's internal counters
+        # This guarantees IMG-01..IMG-0N even if multiple Save nodes increment counters
+        base_name = f"IMG-{image_index + 1:02d}"
+        # Detect which Save node produced this file
+        # Convention from workflow: orig_*.png (original PNG), web_*.webp (1024px webp)
+        variant = "unknown"
+        try:
+            lower_name = filename.lower()
+            if lower_name.startswith("orig_"):
+                variant = "orig"
+            elif lower_name.startswith("web_"):
+                variant = "web"
+        except Exception:
+            pass
         
         print(f"🖼️ Processing ComfyUI image: {image_path}")
         print(f"🔍 Cleaned base name: {base_name}")
         
-        # Copy original to job-specific S3 directory
+        # Prepare target folders
         orig_dir = f"/data/{user_id}/inference/{job_id}/orig"
-        os.makedirs(orig_dir, exist_ok=True)
-        
-        orig_filename = f"{base_name}{original_ext}"
-        orig_path = f"{orig_dir}/{orig_filename}"
-        shutil.copy(image_path, orig_path)
-        
-        print(f"  ✅ Copied original to S3: {orig_path}")
-        
-        # Create web versions directly on mounted S3 filesystem
         web_dir = f"/data/{user_id}/inference/{job_id}/web"
+        os.makedirs(orig_dir, exist_ok=True)
         os.makedirs(web_dir, exist_ok=True)
-        
+
         final_image_url = None
-        
-        with Image.open(image_path) as img:
-            # Convert to RGB if needed (for WebP compatibility)
-            if img.mode in ('RGBA', 'LA', 'P'):
-                img = img.convert('RGB')
-            
-            # Create 480px, 720px, and 1024px versions (480px for retina 240px displays)
-            for size, size_name in [(480, '480'), (720, '720'), (1024, '1024')]:
-                # Create a copy for resizing
-                web_img = img.copy()
-                web_img.thumbnail((size, size), Image.Resampling.LANCZOS)
-                
-                # Determine file path on mounted filesystem
-                if size == 1024:
-                    # For 1024px, use base name without suffix (expected by frontend)
-                    web_filename = f"{base_name}.webp"
-                else:
-                    # For smaller sizes, use -w{size} suffix (expected by frontend)
-                    web_filename = f"{base_name}-w{size}.webp"
-                
-                web_path = f"{web_dir}/{web_filename}"
-                
-                # Save directly to mounted S3 filesystem with retries for reliability
-                save_ok = False
-                for attempt in range(3):
-                    try:
-                        web_img.save(web_path, format='WEBP', quality=max(65, 85 - attempt * 10), method=6, optimize=True)
-                        if os.path.exists(web_path) and os.path.getsize(web_path) > 0:
-                            save_ok = True
-                            break
-                    except Exception as _s_e:
-                        pass  # Will retry
-                    # brief delay before retry
-                    import time as _t
-                    _t.sleep(0.1 * (attempt + 1))
-                if not save_ok:
-                    if failure_tracker:
-                        failure_tracker['failed_images'].add(image_index)
+
+        if variant == "orig":
+            # Just copy to orig folder, no processing
+            orig_filename = f"{base_name}{original_ext}"
+            orig_path = f"{orig_dir}/{orig_filename}"
+            shutil.copy(image_path, orig_path)
+            print(f"  ✅ Copied original PNG to S3 (orig variant): {orig_path}")
+        elif variant == "web":
+            # Use ComfyUI 1024px webp as the main web image; also make 720/480 from it
+            # Copy 1024 as IMG-XX.webp
+            web_1024_filename = f"{base_name}.webp"
+            web_1024_path = f"{web_dir}/{web_1024_filename}"
+            shutil.copy(image_path, web_1024_path)
+            print(f"  ✅ Saved 1024px WebP from workflow: {web_1024_path}")
+            # Create downscaled variants from the 1024 image
+            try:
+                with Image.open(web_1024_path) as img1024:
+                    if img1024.mode in ('RGBA', 'LA', 'P'):
+                        img1024 = img1024.convert('RGB')
+                    for size in (720, 480):
+                        web_copy = img1024.copy()
+                        web_copy.thumbnail((size, size), Image.Resampling.LANCZOS)
+                        web_path = f"{web_dir}/{base_name}-w{size}.webp"
+                        save_ok = False
+                        for attempt in range(3):
+                            try:
+                                web_copy.save(web_path, format='WEBP', quality=max(65, 85 - attempt * 10), method=6, optimize=True)
+                                if os.path.exists(web_path) and os.path.getsize(web_path) > 0:
+                                    save_ok = True
+                                    break
+                            except Exception:
+                                pass
+                            import time as _t
+                            _t.sleep(0.1 * (attempt + 1))
+                        if not save_ok and failure_tracker:
+                            failure_tracker['errors'].append(f"Image {image_index + 1}: Failed to save {size}px WebP to S3")
+            except Exception as _web_e:
+                print(f"⚠️ Failed to generate downscaled WEBP variants: {_web_e}")
+
+            final_image_url = f"user-images/{user_id}/inference/{job_id}/web/{web_1024_filename}"
+        else:
+            # Legacy path: generate from the given file (kept for compatibility)
+            # Copy original
+            orig_filename = f"{base_name}{original_ext}"
+            orig_path = f"{orig_dir}/{orig_filename}"
+            shutil.copy(image_path, orig_path)
+            print(f"  ✅ Copied original to S3: {orig_path}")
+            # Generate 1024/720/480 as before
+            with Image.open(image_path) as img:
+                if img.mode in ('RGBA', 'LA', 'P'):
+                    img = img.convert('RGB')
+                for size in (1024, 720, 480):
+                    web_img = img.copy()
+                    web_img.thumbnail((size, size), Image.Resampling.LANCZOS)
+                    web_filename = f"{base_name}.webp" if size == 1024 else f"{base_name}-w{size}.webp"
+                    web_path = f"{web_dir}/{web_filename}"
+                    save_ok = False
+                    for attempt in range(3):
+                        try:
+                            web_img.save(web_path, format='WEBP', quality=max(65, 85 - attempt * 10), method=6, optimize=True)
+                            if os.path.exists(web_path) and os.path.getsize(web_path) > 0:
+                                save_ok = True
+                                break
+                        except Exception:
+                            pass
+                        import time as _t
+                        _t.sleep(0.1 * (attempt + 1))
+                    if not save_ok and failure_tracker:
                         failure_tracker['errors'].append(f"Image {image_index + 1}: Failed to save {size}px WebP to S3")
-                    continue
-                
-                # Store the 1024px version URL for WebSocket notification
-                if size == 1024:
-                    # Construct the S3 URL that the frontend expects
-                    final_image_url = f"user-images/{user_id}/inference/{job_id}/web/{web_filename}"
+                final_image_url = f"user-images/{user_id}/inference/{job_id}/web/{base_name}.webp"
         
 
         
-        # Send WebSocket notification with final image URL through existing broadcast connection
+        # Send WebSocket notification only for the 1024px web image
         if final_image_url:
             try:
                 # Import the WebSocket relay functions
@@ -438,7 +659,7 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
                 import traceback
                 print(f"📊 WebSocket error: {traceback.format_exc()}")
         
-        # Save image to database via Edge Function (retry if needed)
+        # Save image to database via Edge Function (retry if needed). Only on web variant/legacy where final_image_url is set.
         try:
             import requests
             import os
@@ -460,7 +681,7 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
                     'job_id': job_id,
                     'image_index': image_index,
                     'user_id': user_id,
-                    'original_path': f"user-images/{user_id}/inference/{job_id}/orig/{base_name}{original_ext}",
+                    'original_path': f"user-images/{user_id}/inference/{job_id}/orig/{base_name}.png",
                     'web_path': final_image_url,
                     'width': 1024,  # TODO: Change this to the actual width of the image when we have the final workflow
                     'height': 1024,  # TODO: Change this to the actual height of the image when we have the final workflow
@@ -504,6 +725,12 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
         if final_image_url:
             return True
         else:
+            # If this was an orig-only save (no web variant), do not treat as failure
+            try:
+                if variant == "orig":
+                    return True
+            except Exception:
+                pass
             if failure_tracker:
                 failure_tracker['failed_images'].add(image_index)
                 failure_tracker['errors'].append(f"Image {image_index + 1}: No final image URL generated")
@@ -633,11 +860,21 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
 
         # Load workflow JSON (prefer mounted /workflows). Default to WAN2.1.json when not provided
         from lib.workflow_loader import load_workflow_from_s3
-        wf_key = prepared.get("workflow") or "WAN2.1.json"
-        wf = load_workflow_from_s3(wf_key)
+        # Select workflow by quality; fall back to prepared.workflow only if quality-based key is missing
+        p = input_data.get("params", {})
+        req_quality = str((p or {}).get("quality", "1K")).upper()
+        quality_wf = "V1.0_1K.json" if req_quality == "1K" else "V1.0.json"
+        chosen_key = quality_wf
+        try:
+            wf = load_workflow_from_s3(chosen_key)
+            print(f"🎯 Using quality-selected workflow: {chosen_key} (quality={req_quality})")
+        except FileNotFoundError as _e:
+            alt_key = prepared.get("workflow") or "V1.0_1K.json"
+            print(f"⚠️ Quality-selected workflow not found: {chosen_key}. Falling back to prepared key: {alt_key}")
+            wf = load_workflow_from_s3(alt_key)
+            chosen_key = alt_key
         
         from lib.workflow_patcher import compute_dimensions, patch_workflow
-        p = input_data.get("params", {})
         settings_override = input_data.get("settings_override") or {}
         width, height = compute_dimensions(p.get("quality", "1K"), p.get("aspect_ratio", "1:1"))
         
@@ -739,7 +976,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             "user_id": user_id,
             "character_id": input_data.get("character_id"),
             "style_id": input_data.get("style_id"),
-            "workflow_key": wf_key,
+            "workflow_key": chosen_key,
             "dimensions": f"{width}x{height}",
             "nb_takes": nb_takes,
             "quality": p.get("quality", "1K"),
@@ -839,47 +1076,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 except Exception as e:
                     print(f"⚠️ Failed to send progress update: {e}")
             
-            # Apply settings_override to CharacterLoRA and StyleLoRA nodes before patching
-            try:
-                char_strengths = (settings_override.get("character") or {}) if isinstance(settings_override, dict) else {}
-                style_strengths = (settings_override.get("style") or {}) if isinstance(settings_override, dict) else {}
-
-                def _clamp01(val):
-                    try:
-                        v = float(val)
-                    except Exception:
-                        return None
-                    v = max(0.0, min(1.0, round(v, 1)))
-                    return v
-
-                if isinstance(wf, dict):
-                    for node_id, node in wf.items():
-                        try:
-                            meta = node.get("_meta", {}) if isinstance(node, dict) else {}
-                            title = meta.get("title")
-                            if title == "CharacterLoRA" and isinstance(node.get("inputs"), dict):
-                                sm = _clamp01(char_strengths.get("strength_model"))
-                                sc = _clamp01(char_strengths.get("strength_clip"))
-                                if sm is not None:
-                                    node["inputs"]["strength_model"] = sm
-                                    print(f"🔍 DEBUG: Updated CharacterLoRA strength_model: {sm}")
-                                if sc is not None:
-                                    node["inputs"]["strength_clip"] = sc
-                                    print(f"🔍 DEBUG: Updated CharacterLoRA strength_clip: {sc}")
-                            if title == "StyleLoRA" and isinstance(node.get("inputs"), dict):
-                                sm = _clamp01(style_strengths.get("strength_model"))
-                                sc = _clamp01(style_strengths.get("strength_clip"))
-                                if sm is not None:
-                                    node["inputs"]["strength_model"] = sm
-                                    print(f"🔍 DEBUG: Updated StyleLoRA strength_model: {sm}")
-                                if sc is not None:
-                                    node["inputs"]["strength_clip"] = sc
-                                    print(f"🔍 DEBUG: Updated StyleLoRA strength_clip: {sc}")
-                        except Exception as e:
-                            print(f"⚠️ Failed to apply settings_override for node {node_id}: {e}")
-                            pass
-            except Exception as _ovr_e:
-                print(f"⚠️ Failed to apply settings_override: {_ovr_e}")
+            # Title-based overrides are handled centrally in patch_workflow now
 
             # Patch workflow for single image with current seed
             patched = patch_workflow(
@@ -891,6 +1088,8 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 seed=current_seed,
                 images_count=1,  # Always generate 1 image per call
                 quality=p.get("quality", "1K"),
+                aspect_ratio=p.get("aspect_ratio", "1:1"),
+                settings_override=settings_override,
                 lora_filename=None,
                 character_lora=char_name,
                 style_lora=style_name,
@@ -905,9 +1104,39 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             # Submit to ComfyUI
             body = {
                 "prompt": patched,
-                "client_id": client_id
+                "client_id": client_id,
+                "workflow_key": chosen_key
             }
             
+            # Debug: summarize workflow before submitting to ComfyUI
+            try:
+                class_types = sorted({
+                    node.get("class_type", "")
+                    for node in patched.values()
+                    if isinstance(node, dict)
+                })
+                titles = [
+                    node.get("_meta", {}).get("title")
+                    for node in patched.values()
+                    if isinstance(node, dict) and node.get("_meta", {}).get("title")
+                ]
+                print(f"🔎 Workflow summary: nodes={len(patched)}, classes={class_types[:12]}")
+                if titles:
+                    print(f"🔎 Titles include: {titles[:12]}")
+                # Basic latent-node presence check
+                if not any(
+                    isinstance(n, dict) and n.get("class_type") in (
+                        "EmptyHunyuanLatentVideo",
+                        "EmptyLatentImage",
+                        "EmptySD3LatentImage",
+                        "EmptyLTXVLatentVideo",
+                    )
+                    for n in patched.values()
+                ):
+                    print("⚠️ No latent node found (EmptyHunyuanLatentVideo/EmptyLatentImage/EmptySD3LatentImage/EmptyLTXVLatentVideo)")
+            except Exception as _summ_e:
+                print(f"⚠️ Failed to summarize workflow: {_summ_e}")
+
             print(f"🔧 Submitting image {image_index + 1} to ComfyUI...")
             
             # Single readiness check
@@ -921,15 +1150,25 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             prompt_url = f"{comfyui_base}/prompt"
             
             try:
+                import urllib.error  # ensure HTTPError is available in this scope
                 req = urllib.request.Request(
                     url=prompt_url,
                     data=json.dumps(body).encode("utf-8"),
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
-                response = urllib.request.urlopen(req, timeout=30)
-                response_data = response.read().decode('utf-8')
-                response_json = json.loads(response_data)
+                try:
+                    response = urllib.request.urlopen(req, timeout=30)
+                    response_data = response.read().decode('utf-8')
+                    response_json = json.loads(response_data)
+                except urllib.error.HTTPError as http_err:
+                    err_body = ""
+                    try:
+                        err_body = http_err.read().decode('utf-8', errors='replace')
+                    except Exception:
+                        pass
+                    print(f"❌ ComfyUI /prompt HTTP {getattr(http_err, 'code', 'unknown')}. Body: {err_body[:2000]}")
+                    raise RuntimeError(f"HTTP {getattr(http_err, 'code', 'unknown')} from ComfyUI /prompt: {err_body[:200]}")
                 
                 print(f"📨 Submitted image {image_index + 1} to ComfyUI: {response_json}")
                 
@@ -940,62 +1179,12 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 
                 print(f"🎯 Image {image_index + 1} submitted! Prompt ID: {prompt_id}")
                 
-                # Wait for this specific image to complete using WebSocket events
+                # Get image outputs using our optimized helper
                 print(f"⏳ Waiting for image {image_index + 1} to complete...")
                 
-                # Use event-based completion instead of polling
-                from lib.ws_preview_relay import wait_for_prompt_completion, get_prompt_completion_data
-                completed = wait_for_prompt_completion(job_id, prompt_id, timeout=600)
-                
-                if completed:
-                    print(f"✅ Image {image_index + 1} completed!")
-                    
-                    # Get the completion data directly from WebSocket (no HTTP request needed!)
-                    completion_data = get_prompt_completion_data(job_id, prompt_id)
-                    
-                    if completion_data and completion_data.get("outputs"):
-                        # Process the completed image using WebSocket data
-                        outputs = completion_data.get("outputs", {})
-                    else:
-                        # Fallback to history endpoint for outputs (even if we have completion confirmation)
-                        completion_source = completion_data.get("completion_source", "unknown") if completion_data else "none"
-                        print(f"⚠️ WebSocket completion data has no outputs (source: {completion_source}), falling back to history endpoint")
-                        
-                        try:
-                            history_url = f"{comfyui_base}/history/{prompt_id}"
-                            history_response = urllib.request.urlopen(history_url, timeout=10)
-                            history_data = json.loads(history_response.read().decode('utf-8'))
-                            
-                            if prompt_id in history_data:
-                                image_data = history_data[prompt_id]
-                                outputs = image_data.get("outputs", {})
-                                print(f"🔍 DEBUG: Using fallback history data for image {image_index + 1}")
-                            else:
-                                print(f"⚠️ Prompt {prompt_id} not found in history for image {image_index + 1}")
-                                print(f"🔍 DEBUG: Available history keys: {list(history_data.keys()) if isinstance(history_data, dict) else 'Not a dict'}")
-                                
-                                # If we have completion confirmation but no history, the image might still be processing
-                                # Let's wait a bit and try again
-                                if completion_data:
-                                    print(f"🔄 Completion detected but no history yet, waiting 2s and retrying...")
-                                    time.sleep(2)
-                                    
-                                    # Retry once
-                                    history_response = urllib.request.urlopen(history_url, timeout=10)
-                                    history_data = json.loads(history_response.read().decode('utf-8'))
-                                    
-                                    if prompt_id in history_data:
-                                        image_data = history_data[prompt_id]
-                                        outputs = image_data.get("outputs", {})
-                                        print(f"🔍 DEBUG: Using retry history data for image {image_index + 1}")
-                                    else:
-                                        print(f"⚠️ Prompt {prompt_id} still not found in history after retry")
-                                        raise RuntimeError(f"Prompt {prompt_id} not found in ComfyUI history after retry")
-                                else:
-                                    raise RuntimeError(f"Prompt {prompt_id} not found in ComfyUI history")
-                        except Exception as e:
-                            print(f"⚠️ Error getting fallback history data for image {image_index + 1}: {e}")
-                            raise RuntimeError(f"Failed to get completion data for image {image_index + 1}: {e}")
+                try:
+                    outputs, source = get_image_outputs(job_id, prompt_id, comfyui_base, timeout=600)
+                    print(f"✅ Image {image_index + 1} completed! (source: {source})")
                     
                     print(f"🔍 DEBUG: ComfyUI outputs for image {image_index + 1}:")
                     print(f"🔍 DEBUG: Available output nodes: {list(outputs.keys())}")
@@ -1019,55 +1208,51 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                     print(f"🖼️ Found {len(generated_images)} images for image {image_index + 1}")
                     if generated_images:
                         print(f"🔍 DEBUG: First image details: {generated_images[0]}")
-                        
-                        # DEBUG: Check if files exist in ComfyUI output directory
-                        comfyui_output_dir = "/root/comfy/ComfyUI/output"
-                        print(f"🔍 DEBUG: Checking ComfyUI output directory: {comfyui_output_dir}")
-                        try:
-                            if os.path.exists(comfyui_output_dir):
-                                files_in_dir = os.listdir(comfyui_output_dir)
-                                print(f"🔍 DEBUG: Files in ComfyUI output: {files_in_dir}")
-                                
-                                # Check job-specific subdirectory
-                                job_subdir = f"{comfyui_output_dir}/{job_id}"
-                                if os.path.exists(job_subdir):
-                                    job_files = os.listdir(job_subdir)
-                                    print(f"🔍 DEBUG: Files in job subdirectory {job_id}: {job_files}")
-                                else:
-                                    print(f"🔍 DEBUG: Job subdirectory {job_id} does not exist!")
-                            else:
-                                print(f"🔍 DEBUG: ComfyUI output directory does not exist!")
-                        except Exception as e:
-                            print(f"🔍 DEBUG: Error checking ComfyUI output directory: {e}")
-                        
                         all_generated_images.extend(generated_images)
                         
-                        # Immediately process and save this image to S3 (async)
-                        if generated_images:
-                            try:
-                                import threading
-                                print(f"🔍 About to start async S3 processing for image {image_index + 1}")
-                                print(f"🔍 Generated image info: {generated_images[0]}")
-                                print(f"🔍 Parameters: image_index={image_index}, job_id={job_id}, user_id={user_id}, bucket={bucket}")
-                                
-                                # Start async S3 processing for this image
-                                thread = threading.Thread(
-                                    target=process_and_save_single_image,
-                                    args=(generated_images[0], image_index, job_id, user_id, bucket, progress_ws_url, s3_failure_tracker),
-                                    daemon=True
-                                )
-                                thread.start()
-                                s3_processing_threads.append(thread)
-                            except Exception as save_e:
-                                pass  # S3 processing will be tracked by failure_tracker
+                        # Categorize and process images asynchronously
+                        threads = categorize_and_process_images(
+                            generated_images, image_index, job_id, user_id, 
+                            bucket, progress_ws_url, s3_failure_tracker
+                        )
+                        s3_processing_threads.extend(threads)
                             
                     else:
-                        raise RuntimeError(f"No generated images found for image {image_index + 1}")
-                else:
-                    raise RuntimeError(f"Image {image_index + 1} generation timed out")
+                        # If outputs structure is empty, do one final directory scan
+                        print(f"⚠️ No images in outputs, attempting final directory scan...")
+                        final_images = find_generated_images(job_id, max_attempts=5)
+                        
+                        if final_images:
+                            # Found images via directory scan
+                            for img in final_images:
+                                img["image_index"] = image_index
+                                all_generated_images.append(img)
+                            
+                            print(f"✅ Recovered {len(final_images)} images via final directory scan")
+                            
+                            # Process these images too
+                            threads = categorize_and_process_images(
+                                final_images, image_index, job_id, user_id,
+                                bucket, progress_ws_url, s3_failure_tracker
+                            )
+                            s3_processing_threads.extend(threads)
+                        else:
+                            raise RuntimeError(f"No generated images found for image {image_index + 1}")
+                except Exception as e:
+                    # Handle timeout or other errors from get_image_outputs
+                    error_msg = str(e)
+                    if "timed out" in error_msg.lower():
+                        raise RuntimeError(f"Image {image_index + 1} generation timed out")
+                    else:
+                        raise RuntimeError(f"Image {image_index + 1} generation failed: {error_msg}")
                     
             except Exception as e:
-                raise RuntimeError(f"Image {image_index + 1} generation failed: {e}")
+                # Re-raise with image index context if not already included
+                error_msg = str(e)
+                if f"Image {image_index + 1}" not in error_msg:
+                    raise RuntimeError(f"Image {image_index + 1} generation failed: {error_msg}")
+                else:
+                    raise
         
         # Wait for all S3 processing threads to complete and check for failures
         for thread in s3_processing_threads:
@@ -1624,19 +1809,163 @@ def progress():
         except WebSocketDisconnect:
             pass
 
+    # --- Lightweight LoRA linker UI & endpoints for development ---
+    from fastapi.responses import HTMLResponse, JSONResponse
+    from fastapi import Form
+
+    LORA_MODELS_DIR = "/root/comfy/ComfyUI/models/loras"
+
+    def _resolve_lora_source(path: str) -> str:
+        p = (path or "").strip()
+        if p.startswith("s3://"):
+            # Our mounts:
+            #   /data -> s3://primeshot-uploads-01/user-images/
+            #   /workflows -> s3://primeshot-uploads-01/workflows/
+            remainder = p[len("s3://"):]
+            bucket = remainder
+            key = ""
+            if "/" in remainder:
+                bucket, key = remainder.split("/", 1)
+            # Normalize known prefixes regardless of bucket name
+            if key.startswith("user-images/"):
+                return f"/data/{key[len('user-images/') :]}"
+            if key.startswith("workflows/"):
+                return f"/workflows/{key[len('workflows/') :]}"
+            # Fallback: assume it's a path under user-images prefix
+            if key:
+                return f"/data/{key}"
+            return "/data"
+        return p
+
+    def _safe_link_name(source_path: str) -> str:
+        # Create deterministic, conflict-free link name
+        if source_path.startswith("/data/"):
+            rel = source_path[len("/data/"):]
+            return rel.replace("/", "_").replace("\\", "_")
+        return os.path.basename(source_path)
+
+    @web_app.get("/lora", response_class=HTMLResponse)
+    async def lora_form():
+        html = """
+        <!doctype html>
+        <html>
+        <head>
+            <meta charset=\"utf-8\" />
+            <title>LoRA Linker</title>
+            <style>
+                body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 40px; }
+                input[type=text] { width: 600px; padding: 8px; }
+                button { padding: 8px 12px; }
+                code { background: #f3f3f3; padding: 2px 4px; }
+                .note { color: #555; margin-top: 8px; }
+                .links { margin-top: 20px; }
+            </style>
+        </head>
+        <body>
+            <h2>LoRA Linker (Dev)</h2>
+            <form id=\"linkForm\" method=\"post\" action=\"/lora/link\">
+                <label>Paste S3 path (e.g. <code>s3://primeshot-uploads-01/path/model.safetensors</code>) or an existing <code>/data/...</code> path:</label><br/>
+                <input type=\"text\" name=\"path\" placeholder=\"s3://primeshot-uploads-01/lora/foo.safetensors\" />
+                <button type=\"submit\">Link</button>
+            </form>
+            <div class=\"note\">Links are created in <code>/root/comfy/ComfyUI/models/loras</code>. Refresh ComfyUI after linking to see new LoRAs.</div>
+            <div class=\"links\">
+                <h3>Current Links</h3>
+                <ul id=\"list\"></ul>
+            </div>
+            <script>
+                async function refreshList() {
+                    const res = await fetch('/lora/list');
+                    const data = await res.json();
+                    const ul = document.getElementById('list');
+                    ul.innerHTML = '';
+                    (data.links || []).forEach(name => {
+                        const li = document.createElement('li');
+                        const btn = document.createElement('button');
+                        btn.textContent = 'unlink';
+                        btn.onclick = async () => {
+                            const fd = new FormData();
+                            fd.append('name', name);
+                            await fetch('/lora/unlink', { method: 'POST', body: fd });
+                            refreshList();
+                        };
+                        li.textContent = name + ' ';
+                        li.appendChild(btn);
+                        ul.appendChild(li);
+                    });
+                }
+                refreshList();
+            </script>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html)
+
+    @web_app.post("/lora/link")
+    async def lora_link(request: Request, path: str = Form(None)):
+        try:
+            # Accept JSON payloads as well as form-encoded
+            if path is None:
+                try:
+                    payload_bytes = await request.body()
+                    if payload_bytes:
+                        data = json.loads(payload_bytes.decode("utf-8"))
+                        path = (data or {}).get("path")
+                except Exception:
+                    path = None
+            if not path:
+                return JSONResponse({"ok": False, "error": "Missing 'path'"}, status_code=400)
+
+            source_path = _resolve_lora_source(path)
+            if not os.path.exists(source_path):
+                return JSONResponse({"ok": False, "error": f"Not found: {source_path}"}, status_code=404)
+
+            os.makedirs(LORA_MODELS_DIR, exist_ok=True)
+            link_name = _safe_link_name(source_path)
+            target_path = os.path.join(LORA_MODELS_DIR, link_name)
+
+            if os.path.exists(target_path) or os.path.islink(target_path):
+                os.unlink(target_path)
+            os.symlink(source_path, target_path)
+
+            return JSONResponse({"ok": True, "linked": link_name, "source": source_path})
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    @web_app.get("/lora/list")
+    async def lora_list():
+        try:
+            os.makedirs(LORA_MODELS_DIR, exist_ok=True)
+            links = sorted([name for name in os.listdir(LORA_MODELS_DIR)])
+            return {"ok": True, "links": links}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @web_app.post("/lora/unlink")
+    async def lora_unlink(name: str = Form(...)):
+        try:
+            target_path = os.path.join(LORA_MODELS_DIR, name)
+            if os.path.exists(target_path) or os.path.islink(target_path):
+                os.unlink(target_path)
+                return {"ok": True, "removed": name}
+            return {"ok": False, "error": "Not found"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     return web_app
 
 
 
 @app.function(
-    gpu="H100",  # Cost-effective for UI development A10G
+    gpu=DEV_SERVER_GPU_TYPE,
     image=cuda_image,
     volumes={**user_images_mount, **workflows_mount, MODELS_PATH: models_volume},
     max_containers=1,
-    timeout=1300
+    timeout=60 * 60,  # 1 hour total timeout
+    scaledown_window=1800  # keep container warm for 30 minutes of idle
 )
-@modal.concurrent(max_inputs=1)
-@modal.web_server(8000, startup_timeout=120)
+@modal.concurrent(max_inputs=999)
+@modal.asgi_app()
 def dev_server():
     """Interactive ComfyUI development server for workflow creation."""
     print("🚀 Starting ComfyUI development server...")
@@ -1650,6 +1979,31 @@ def dev_server():
     lora_models_dir = "/root/comfy/ComfyUI/models/loras"
     os.makedirs(lora_models_dir, exist_ok=True)
     
+    # Always link LoRAs from /data/style_loras (fast, specific directory)
+    def link_style_loras():
+        source_dir = "/data/style_loras"
+        linked_count = 0
+        if not os.path.exists(source_dir):
+            print(f"ℹ️ style_loras directory not found at {source_dir} (skipping)")
+            return 0
+        print(f"🔍 Scanning for style LoRAs in: {source_dir}")
+        for root, dirs, files in os.walk(source_dir):
+            for file in files:
+                if file.endswith('.safetensors'):
+                    source_path = os.path.join(root, file)
+                    relative_path = os.path.relpath(source_path, source_dir)
+                    safe_filename = relative_path.replace('/', '_').replace('\\', '_')
+                    target_path = os.path.join(lora_models_dir, safe_filename)
+                    try:
+                        if os.path.exists(target_path) or os.path.islink(target_path):
+                            os.unlink(target_path)
+                        os.symlink(source_path, target_path)
+                        linked_count += 1
+                        print(f"🔗 Linked style LoRA: {safe_filename}")
+                    except Exception as e:
+                        print(f"⚠️ Failed to link style LoRA {file}: {str(e)}")
+        return linked_count
+
     # Link all LoRAs from S3 bucket for dev server
     def link_all_loras():
         """Link all LoRAs from S3 bucket to make them available in dev server."""
@@ -1689,9 +2043,19 @@ def dev_server():
         
         return linked_count
     
-    # Link all LoRAs for dev testing
-    linked_loras = link_all_loras()
-    print(f"✅ Linked {linked_loras} LoRAs from S3 bucket for dev server")
+    # First, always link the specific style_loras
+    try:
+        style_count = link_style_loras()
+        print(f"✅ Linked {style_count} style LoRAs from /data/style_loras")
+    except Exception as e:
+        print(f"⚠️ Error linking style_loras: {e}")
+
+    # Optionally link all LoRAs for dev testing if enabled
+    if os.getenv("DEV_LINK_ALL_LORAS", "0") in ("1", "true", "True"): 
+        linked_loras = link_all_loras()
+        print(f"✅ Linked {linked_loras} LoRAs from S3 bucket for dev server")
+    else:
+        print("⏭️ Skipping bulk LoRA linking. Visit /lora to link specific files.")
     
     # Set comprehensive environment variables for English locale and performance optimization
     env = os.environ.copy()
@@ -1709,10 +2073,228 @@ def dev_server():
         'COMFYUI_NOVRAM': 'false'
     })
     
-    # Launch ComfyUI UI server with SageAttention, H100 performance optimizations, and preview support
+    # Launch ComfyUI on 8001; we'll serve a FastAPI app on 8000 that proxies to it
     subprocess.Popen(
-        "comfy launch -- --listen 0.0.0.0 --port 8000 --use-sage-attention --gpu-only --bf16-unet --bf16-vae --output-directory /data/outputs --preview-method auto",
+        "comfy launch -- --listen 0.0.0.0 --port 8001 --use-sage-attention --gpu-only --bf16-unet --bf16-vae --output-directory /data/outputs --preview-method auto",
         shell=True,
         env=env
     )
-    print("🌐 ComfyUI UI available at the development server URL with English locale")
+    print("🌐 ComfyUI UI launched on 8001; proxy with /lora served on 8000")
+
+    # Build FastAPI proxy app with /lora endpoints
+    from fastapi import FastAPI, Request, WebSocket
+    from fastapi.responses import HTMLResponse, JSONResponse, Response
+    from fastapi import Form
+    import httpx
+    import websockets
+    import asyncio
+
+    app_proxy = FastAPI(title="ComfyUI Dev Server with LoRA Linker")
+
+    LORA_MODELS_DIR = "/root/comfy/ComfyUI/models/loras"
+
+    def _resolve_lora_source_dev(path: str) -> str:
+        p = (path or "").strip()
+        if p.startswith("s3://"):
+            remainder = p[len("s3://"):]
+            bucket = remainder
+            key = ""
+            if "/" in remainder:
+                bucket, key = remainder.split("/", 1)
+            if key.startswith("user-images/"):
+                return f"/data/{key[len('user-images/') :]}"
+            if key.startswith("workflows/"):
+                return f"/workflows/{key[len('workflows/') :]}"
+            if key:
+                return f"/data/{key}"
+            return "/data"
+        return p
+
+    def _safe_link_name_dev(source_path: str) -> str:
+        if source_path.startswith("/data/"):
+            rel = source_path[len("/data/"):]
+            return rel.replace("/", "_").replace("\\", "_")
+        return os.path.basename(source_path)
+
+    @app_proxy.get("/lora", response_class=HTMLResponse)
+    async def lora_form_dev():
+        html = """
+        <!doctype html>
+        <html>
+        <head>
+            <meta charset=\"utf-8\" />
+            <title>LoRA Linker</title>
+            <style>
+                body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 40px; }
+                input[type=text] { width: 600px; padding: 8px; }
+                button { padding: 8px 12px; }
+                code { background: #f3f3f3; padding: 2px 4px; }
+                .note { color: #555; margin-top: 8px; }
+                .links { margin-top: 20px; }
+            </style>
+        </head>
+        <body>
+            <h2>LoRA Linker (Dev)</h2>
+            <form id=\"linkForm\" method=\"post\" action=\"/lora/link\"> 
+                <label>Paste S3 path (e.g. <code>s3://primeshot-uploads-01/user-images/...</code>) or an existing <code>/data/...</code> path:</label><br/>
+                <input type=\"text\" name=\"path\" placeholder=\"s3://primeshot-uploads-01/user-images/..../model.safetensors\" />
+                <button type=\"submit\">Link</button>
+            </form>
+            <div class=\"note\">Links are created in <code>/root/comfy/ComfyUI/models/loras</code>. Refresh ComfyUI after linking to see new LoRAs.</div>
+            <div class=\"links\"> <h3>Current Links</h3> <ul id=\"list\"></ul> </div>
+            <script>
+                async function refreshList() {
+                    const res = await fetch('/lora/list');
+                    const data = await res.json();
+                    const ul = document.getElementById('list');
+                    ul.innerHTML = '';
+                    (data.links || []).forEach(name => {
+                        const li = document.createElement('li');
+                        const btn = document.createElement('button');
+                        btn.textContent = 'unlink';
+                        btn.onclick = async () => {
+                            const fd = new FormData();
+                            fd.append('name', name);
+                            await fetch('/lora/unlink', { method: 'POST', body: fd });
+                            refreshList();
+                        };
+                        li.textContent = name + ' ';
+                        li.appendChild(btn);
+                        ul.appendChild(li);
+                    });
+                }
+                refreshList();
+            </script>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html)
+
+    @app_proxy.post("/lora/link")
+    async def lora_link_dev(request: Request, path: str = Form(None)):
+        try:
+            if path is None:
+                try:
+                    payload_bytes = await request.body()
+                    if payload_bytes:
+                        data = json.loads(payload_bytes.decode("utf-8"))
+                        path = (data or {}).get("path")
+                except Exception:
+                    path = None
+            if not path:
+                return JSONResponse({"ok": False, "error": "Missing 'path'"}, status_code=400)
+
+            source_path = _resolve_lora_source_dev(path)
+            if not os.path.exists(source_path):
+                return JSONResponse({"ok": False, "error": f"Not found: {source_path}"}, status_code=404)
+
+            os.makedirs(LORA_MODELS_DIR, exist_ok=True)
+            link_name = _safe_link_name_dev(source_path)
+            target_path = os.path.join(LORA_MODELS_DIR, link_name)
+            if os.path.exists(target_path) or os.path.islink(target_path):
+                os.unlink(target_path)
+            os.symlink(source_path, target_path)
+            return JSONResponse({"ok": True, "linked": link_name, "source": source_path})
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    @app_proxy.get("/lora/list")
+    async def lora_list_dev():
+        try:
+            os.makedirs(LORA_MODELS_DIR, exist_ok=True)
+            links = sorted([name for name in os.listdir(LORA_MODELS_DIR)])
+            return {"ok": True, "links": links}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @app_proxy.post("/lora/unlink")
+    async def lora_unlink_dev(name: str = Form(...)):
+        try:
+            target_path = os.path.join(LORA_MODELS_DIR, name)
+            if os.path.exists(target_path) or os.path.islink(target_path):
+                os.unlink(target_path)
+                return {"ok": True, "removed": name}
+            return {"ok": False, "error": "Not found"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    # Reverse proxy all other paths to ComfyUI on 8001
+    UPSTREAM = "http://127.0.0.1:8001"
+
+    def _filtered_headers(headers: dict) -> dict:
+        hop_by_hop = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade"}
+        return {k: v for k, v in headers.items() if k.lower() not in hop_by_hop}
+
+    @app_proxy.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]) 
+    async def proxy_http(request: Request, path: str):
+        if path.startswith("lora"):
+            return JSONResponse({"ok": False, "error": "Not found"}, status_code=404)
+        url = f"{UPSTREAM}/{path}"
+        method = request.method
+        headers = _filtered_headers(dict(request.headers))
+        body = await request.body()
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+                upstream_resp = await client.request(method, url, headers=headers, content=body, params=dict(request.query_params))
+                resp_headers = _filtered_headers(dict(upstream_resp.headers))
+                return Response(content=upstream_resp.content, status_code=upstream_resp.status_code, headers=resp_headers)
+        except httpx.ConnectError:
+            return JSONResponse({"ok": False, "error": "ComfyUI upstream not ready"}, status_code=503)
+
+    @app_proxy.websocket("/{path:path}")
+    async def proxy_ws(websocket: WebSocket, path: str):
+        if path.startswith("lora"):
+            await websocket.close()
+            return
+        await websocket.accept()
+        target = f"ws://127.0.0.1:8001/{path}"
+        try:
+            async with websockets.connect(target) as upstream:
+                async def client_to_upstream():
+                    try:
+                        while True:
+                            message = await websocket.receive()
+                            if message.get("type") == "websocket.receive":
+                                if "text" in message and message["text"] is not None:
+                                    await upstream.send(message["text"])
+                                elif "bytes" in message and message["bytes"] is not None:
+                                    await upstream.send(message["bytes"])
+                    except Exception:
+                        try:
+                            await upstream.close()
+                        except Exception:
+                            pass
+
+                async def upstream_to_client():
+                    try:
+                        while True:
+                            data = await upstream.recv()
+                            if isinstance(data, (bytes, bytearray)):
+                                await websocket.send_bytes(data)
+                            else:
+                                await websocket.send_text(str(data))
+                    except Exception:
+                        try:
+                            await websocket.close()
+                        except Exception:
+                            pass
+
+                await asyncio.gather(client_to_upstream(), upstream_to_client())
+        except Exception:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
+    @app_proxy.on_event("startup")
+    async def _wait_for_upstream():
+        # Give ComfyUI a moment to boot to reduce initial 503s
+        for _ in range(60):
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    await client.get(f"{UPSTREAM}/")
+                    break
+            except Exception:
+                await asyncio.sleep(2)
+
+    return app_proxy

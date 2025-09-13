@@ -29,6 +29,8 @@ def patch_workflow(
     seed: int | None,
     images_count: int,
     quality: str = "1K",  # Add quality parameter for upscale logic
+    aspect_ratio: str = "1:1",  # Needed to map to ResolutionCalc aspect label
+    settings_override: Dict[str, Any] | None = None,
     lora_filename: str | None = None,
     character_lora: str | None = None,
     style_lora: str | None = None,
@@ -49,16 +51,19 @@ def patch_workflow(
 
     def set_node_input_by_title(node_title: str, key: str, value: Any) -> None:
         updated = False
+        wanted_norm = str(node_title or "").strip().lower()
         for node_id, node in wf.items():
             if not isinstance(node, dict):
                 continue
             meta = node.get("_meta", {})
-            if meta.get("title") == node_title:
+            title = (meta.get("title") or "").strip().lower()
+            ui_name = (meta.get("_ui_name") or "").strip().lower()
+            if title == wanted_norm or ui_name == wanted_norm:
                 node.setdefault("inputs", {})[key] = value
                 updated = True
                 print(f"✅ Updated {node_title} (node {node_id}) {key} = {value}")
         if not updated:
-            print(f"⚠️ Node with title '{node_title}' not found for {key} = {value}")
+            print(f"⚠️ Node with title/ui_name '{node_title}' not found for {key} = {value}")
 
     # Text encoders - try by title first (more specific), then by class type
     set_node_input_by_title("PositivePrompt", "text", prompt)
@@ -68,76 +73,180 @@ def patch_workflow(
     set_node_input("CLIPTextEncode", "text", prompt)
     set_node_input("CLIPTextEncodeNeg", "text", negative_prompt)
 
-    # Seed - find KSampler nodes and update widgets_values[0]
+    # Seed - find sampler nodes and update seed on inputs/widgets_values
     if seed is not None:
         updated_seed = False
         for node_id, node in wf.items():
-            if isinstance(node, dict) and node.get("class_type") == "KSampler":
-                # KSampler seed is stored in widgets_values[0]
-                if "widgets_values" in node and len(node["widgets_values"]) > 0:
-                    node["widgets_values"][0] = int(seed)
-                    print(f"✅ Updated KSampler (node {node_id}) seed = {seed}")
-                    updated_seed = True
-                # Also try inputs format in case the workflow uses that
-                elif "inputs" in node:
+            if not isinstance(node, dict):
+                continue
+            cls = node.get("class_type")
+            if cls in ("KSampler", "KSamplerWithNAG", "KSamplerAdvanced"):
+                # Prefer inputs; fallback to widgets_values[0]
+                if "inputs" in node:
                     node["inputs"]["seed"] = int(seed)
-                    print(f"✅ Updated KSampler (node {node_id}) seed = {seed} (via inputs)")
+                    print(f"✅ Updated {cls} (node {node_id}) seed = {seed} (via inputs)")
+                    updated_seed = True
+                elif "widgets_values" in node and len(node["widgets_values"]) > 0:
+                    node["widgets_values"][0] = int(seed)
+                    print(f"✅ Updated {cls} (node {node_id}) seed = {seed}")
                     updated_seed = True
         if not updated_seed:
             print(f"⚠️ No KSampler nodes found to update seed = {seed}")
 
-    # Resolution - handle different latent node types
+    # Resolution handling
+    # Preferred path: if the workflow has a FluxResolutionNode titled "ResolutionCalc",
+    # override its megapixel and aspect_ratio so the latent continues to reference it.
+    # Only set explicit latent width/height if the latent does not already reference another node.
+
+    # 1) Try to update ResolutionCalc (FluxResolutionNode)
+    # Map friendly AR input ("1:1", "2:3", "3:2") to node options
+    ar_map = {
+        "1:1": "1:1 (Perfect Square)",
+        "2:3": "2:3 (Classic Portrait)",
+        "3:2": "3:2 (Golden Landscape)",
+    }
+    # megapixel per quality
+    mp_map = {
+        "1K": "1.0",
+        "2K": "1.0",
+        "4K": "1.6",
+    }
+    target_aspect = ar_map.get(str(aspect_ratio or "1:1"), "1:1 (Perfect Square)")
+
+    # We don't receive aspect_ratio directly here; infer from width/height when possible
+    # The caller also still passes width/height for safety.
+    # If target_aspect is None, don't try to set aspect_ratio string.
+    quality_str = str(quality or "1K").upper()
+    mp_value = mp_map.get(quality_str, "1.1")
+
+    # Update ResolutionCalc by title if present
+    rescalc_updated = False
+    for node_id, node in wf.items():
+        if isinstance(node, dict) and node.get("class_type") == "FluxResolutionNode":
+            meta = node.get("_meta", {})
+            if meta.get("title") == "ResolutionCalc":
+                inputs = node.setdefault("inputs", {})
+                inputs["megapixel"] = mp_value
+                if target_aspect:
+                    inputs["aspect_ratio"] = target_aspect
+                # Keep defaults for divisible_by/custom_ratio
+                rescalc_updated = True
+                print(f"✅ Updated ResolutionCalc (node {node_id}) megapixel={mp_value} aspect_ratio={inputs.get('aspect_ratio')}")
+                break
+
+    # 2) Latent dimensions: only set if not already connected via ResolutionCalc
     updated_resolution = False
     for node_type in ["EmptyHunyuanLatentVideo", "EmptyLatentImage", "EmptySD3LatentImage", "EmptyLTXVLatentVideo"]:
         for node_id, node in wf.items():
             if isinstance(node, dict) and node.get("class_type") == node_type:
-                # Try inputs first (ComfyUI format), then widgets_values (UI format)
                 if "inputs" in node:
-                    node["inputs"]["width"] = int(width)
-                    node["inputs"]["height"] = int(height)
-                    print(f"✅ Updated {node_type} (node {node_id}) dimensions = {width}x{height} (via inputs)")
-                    updated_resolution = True
-                    break
+                    # If width/height are connections like ["39", 0], keep them; otherwise set explicit values
+                    w_in = node["inputs"].get("width")
+                    h_in = node["inputs"].get("height")
+                    if not (isinstance(w_in, list) and len(w_in) == 2):
+                        node["inputs"]["width"] = int(width)
+                        updated_resolution = True
+                        print(f"✅ Updated {node_type} (node {node_id}) width={width}")
+                    if not (isinstance(h_in, list) and len(h_in) == 2):
+                        node["inputs"]["height"] = int(height)
+                        updated_resolution = True
+                        print(f"✅ Updated {node_type} (node {node_id}) height={height}")
                 elif "widgets_values" in node and len(node["widgets_values"]) >= 2:
-                    node["widgets_values"][0] = int(width)   # width is usually first
-                    node["widgets_values"][1] = int(height)  # height is usually second
+                    node["widgets_values"][0] = int(width)
+                    node["widgets_values"][1] = int(height)
                     print(f"✅ Updated {node_type} (node {node_id}) dimensions = {width}x{height} (via widgets_values)")
                     updated_resolution = True
-                    break
         if updated_resolution:
             break
-    
-    # Fallback for older workflows
     if not updated_resolution:
         set_node_input("EmptyLatentImage", "width", int(width))
         set_node_input("EmptyLatentImage", "height", int(height))
 
-    # LoRA injection
-    # Priority: explicit character/style targets by title; fallback to generic LoraLoader by _ui_name
-    if character_lora:
-        # Current workflow uses title "CharacterLoRA" for character loader
-        set_node_input_by_title("CharacterLoRA", "lora_name", character_lora)
-    if style_lora:
-        # Current workflow uses title "StyleLoRA" for optional style loader
-        print(f"🎨 Attempting to apply style LoRA: {style_lora}")
-        updated_style = False
-        
-        # Try to find StyleLoRA node by title
-        for node_id, node in wf.items():
-            if isinstance(node, dict):
-                title = node.get("_meta", {}).get("title")
-                if title == "StyleLoRA":
-                    node.setdefault("inputs", {})["lora_name"] = style_lora
-                    print(f"✅ Updated StyleLoRA (node {node_id}) lora_name = {style_lora}")
-                    updated_style = True
+    # LoRA injection via direct parameters is still supported
+    # Robustly set lora_name on LoraLoader nodes, regardless of titles (e.g., "Charger LoRA")
+    try:
+        desired_loras: list[str] = []
+        if character_lora:
+            desired_loras.append(character_lora)
+        if style_lora:
+            desired_loras.append(style_lora)
+        if not desired_loras and lora_filename:
+            desired_loras.append(lora_filename)
+
+        if desired_loras:
+            lora_nodes = []
+            for node_id, node in wf.items():
+                if isinstance(node, dict) and node.get("class_type") == "LoraLoader":
+                    lora_nodes.append((node_id, node))
+
+            # If we have fewer nodes than values, apply what we can; if more nodes, set on the first ones
+            for idx, (node_id, node) in enumerate(lora_nodes):
+                if idx >= len(desired_loras):
                     break
-        
-        if not updated_style:
-            print(f"⚠️ No StyleLoRA node found in workflow - style LoRA cannot be applied: {style_lora}")
-            print(f"📝 Available node titles: {[node.get('_meta', {}).get('title') for node_id, node in wf.items() if isinstance(node, dict) and node.get('_meta', {}).get('title')]}")
-    if lora_filename and not character_lora and not style_lora:
-        # Back-compat single lora case
-        set_node_input("LoraLoader", "lora_name", lora_filename)
+                inputs = node.setdefault("inputs", {})
+                inputs["lora_name"] = desired_loras[idx]
+                print(f"✅ Set LoraLoader (node {node_id}) lora_name = {desired_loras[idx]}")
+
+        # Also try title-based setters for explicit nodes if present in other workflows
+        if character_lora:
+            # Support variants like CharacterLora, CharacterLora, CharacterLora
+            for alias in ["CharacterLora", "CharacterLora", "CharacterLoRa", "CharacterLora"]:
+                set_node_input_by_title(alias, "lora_name", character_lora)
+        if style_lora:
+            for alias in ["StyleLora", "StyleLora", "StyleLoRa", "StyleLora"]:
+                set_node_input_by_title(alias, "lora_name", style_lora)
+    except Exception as _lora_e:
+        print(f"⚠️ Failed to set LoRA names: {_lora_e}")
+
+    # Title-based node input overrides (unified format)
+    # Example: { "FilmGrain": {"grain_intensity":0.1}, "CharacterLora": {"strength_model":0.8}}
+    def _normalize_title_key(name: str) -> str:
+        try:
+            n = ''.join(ch for ch in str(name) if ch.isalnum()).lower()
+            return n
+        except Exception:
+            return str(name or '').lower()
+
+    title_aliases = {
+        # Core loaders
+        "characterlora": "CharacterLora",
+        "stylelora": "StyleLora",
+        # Common processing nodes
+        "filmgrain": "FilmGrain",
+        "channelmixer": "ChannelMixer",
+        "lightleaks": "LightLeaks",
+        "vibsat": "VibSat",
+        # Utility/config nodes used in our workflows
+        "resolutioncalc": "ResolutionCalc",
+        "upscaleby": "UpscaleBy",
+        "resizeby": "ResizeBy",
+    }
+    if isinstance(settings_override, dict):
+        # Normalize to title -> inputs dict
+        for raw_title, overrides in settings_override.items():
+            try:
+                if not isinstance(overrides, dict):
+                    continue
+                key = str(raw_title or "").strip()
+                if not key:
+                    continue
+                norm_key = _normalize_title_key(key)
+                target_title = title_aliases.get(norm_key, key)
+                # Apply to all nodes matching title
+                applied = False
+                for node_id, node in wf.items():
+                    if not isinstance(node, dict):
+                        continue
+                    if node.get("_meta", {}).get("title") == target_title:
+                        inputs = node.setdefault("inputs", {})
+                        for k, v in overrides.items():
+                            inputs[k] = v
+                        print(f"✅ Applied overrides to {target_title} (node {node_id}): {list(overrides.keys())}")
+                        applied = True
+                if not applied:
+                    print(f"ℹ️ No node with title '{target_title}' found to override")
+            except Exception as _e:
+                print(f"⚠️ Failed applying overrides for title '{raw_title}': {_e}")
 
     # NB takes: set batch_size on the appropriate node for multiple images
     # Try common latent generation nodes that support batch_size
@@ -163,21 +272,21 @@ def patch_workflow(
     if not updated_batch:
         set_node_input("KSampler", "batch_size", int(images_count))
 
-    # Auto-bypass StyleLoRA if no style_lora is provided
+    # Auto-bypass StyleLora if no style_lora is provided
     if not style_lora:
-        print("🔄 No style_lora provided, auto-bypassing StyleLoRA node...")
+        print("🔄 No style_lora provided, auto-bypassing StyleLora node...")
         
-        # Bypass the StyleLoRA node by forwarding its model and clip inputs
+        # Bypass the StyleLora node by forwarding its model and clip inputs
         # This requires two operations since LoRA loaders have two outputs
         auto_bypass_specs = [
             {
-                "ui_name": "StyleLoRA",
+                "ui_name": "StyleLora",
                 "passthrough_input_key": "model",
                 "output_index": 0,  # model output
                 "remove": False
             },
             {
-                "ui_name": "StyleLoRA", 
+                "ui_name": "StyleLora", 
                 "passthrough_input_key": "clip",
                 "output_index": 1,  # clip output
                 "remove": True  # Remove node after both outputs are rewired
@@ -194,15 +303,51 @@ def patch_workflow(
                     output_index=spec["output_index"],
                     remove=spec["remove"],
                 )
-                print(f"✅ Bypassed StyleLoRA output {spec['output_index']} -> {spec['passthrough_input_key']}")
+                print(f"✅ Bypassed StyleLora output {spec['output_index']} -> {spec['passthrough_input_key']}")
                 bypass_success = True
             except Exception as e:
-                print(f"⚠️ Failed to bypass StyleLoRA: {e}")
+                print(f"⚠️ Failed to bypass StyleLora: {e}")
+        # Try alias UI name StyleLora as well if first attempt failed
+        if not bypass_success:
+            for spec in [{**s, "ui_name": "StyleLora"} for s in auto_bypass_specs]:
+                try:
+                    wf = bypass_node(
+                        wf,
+                        target_ui_name=spec["ui_name"],
+                        passthrough_input_key=spec["passthrough_input_key"],
+                        output_index=spec["output_index"],
+                        remove=spec["remove"],
+                    )
+                    print(f"✅ Bypassed StyleLora output {spec['output_index']} -> {spec['passthrough_input_key']}")
+                    bypass_success = True
+                except Exception as e:
+                    print(f"⚠️ Failed to bypass StyleLora alias: {e}")
         
         # If bypass failed, at least clear the problematic lora_name
         if not bypass_success:
-            print("🔧 Bypass failed, attempting to clear StyleLoRA lora_name...")
-            set_node_input_by_title("StyleLoRA", "lora_name", "None")
+            print("🔧 Bypass failed, attempting to clear StyleLora lora_name...")
+            set_node_input_by_title("StyleLora", "lora_name", "None")
+
+    # Auto-bypass certain effect nodes UNLESS they are present in settings_override
+    effects_to_bypass = ["LightLeaks", "VibSat", "ChannelMixer", "FilmGrain"]
+    present_titles = set()
+    if isinstance(settings_override, dict):
+        present_titles = {_normalize_title_key(k) for k in settings_override.keys()}
+    for effect_title in effects_to_bypass:
+        if _normalize_title_key(effect_title) in present_titles:
+            print(f"⏭️ Not bypassing {effect_title}; overrides provided")
+            continue
+        try:
+            wf = bypass_node(
+                wf,
+                target_ui_name=effect_title,
+                passthrough_input_key="image",
+                output_index=0,
+                remove=True,
+            )
+            print(f"✅ Auto-bypassed {effect_title}")
+        except Exception:
+            pass
 
     # Optional bypass rewiring for nodes specified by UI name
     if bypass_nodes:
@@ -225,47 +370,196 @@ def patch_workflow(
                 # Non-fatal: continue applying remaining patches
                 pass
 
-    # TODO: Conditional upscaling based on quality setting
-    # For now, EmptyHunyuanLatentVideo always generates at 1K base resolution
-    # When upscale nodes are implemented in the workflow, add/enable them based on quality:
-    
-    if quality == "2K":
-        # TODO: Enable 2K upscale nodes when available in workflow
-        # Expected nodes: "Upscale2K", "UltimateSDUpscale", or similar
-        print(f"🔄 TODO: Enable 2K upscaling nodes (quality={quality})")
-        # set_node_input_by_title("Upscale2K", "enabled", True)
-        # set_node_input_by_title("Upscale2K", "scale_factor", 2.0)
-        
-    elif quality == "4K":
-        # TODO: Enable 4K upscale nodes when available in workflow  
-        # Expected nodes: "Upscale4K", "UltimateSDUpscale", or similar
-        print(f"🔄 TODO: Enable 4K upscaling nodes (quality={quality})")
-        # set_node_input_by_title("Upscale4K", "enabled", True)
-        # set_node_input_by_title("Upscale4K", "scale_factor", 4.0)
-        
-    else:  # quality == "1K"
-        # TODO: Ensure upscale nodes are disabled/bypassed for 1K generation
-        print(f"✅ Using base 1K generation (quality={quality}) - no upscaling needed")
-        # bypass_upscale_nodes(wf)
-
-    # Set job-specific output path for Save Image node to prevent concurrent job interference
-    if job_id and user_id:
-        # Use relative path from ComfyUI's default output directory
-        # ComfyUI will save to: {output_dir}/{filename_prefix}{counter}_{timestamp}.png
-        output_prefix = f"{job_id}/IMG-"
-        
-        # Update Save Image node to use job-specific path
-        updated_save_path = False
+    # Ensure save nodes are always wired to a stable image source
+    # Prefer the final VAEDecode output. For web saves, if a 1024px scaler exists, keep it.
+    try:
+        vae_decode_ids: list[str] = []
         for node_id, node in wf.items():
-            if isinstance(node, dict) and node.get("class_type") == "SaveImage":
-                node.setdefault("inputs", {})["filename_prefix"] = output_prefix
-                print(f"✅ Updated SaveImage (node {node_id}) filename_prefix = {output_prefix}")
-                updated_save_path = True
+            if isinstance(node, dict) and node.get("class_type") == "VAEDecode":
+                vae_decode_ids.append(node_id)
+        vae_id = vae_decode_ids[-1] if vae_decode_ids else None
         
-        if not updated_save_path:
-            print(f"⚠️ No SaveImage nodes found to update output path")
+        # If no VAEDecode found, look for the final image output node
+        if vae_id is None:
+            print("⚠️ No VAEDecode found, searching for alternative image output nodes...")
+            # Look for any node that outputs images
+            image_output_nodes = []
+            for node_id, node in wf.items():
+                if not isinstance(node, dict):
+                    continue
+                class_type = node.get("class_type", "")
+                # Common image-producing nodes
+                if any(x in class_type for x in ["Decode", "Preview", "Image", "Upscale", "Scale", "Resize"]):
+                    # Skip save nodes themselves
+                    if "Save" not in class_type:
+                        image_output_nodes.append((node_id, class_type))
+            
+            if image_output_nodes:
+                # Use the last image-producing node
+                vae_id, class_type = image_output_nodes[-1]
+                print(f"✅ Using {class_type} (node {vae_id}) as final image source")
+
+        # Detect a 1024px scale-down node used by the web saver
+        scale_down_id = None
+        # Detect post-upscale nodes for high-res original saving
+        resize_by_id = None
+        upscale_by_id = None
+        for node_id, node in wf.items():
+            if not isinstance(node, dict):
+                continue
+            meta_title = node.get("_meta", {}).get("title", "")
+            class_type = node.get("class_type", "")
+            if (
+                meta_title == "Image Scale Down To Size"
+                or class_type == "easy imageScaleDownToSize"
+                or "ScaleDownToSize" in class_type
+            ):
+                scale_down_id = node_id
+                break
+        # Separate pass for upscalers/resizers (do not break early; prefer explicit titles)
+        for node_id, node in wf.items():
+            if not isinstance(node, dict):
+                continue
+            meta_title = node.get("_meta", {}).get("title", "")
+            class_type = node.get("class_type", "")
+            if meta_title == "ResizeBy" or "ResizeBy" in class_type:
+                resize_by_id = node_id
+            if meta_title == "UpscaleBy" or "Upscale" in class_type:
+                upscale_by_id = node_id
+
+        if vae_id is not None:
+            # Track which save nodes we find and wire
+            save_nodes_wired = []
+            
+            for node_id, node in wf.items():
+                if not isinstance(node, dict):
+                    continue
+                if node.get("class_type") in ("SaveImage", "SaveImagePlus"):
+                    inputs = node.setdefault("inputs", {})
+                    title = node.get("_meta", {}).get("title", "")
+                    prefix = str(inputs.get("filename_prefix", ""))
+                    
+                    # Check current connection to see if it needs rewiring
+                    current_connection = inputs.get("images")
+                    needs_rewiring = False
+                    
+                    # If connection points to a removed/bypassed node, it needs rewiring
+                    if isinstance(current_connection, list) and len(current_connection) == 2:
+                        connected_node_id = str(current_connection[0])
+                        if connected_node_id not in wf:
+                            needs_rewiring = True
+                            print(f"⚠️ Node {node_id} connected to non-existent node {connected_node_id}")
+                    
+                    # Original PNG should point to highest-res output when available
+                    if title == "SaveOrig" or prefix.startswith("orig_"):
+                        target_orig_id = vae_id
+                        # Prefer ResizeBy (final resize to 2K/4K), then UpscaleBy
+                        if resize_by_id is not None:
+                            target_orig_id = resize_by_id
+                        elif upscale_by_id is not None:
+                            target_orig_id = upscale_by_id
+                        inputs["images"] = [target_orig_id, 0]
+                        print(f"✅ Rewired SaveOrig (node {node_id}) images -> [{target_orig_id}, 0]")
+                        save_nodes_wired.append(("SaveOrig", node_id))
+                    # Web save should prefer the scaler if available, else VAE
+                    elif title == "SaveWeb" or prefix.startswith("web_"):
+                        target_id = scale_down_id or vae_id
+                        inputs["images"] = [target_id, 0]
+                        print(f"✅ Rewired SaveWeb (node {node_id}) images -> [{target_id}, 0]")
+                        save_nodes_wired.append(("SaveWeb", node_id))
+                    # Handle generic save nodes that might have broken connections
+                    elif needs_rewiring:
+                        # Default to VAE output for broken connections
+                        inputs["images"] = [vae_id, 0]
+                        print(f"✅ Rewired broken connection for save node {node_id} -> [{vae_id}, 0]")
+                        save_nodes_wired.append(("Generic", node_id))
+
+        # Preflight: ensure at least one SaveOrig and one SaveWeb exist after rewiring
+        found_save_orig = False
+        found_save_web = False
+        for node_id, node in wf.items():
+            if not isinstance(node, dict):
+                continue
+            if node.get("class_type") in ("SaveImage", "SaveImagePlus"):
+                title = node.get("_meta", {}).get("title", "")
+                if title == "SaveOrig":
+                    found_save_orig = True
+                if title == "SaveWeb":
+                    found_save_web = True
+        print(f"🔎 Save nodes present -> SaveOrig: {found_save_orig}, SaveWeb: {found_save_web}")
+    except Exception as _rewire_err:
+        print(f"⚠️ Failed to enforce save-node rewiring: {_rewire_err}")
+
+    # Conditional upscale tuning for non-1K qualities (nodes present only in non-1K workflow)
+    q = str(quality or "1K").upper()
+    if q != "1K":
+        # UpscaleBy scale_by per quality
+        upscale_map = {"2K": 0.30, "4K": 0.35}
+        set_node_input_by_title("UpscaleBy", "scale_by", upscale_map.get(q, 0.35))
+        # ResizeBy depends on target quality
+        resize_map = {"2K": 0.40, "4K": 0.50}
+        set_node_input_by_title("ResizeBy", "scale_by", resize_map.get(q, 0.50))
     else:
-        print(f"⚠️ Missing job_id or user_id - cannot set job-specific output path")
+        print(f"✅ Using base 1K generation (quality={q}) - no upscaling tweaks")
+
+    # Set job-specific output subfolder/path for Save nodes while preserving prefixes
+    if job_id and user_id:
+        # Prefer setting a subfolder for explicit SaveWeb/SaveOrig; fallback to filename_prefix for generic saves
+        # This keeps explicit 'web_'/'orig_' prefixes intact while isolating outputs per job
+        subfolder = f"{job_id}"
+
+        updated_titles = 0
+        # Pass 1: find by title regardless of class_type
+        for node_id, node in wf.items():
+            if not isinstance(node, dict):
+                continue
+            meta = node.get("_meta", {})
+            title = meta.get("title", "")
+            if title in ("SaveWeb", "SaveOrig"):
+                inputs = node.setdefault("inputs", {})
+                # Common keys used by SaveImagePlus for directory control
+                # Prefer 'subfolder'; if not present, try 'output_path'
+                if "subfolder" in inputs:
+                    inputs["subfolder"] = subfolder
+                    print(f"✅ Set {title} (node {node_id}) subfolder = {subfolder}")
+                    updated_titles += 1
+                elif "output_path" in inputs:
+                    inputs["output_path"] = subfolder
+                    print(f"✅ Set {title} (node {node_id}) output_path = {subfolder}")
+                    updated_titles += 1
+                else:
+                    # As a last resort, prefix the filename with the job folder while preserving leading web_/orig_
+                    current_prefix = str(inputs.get("filename_prefix", ""))
+                    safe_prefix = current_prefix if current_prefix else ("web_" if title == "SaveWeb" else "orig_")
+                    inputs["filename_prefix"] = f"{subfolder}/{safe_prefix}"
+                    print(f"✅ Set {title} (node {node_id}) filename_prefix = {inputs['filename_prefix']}")
+                    updated_titles += 1
+
+        # Pass 2: generic SaveImage/SaveImagePlus without explicit prefixes
+        updated_generics = 0
+        output_prefix = f"{job_id}/IMG-"
+        for node_id, node in wf.items():
+            if not isinstance(node, dict):
+                continue
+            if node.get("class_type") in ("SaveImage", "SaveImagePlus"):
+                inputs = node.setdefault("inputs", {})
+                current_prefix = str(inputs.get("filename_prefix", ""))
+                if current_prefix.startswith("web_") or current_prefix.startswith("orig_"):
+                    print(f"ℹ️ Keeping explicit prefix for node {node_id}: {current_prefix}")
+                    # Titles pass likely handled subfolder above; if not, set subfolder when available
+                    if "subfolder" in inputs:
+                        inputs["subfolder"] = subfolder
+                    elif "output_path" in inputs:
+                        inputs["output_path"] = subfolder
+                    continue
+                inputs["filename_prefix"] = output_prefix
+                print(f"✅ Updated {node.get('class_type')} (node {node_id}) filename_prefix = {output_prefix}")
+                updated_generics += 1
+
+        if updated_titles == 0 and updated_generics == 0:
+            print("⚠️ No save nodes updated for output directory settings")
+    else:
+        print("⚠️ Missing job_id or user_id - cannot set job-specific output path")
 
     return wf
 
@@ -390,7 +684,7 @@ def bypass_node(
        {
          "1": {
            "_meta": {
-             "_ui_name": "CharacterLoRA",     ← This is what you use for target_ui_name
+             "_ui_name": "CharacterLora",     ← This is what you use for target_ui_name
              "title": "Load LoRA"
            },
            "inputs": {
@@ -405,16 +699,16 @@ def bypass_node(
     LoRA loaders typically have 2 outputs: [0]=model, [1]=clip
     To completely bypass a LoRA loader, you need TWO bypass operations:
 
-    Example bypass_nodes array for skipping "StyleLoRA":
+    Example bypass_nodes array for skipping "StyleLora":
     [
         {
-            "ui_name": "StyleLoRA",
+            "ui_name": "StyleLora",
             "passthrough_input_key": "model",    ← Forward the model input
             "output_index": 0,                   ← For output slot 0 (model)
             "remove": false                      ← Don't delete yet
         },
         {
-            "ui_name": "StyleLoRA", 
+            "ui_name": "StyleLora", 
             "passthrough_input_key": "clip",     ← Forward the clip input
             "output_index": 1,                   ← For output slot 1 (clip)
             "remove": true                       ← Delete node after this operation

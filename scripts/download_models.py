@@ -422,10 +422,119 @@ def download_models():
     
     print(f"\n✅ Model download process completed!")
 
+def _volume_dir_exists(volume: modal.Volume, dir_path: str) -> bool:
+    """Return True if directory exists in the volume, else False."""
+    try:
+        volume.listdir(dir_path)
+        return True
+    except FileNotFoundError:
+        return False
+
+def _volume_file_exists(volume: modal.Volume, file_path: str) -> bool:
+    """Return True if file exists in the volume, else False."""
+    try:
+        # read_file raises FileNotFoundError when not present; avoid loading big files
+        # Use listdir on parent and check membership to avoid reading contents
+        parent = os.path.dirname(file_path) or "/"
+        base = os.path.basename(file_path)
+        entries = volume.listdir(parent)
+        names = []
+        for e in entries:
+            # e may be a string path or a mapping with name/path
+            if isinstance(e, str):
+                names.append(os.path.basename(e))
+            elif isinstance(e, dict):
+                name = e.get("name") or e.get("path") or ""
+                names.append(os.path.basename(str(name)))
+            else:
+                # Fallback to string representation
+                names.append(os.path.basename(str(e)))
+        return base in set(names)
+    except FileNotFoundError:
+        return False
+
+def _volume_list_names(volume: modal.Volume, dir_path: str) -> set:
+    """Return a set of basenames present in a volume directory."""
+    try:
+        entries = volume.listdir(dir_path)
+    except FileNotFoundError:
+        return set()
+    names = set()
+    for e in entries:
+        if isinstance(e, str):
+            names.add(os.path.basename(e))
+        elif isinstance(e, dict):
+            name = e.get("name") or e.get("path") or ""
+            names.add(os.path.basename(str(name)))
+        else:
+            names.add(os.path.basename(str(e)))
+    return names
+
+def upload_local_uploads(local_base: str = None, mappings: dict = None):
+    """
+    Upload files from local uploads/ subfolders into corresponding paths in the models volume.
+    - local_base: base directory on local filesystem (default: repo's modal_apps/inference/uploads)
+    - mappings: dict of { local_subdir: volume_subdir }, e.g., { "loras": "/loras" }
+    Behavior:
+      - Logs if a target directory does not exist in the volume
+      - Skips files that already exist in the volume
+      - Commits the volume if any uploads occurred
+    """
+    vol = models_volume  # modal.Volume.from_name("models-vol") already defined
+    if local_base is None:
+        local_base = str(Path(__file__).resolve().parents[1] / "uploads")
+    if mappings is None:
+        mappings = {"loras": "/loras"}
+
+    print(f"\n📤 Uploading from local uploads base: {local_base}")
+
+    total_uploaded = 0
+    for local_subdir, volume_subdir in mappings.items():
+        local_dir = os.path.join(local_base, local_subdir)
+        target_dir = volume_subdir
+
+        if not os.path.isdir(local_dir):
+            print(f"⏭️ Skip: local folder not found: {local_dir}")
+            continue
+
+        if not _volume_dir_exists(vol, target_dir):
+            print(f"⚠️ Modal folder missing: {target_dir} (create it by writing a file during a function run)")
+            continue
+
+        print(f"➡️  Syncing {local_dir} -> {target_dir}")
+
+        local_files = [f for f in os.listdir(local_dir) if os.path.isfile(os.path.join(local_dir, f))]
+        if not local_files:
+            print(f"(empty) {local_dir}")
+            continue
+
+        existing_names = _volume_list_names(vol, target_dir)
+        with vol.batch_upload() as batch:
+            for fname in local_files:
+                if fname in existing_names:
+                    print(f"✅ Exists, skip: {os.path.join(target_dir, fname)}")
+                    continue
+                local_path = os.path.join(local_dir, fname)
+                remote_path = os.path.join(target_dir, fname)
+                batch.put_file(local_path, remote_path)
+                total_uploaded += 1
+                print(f"📥 Queued upload: {remote_path}")
+
+    if total_uploaded > 0:
+        # batch_upload() finalizes uploads; explicit commit is only valid inside a container.
+        print(f"✅ Uploaded {total_uploaded} file(s) to volume.")
+    else:
+        print("✅ No uploads needed; volume already up to date.")
+
 @app.local_entrypoint()
 def main():
     """Run the comprehensive model download."""
     download_models.remote()
+
+@app.local_entrypoint()
+def upload_uploads():
+    """Upload local uploads (e.g., loras) to the models volume."""
+    upload_local_uploads()
 
 if __name__ == "__main__":
     # When called directly (not as Modal function), just verify models exist
