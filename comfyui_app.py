@@ -10,6 +10,8 @@ import uuid
 import os
 import time
 import sys
+import urllib.request
+import urllib.error
 from pathlib import Path
 from typing import Dict, Any, List, Tuple
 import modal
@@ -260,12 +262,11 @@ def _launch_inference_runtime(port: int) -> None:
     # Wait for ComfyUI to be ready
     print("🔄 Waiting for ComfyUI to be ready...")
     try:
-        import urllib.request as _rq
         import time
         
         for _ in range(30):  # 30 second timeout
             try:
-                _rq.urlopen(f"http://127.0.0.1:{port}/system_stats", timeout=3)
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/system_stats", timeout=3)
                 print("✅ ComfyUI is ready and responding")
                 break
             except Exception as e:
@@ -499,7 +500,6 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
         import shutil
         import json
         import time
-        import urllib.request
         from PIL import Image
         
         filename = img_info.get("filename")
@@ -808,7 +808,6 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         
         # Update job status to 'running' via inference-start EF
         try:
-            import urllib.request as _rq
             import json
             
             supabase_url = os.environ.get('SUPABASE_URL')
@@ -826,7 +825,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 print(f"🔍 DEBUG: Calling inference-start at: {start_url}")
                 print(f"🔍 DEBUG: Request body: {start_body}")
                 
-                start_req = _rq.Request(
+                start_req = urllib.request.Request(
                     url=start_url,
                     data=json.dumps(start_body).encode('utf-8'),
                     headers={
@@ -837,7 +836,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                     method='POST'
                 )
                 
-                response = _rq.urlopen(start_req, timeout=10)
+                response = urllib.request.urlopen(start_req, timeout=10)
                 response_text = response.read().decode('utf-8')
                 print(f"✅ inference-start response: {response.status} - {response_text}")
 
@@ -966,7 +965,6 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             'errors': []
         }
         s3_processing_threads = []
-        import urllib.request, urllib.error
         
         # Get AWS bucket early since it's needed in job metadata
         bucket = os.environ.get("AWS_BUCKET")
@@ -1044,7 +1042,6 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             # Send progress update for this image
             if progress_ws_url:
                 try:
-                    import urllib.request as _rq
                     import json
                     
                     progress_data = {
@@ -1065,13 +1062,13 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                             .replace("/ws/broadcast/", "/api/progress/")
                         )
                         progress_body = json.dumps(progress_data).encode('utf-8')
-                        progress_req = _rq.Request(
+                        progress_req = urllib.request.Request(
                             url=post_url,
                             data=progress_body,
                             headers={'Content-Type': 'application/json'},
                             method='POST'
                         )
-                        _rq.urlopen(progress_req, timeout=5)
+                        urllib.request.urlopen(progress_req, timeout=5)
                     print(f"📊 Sent progress update: image {image_index + 1}/{nb_takes}")
                 except Exception as e:
                     print(f"⚠️ Failed to send progress update: {e}")
@@ -1150,7 +1147,6 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             prompt_url = f"{comfyui_base}/prompt"
             
             try:
-                import urllib.error  # ensure HTTPError is available in this scope
                 req = urllib.request.Request(
                     url=prompt_url,
                     data=json.dumps(body).encode("utf-8"),

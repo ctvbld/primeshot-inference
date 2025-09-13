@@ -7,6 +7,8 @@ import asyncio
 import threading
 import websockets
 import gc
+import urllib.request
+import urllib.error
 from typing import Optional, Dict, Any
 
 class WebSocketRelay:
@@ -188,8 +190,6 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
             
             # First, try to check if the progress server is healthy (try both endpoints like training app)
             try:
-                import urllib.request
-                import urllib.error
                 base_url = progress_ws_url.replace("wss://", "https://").replace("ws://", "http://").split("/ws/")[0]
                 
                 # Try /api/health first (training app pattern), then /health as fallback
@@ -512,9 +512,9 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                 executed_data = data.get("data", {})
                                 node_id = executed_data.get("node")
                                 if node_id and "output" in executed_data:
-                                    output_data = executed_data.get("output", {})
+                                    output_data = executed_data.get("output") or {}
                                     # Check if this node produced saved images
-                                    if any("images" in v for v in output_data.values() if isinstance(v, dict)):
+                                    if output_data and any("images" in v for v in output_data.values() if isinstance(v, dict)):
                                         print(f"🎯 Detected save node execution for node {node_id}")
                                         # This is likely our completion event
                                         prompt_id = executed_data.get("prompt_id") or manager.last_prompt_id
@@ -1188,7 +1188,6 @@ def send_global_job_status(job_id: str, status: str, message: str = "") -> bool:
     
     # If no relay exists yet, try to send via HTTP progress endpoint
     try:
-        import urllib.request as _rq
         import json as _json
         import os
         
@@ -1204,13 +1203,13 @@ def send_global_job_status(job_id: str, status: str, message: str = "") -> bool:
             )
             
             progress_body = _json.dumps(global_status_data).encode('utf-8')
-            progress_req = _rq.Request(
+            progress_req = urllib.request.Request(
                 url=post_url,
                 data=progress_body,
                 headers={'Content-Type': 'application/json'},
                 method='POST'
             )
-            _rq.urlopen(progress_req, timeout=5)
+            urllib.request.urlopen(progress_req, timeout=5)
             print(f"📤 Sent global status '{status}' via HTTP for job {job_id}")
             return True
             
