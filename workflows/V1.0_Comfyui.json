@@ -1,43 +1,9 @@
 {
   "id": "00000000-0000-0000-0000-000000000000",
   "revision": 0,
-  "last_node_id": 133,
-  "last_link_id": 191,
+  "last_node_id": 145,
+  "last_link_id": 206,
   "nodes": [
-    {
-      "id": 8,
-      "type": "VAELoader",
-      "pos": [
-        2869.80078125,
-        877.9283447265625
-      ],
-      "size": [
-        270,
-        58
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "VAE",
-          "type": "VAE",
-          "links": [
-            28,
-            173
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.51",
-        "Node name for S&R": "VAELoader"
-      },
-      "widgets_values": [
-        "wan_2.1_vae.safetensors"
-      ]
-    },
     {
       "id": 44,
       "type": "ModelSamplingSD3",
@@ -78,59 +44,6 @@
       ]
     },
     {
-      "id": 5,
-      "type": "EmptyHunyuanLatentVideo",
-      "pos": [
-        2396.531982421875,
-        35.13286209106445
-      ],
-      "size": [
-        270.0943298339844,
-        130
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "width",
-          "type": "INT",
-          "widget": {
-            "name": "width"
-          },
-          "link": 25
-        },
-        {
-          "name": "height",
-          "type": "INT",
-          "widget": {
-            "name": "height"
-          },
-          "link": 26
-        }
-      ],
-      "outputs": [
-        {
-          "name": "LATENT",
-          "type": "LATENT",
-          "links": [
-            43
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.51",
-        "Node name for S&R": "EmptyHunyuanLatentVideo"
-      },
-      "widgets_values": [
-        848,
-        480,
-        1,
-        1
-      ]
-    },
-    {
       "id": 125,
       "type": "aa822b65-c23c-4ecf-a78c-ac28d6480fb1",
       "pos": [
@@ -142,7 +55,7 @@
         46
       ],
       "flags": {},
-      "order": 5,
+      "order": 4,
       "mode": 0,
       "inputs": [
         {
@@ -174,10 +87,451 @@
       "widgets_values": []
     },
     {
+      "id": 7,
+      "type": "UNETLoader",
+      "pos": [
+        1442.974609375,
+        645.2088623046875
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            44
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.51",
+        "Node name for S&R": "UNETLoader"
+      },
+      "widgets_values": [
+        "wan2.1_t2v_14B_fp16.safetensors",
+        "default"
+      ]
+    },
+    {
+      "id": 8,
+      "type": "VAELoader",
+      "pos": [
+        2869.80078125,
+        877.9283447265625
+      ],
+      "size": [
+        270,
+        58
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            28,
+            173
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.51",
+        "Node name for S&R": "VAELoader"
+      },
+      "widgets_values": [
+        "wan_2.1_vae.safetensors"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "CLIPTextEncode",
+      "pos": [
+        2402.525634765625,
+        482.3674621582031
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 24
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            41,
+            176
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.51",
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "plastic-like skin texture, oily appearance, unnatural texture, 3d render, cgi, doll, deformed, disfigured, poorly drawn, poor anatomy, bad hands, nude, bad hands, deformed, face asymmetry, eyes asymmetry, deformed eyes, deformed mouth, unwanted hair artifacts on face, grain, noise, artifacts, nipple, brand, text, writings, logo, initials, low quality, blurry face, ugly, poorly drawn hands, deformed face, extra limbs, bad anatomy, low resolution, unrealistic, cartoonish, watermark, text, signature, distorted proportions, creepy, glitch, jpeg artifacts,"
+      ]
+    },
+    {
+      "id": 43,
+      "type": "KSamplerWithNAG",
+      "pos": [
+        2858.783447265625,
+        233.14614868164062
+      ],
+      "size": [
+        286.7650451660156,
+        590
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 39
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 40
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 41
+        },
+        {
+          "name": "nag_negative",
+          "type": "CONDITIONING",
+          "link": 42
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 206
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            27
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "ChenDarYen/ComfyUI-NAG",
+        "ver": "25bd940444732e21726944d03893a2f6055f5392",
+        "Node name for S&R": "KSamplerWithNAG"
+      },
+      "widgets_values": [
+        855559017210757,
+        "randomize",
+        10,
+        1,
+        1,
+        2.5,
+        0.25,
+        0,
+        "res_2s",
+        "bong_tangent",
+        1
+      ]
+    },
+    {
+      "id": 130,
+      "type": "SaveImagePlus",
+      "pos": [
+        3405.812255859375,
+        134.95823669433594
+      ],
+      "size": [
+        270,
+        318
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 199
+        }
+      ],
+      "outputs": [],
+      "title": "SaveOrig",
+      "properties": {
+        "cnr_id": "comfyui-saveimage-plus",
+        "ver": "efa54493216e47126e022a6a38cdaf0c0480256d",
+        "Node name for S&R": "SaveImagePlus",
+        "aux_id": "Goktug/comfyui-saveimage-plus"
+      },
+      "widgets_values": [
+        "orig_",
+        "PNG",
+        true
+      ]
+    },
+    {
+      "id": 9,
+      "type": "VAEDecode",
+      "pos": [
+        2858.33544921875,
+        127.0194091796875
+      ],
+      "size": [
+        147.046875,
+        46
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 27
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 28
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            172,
+            192
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.51",
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 145,
+      "type": "EmptyLatentImage",
+      "pos": [
+        2403.19140625,
+        66.88404083251953
+      ],
+      "size": [
+        270,
+        106
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            206
+          ]
+        }
+      ],
+      "title": "ImageLatent",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.59",
+        "Node name for S&R": "EmptyLatentImage"
+      },
+      "widgets_values": [
+        1536,
+        1536,
+        1
+      ]
+    },
+    {
+      "id": 42,
+      "type": "CLIPTextEncode",
+      "pos": [
+        2403.02392578125,
+        732.7377319335938
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 38
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            42
+          ]
+        }
+      ],
+      "title": "NegativePrompt",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.51",
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "Static, motionless, still, ugly, bad quality, worst quality, poorly drawn, low resolution, lack of details, blurry face, blurry eyes"
+      ]
+    },
+    {
+      "id": 124,
+      "type": "6cafed03-6161-445a-94db-659dede18609",
+      "pos": [
+        3182.465576171875,
+        541.828857421875
+      ],
+      "size": [
+        192.74842834472656,
+        28.60375213623047
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 178
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            199
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.51"
+      },
+      "widgets_values": [],
+      "color": "#323",
+      "bgcolor": "#535"
+    },
+    {
+      "id": 134,
+      "type": "PreviewImage",
+      "pos": [
+        3413.57421875,
+        509.1678466796875
+      ],
+      "size": [
+        255.53208923339844,
+        265.29888916015625
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 192
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.51",
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 3,
+      "type": "CLIPTextEncode",
+      "pos": [
+        2403.079345703125,
+        234.5582275390625
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 23
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            40,
+            175
+          ]
+        }
+      ],
+      "title": "PositivePrompt",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.51",
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "A dark, cinematic studio portrait of a female, late 20s with blue-green eyes, tightly framed from the upper chest, looking directly at the camera and showing a calm, positive and slightly introspective expression. The lighting is very low-key and directional, illuminating only the subject’s left side, while the right side of the face falls into deep shadow. The background is a seamless dark navy backdrop, perfectly flat, evenly lit without shadows enhancing the dark mood. Wearing a white silk blouse with subtle ruffles under a red tailored blazer, feminine fit for female form, peaked lapels for sharp structure. The overall mood is subdued, minimalistic, and intimate, with strong contrast, defined shadows, and a highly professional editorial style."
+      ]
+    },
+    {
       "id": 38,
       "type": "LoraLoader",
       "pos": [
-        2072.250732421875,
+        2078.125732421875,
         471.658447265625
       ],
       "size": [
@@ -185,7 +539,7 @@
         126
       ],
       "flags": {},
-      "order": 6,
+      "order": 5,
       "mode": 0,
       "inputs": [
         {
@@ -222,459 +576,24 @@
         "Node name for S&R": "LoraLoader"
       },
       "widgets_values": [
-        "training_goldennoir_loras_lora_20250908_111346_2cf10b54.safetensors",
+        "training_studiopro_loras_wan_lora_20250725_005619.safetensors",
         0.5,
         0.5
-      ]
-    },
-    {
-      "id": 43,
-      "type": "KSamplerWithNAG",
-      "pos": [
-        2858.783447265625,
-        233.14614868164062
-      ],
-      "size": [
-        286.7650451660156,
-        590
-      ],
-      "flags": {},
-      "order": 11,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 39
-        },
-        {
-          "name": "positive",
-          "type": "CONDITIONING",
-          "link": 40
-        },
-        {
-          "name": "negative",
-          "type": "CONDITIONING",
-          "link": 41
-        },
-        {
-          "name": "nag_negative",
-          "type": "CONDITIONING",
-          "link": 42
-        },
-        {
-          "name": "latent_image",
-          "type": "LATENT",
-          "link": 43
-        }
-      ],
-      "outputs": [
-        {
-          "name": "LATENT",
-          "type": "LATENT",
-          "links": [
-            27
-          ]
-        }
-      ],
-      "properties": {
-        "aux_id": "ChenDarYen/ComfyUI-NAG",
-        "ver": "25bd940444732e21726944d03893a2f6055f5392",
-        "Node name for S&R": "KSamplerWithNAG"
-      },
-      "widgets_values": [
-        493326182129721,
-        "randomize",
-        10,
-        1,
-        1,
-        2.5,
-        0.25,
-        0,
-        "res_2s",
-        "bong_tangent",
-        1
-      ]
-    },
-    {
-      "id": 3,
-      "type": "CLIPTextEncode",
-      "pos": [
-        2403.079345703125,
-        234.5582275390625
-      ],
-      "size": [
-        400,
-        200
-      ],
-      "flags": {},
-      "order": 8,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "clip",
-          "type": "CLIP",
-          "link": 23
-        }
-      ],
-      "outputs": [
-        {
-          "name": "CONDITIONING",
-          "type": "CONDITIONING",
-          "links": [
-            40,
-            175
-          ]
-        }
-      ],
-      "title": "PositivePrompt",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.51",
-        "Node name for S&R": "CLIPTextEncode"
-      },
-      "widgets_values": [
-        "Close-up portrait of a woman illuminated by soft, warm afternoon light streaming through window blinds, creating striking shadow patterns across her face. She has a natural, glowing complexion with dewy skin. The background features muted teal walls that enhance the warmth of the scene. She wears a dark, pinstriped blazer, adding a touch of elegance. The overall aesthetic is hyperrealistic, capturing intricate details like the texture of her skin and the delicate play of light and shadow, with a color palette of warm neutrals and soft pastels."
-      ]
-    },
-    {
-      "id": 9,
-      "type": "VAEDecode",
-      "pos": [
-        3009.704833984375,
-        163.83950805664062
-      ],
-      "size": [
-        147.046875,
-        46
-      ],
-      "flags": {
-        "collapsed": true
-      },
-      "order": 12,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "samples",
-          "type": "LATENT",
-          "link": 27
-        },
-        {
-          "name": "vae",
-          "type": "VAE",
-          "link": 28
-        }
-      ],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            172
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.51",
-        "Node name for S&R": "VAEDecode"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 130,
-      "type": "SaveImagePlus",
-      "pos": [
-        3405.36865234375,
-        300.70062255859375
-      ],
-      "size": [
-        270,
-        318
-      ],
-      "flags": {},
-      "order": 15,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 188
-        }
-      ],
-      "outputs": [],
-      "title": "SaveOrig",
-      "properties": {
-        "aux_id": "Goktug/comfyui-saveimage-plus",
-        "ver": "efa54493216e47126e022a6a38cdaf0c0480256d",
-        "Node name for S&R": "SaveImagePlus",
-        "cnr_id": "comfyui-saveimage-plus"
-      },
-      "widgets_values": [
-        "orig_",
-        "PNG",
-        true
-      ]
-    },
-    {
-      "id": 4,
-      "type": "CLIPTextEncode",
-      "pos": [
-        2402.525634765625,
-        482.3674621582031
-      ],
-      "size": [
-        400,
-        200
-      ],
-      "flags": {},
-      "order": 9,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "clip",
-          "type": "CLIP",
-          "link": 24
-        }
-      ],
-      "outputs": [
-        {
-          "name": "CONDITIONING",
-          "type": "CONDITIONING",
-          "links": [
-            41,
-            176
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.51",
-        "Node name for S&R": "CLIPTextEncode"
-      },
-      "widgets_values": [
-        "plastic-like skin texture, oily appearance, unnatural texture, 3d render, cgi, doll, deformed, disfigured, poorly drawn, poor anatomy, bad hands, nude, bad hands, deformed, face asymmetry, eyes asymmetry, deformed eyes, deformed mouth, unwanted hair artifacts on face, grain, noise, artifacts, nipple, brand, text, writings, logo, initials, low quality, blurry face, ugly, poorly drawn hands, deformed face, extra limbs, bad anatomy, low resolution, unrealistic, cartoonish, watermark, text, signature, distorted proportions, creepy, glitch, jpeg artifacts,"
-      ]
-    },
-    {
-      "id": 42,
-      "type": "CLIPTextEncode",
-      "pos": [
-        2403.02392578125,
-        732.7377319335938
-      ],
-      "size": [
-        400,
-        200
-      ],
-      "flags": {},
-      "order": 10,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "clip",
-          "type": "CLIP",
-          "link": 38
-        }
-      ],
-      "outputs": [
-        {
-          "name": "CONDITIONING",
-          "type": "CONDITIONING",
-          "links": [
-            42
-          ]
-        }
-      ],
-      "title": "NegativePrompt",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.51",
-        "Node name for S&R": "CLIPTextEncode"
-      },
-      "widgets_values": [
-        "Static, motionless, still, ugly, bad quality, worst quality, poorly drawn, low resolution, lack of details, blurry face"
-      ]
-    },
-    {
-      "id": 7,
-      "type": "UNETLoader",
-      "pos": [
-        1442.974609375,
-        645.2088623046875
-      ],
-      "size": [
-        270,
-        82
-      ],
-      "flags": {},
-      "order": 1,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "MODEL",
-          "type": "MODEL",
-          "links": [
-            44
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.51",
-        "Node name for S&R": "UNETLoader"
-      },
-      "widgets_values": [
-        "wan2.1_t2v_14B_fp16.safetensors",
-        "default"
-      ]
-    },
-    {
-      "id": 132,
-      "type": "easy imageScaleDownToSize",
-      "pos": [
-        3094.98486328125,
-        -76.06906127929688
-      ],
-      "size": [
-        270,
-        82
-      ],
-      "flags": {},
-      "order": 16,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 191
-        }
-      ],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            190
-          ]
-        }
-      ],
-      "properties": {
-        "aux_id": "yolain/ComfyUI-Easy-Use",
-        "ver": "1148fbe5fe0276780c56f0adfa22b96d5200d832",
-        "Node name for S&R": "easy imageScaleDownToSize",
-        "cnr_id": "comfyui-easy-use"
-      },
-      "widgets_values": [
-        1024,
-        true
-      ]
-    },
-    {
-      "id": 133,
-      "type": "SaveImagePlus",
-      "pos": [
-        3398.95263671875,
-        -78.81974029541016
-      ],
-      "size": [
-        270,
-        318
-      ],
-      "flags": {},
-      "order": 17,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 190
-        }
-      ],
-      "outputs": [],
-      "title": "SaveWeb",
-      "properties": {
-        "aux_id": "Goktug/comfyui-saveimage-plus",
-        "ver": "efa54493216e47126e022a6a38cdaf0c0480256d",
-        "Node name for S&R": "SaveImagePlus",
-        "cnr_id": "comfyui-saveimage-plus"
-      },
-      "widgets_values": [
-        "web_",
-        "WEBP (lossless)",
-        true
-      ]
-    },
-    {
-      "id": 39,
-      "type": "FluxResolutionNode",
-      "pos": [
-        2066.60595703125,
-        37.704898834228516
-      ],
-      "size": [
-        274.724609375,
-        214
-      ],
-      "flags": {},
-      "order": 2,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "width",
-          "type": "INT",
-          "links": [
-            25
-          ]
-        },
-        {
-          "name": "height",
-          "type": "INT",
-          "links": [
-            26
-          ]
-        },
-        {
-          "name": "resolution",
-          "type": "STRING",
-          "links": null
-        },
-        {
-          "name": "preview",
-          "type": "IMAGE",
-          "links": null
-        }
-      ],
-      "title": "ResolutionCalc",
-      "properties": {
-        "aux_id": "gseth/ControlAltAI-Nodes",
-        "ver": "721492b66c9cede8ae23ae10615462ad80cfd061",
-        "Node name for S&R": "FluxResolutionNode",
-        "cnr_id": "controlaltai-nodes"
-      },
-      "widgets_values": [
-        "1.0",
-        "1:1 (Perfect Square)",
-        "64",
-        false,
-        "1:1"
       ]
     },
     {
       "id": 14,
       "type": "LoraLoader",
       "pos": [
-        2069.099609375,
-        302.1440124511719
+        2079.798828125,
+        300.1869812011719
       ],
       "size": [
         270,
         126
       ],
       "flags": {},
-      "order": 7,
+      "order": 6,
       "mode": 0,
       "inputs": [
         {
@@ -723,15 +642,15 @@
       "id": 123,
       "type": "269dbe3b-db5c-42f4-a060-0b2ca17ed5c8",
       "pos": [
-        3205.948974609375,
-        135.57461547851562
+        3179.150146484375,
+        138.7071075439453
       ],
       "size": [
-        140,
-        106
+        191.73513793945312,
+        326
       ],
       "flags": {},
-      "order": 13,
+      "order": 12,
       "mode": 0,
       "inputs": [
         {
@@ -776,45 +695,6 @@
       "widgets_values": [],
       "color": "#223",
       "bgcolor": "#335"
-    },
-    {
-      "id": 124,
-      "type": "6cafed03-6161-445a-94db-659dede18609",
-      "pos": [
-        3207.075439453125,
-        297.9016418457031
-      ],
-      "size": [
-        140,
-        26
-      ],
-      "flags": {},
-      "order": 14,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "link": 178
-        }
-      ],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            188,
-            191
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.51"
-      },
-      "widgets_values": [],
-      "color": "#323",
-      "bgcolor": "#535"
     }
   ],
   "links": [
@@ -833,22 +713,6 @@
       4,
       0,
       "CLIP"
-    ],
-    [
-      25,
-      39,
-      0,
-      5,
-      0,
-      "INT"
-    ],
-    [
-      26,
-      39,
-      1,
-      5,
-      1,
-      "INT"
     ],
     [
       27,
@@ -921,14 +785,6 @@
       43,
       3,
       "CONDITIONING"
-    ],
-    [
-      43,
-      5,
-      0,
-      43,
-      4,
-      "LATENT"
     ],
     [
       44,
@@ -1011,7 +867,15 @@
       "CLIP"
     ],
     [
-      188,
+      192,
+      9,
+      0,
+      134,
+      0,
+      "IMAGE"
+    ],
+    [
+      199,
       124,
       0,
       130,
@@ -1019,20 +883,12 @@
       "IMAGE"
     ],
     [
-      190,
-      132,
+      206,
+      145,
       0,
-      133,
-      0,
-      "IMAGE"
-    ],
-    [
-      191,
-      124,
-      0,
-      132,
-      0,
-      "IMAGE"
+      43,
+      4,
+      "LATENT"
     ]
   ],
   "groups": [],
@@ -1043,8 +899,8 @@
         "version": 1,
         "state": {
           "lastGroupId": 2,
-          "lastNodeId": 124,
-          "lastLinkId": 174,
+          "lastNodeId": 125,
+          "lastLinkId": 177,
           "lastRerouteId": 0
         },
         "revision": 0,
@@ -1053,8 +909,8 @@
         "inputNode": {
           "id": -10,
           "bounding": [
-            3110.610107421875,
-            575.9816131591797,
+            3085.42742428364,
+            575.6407185429648,
             120,
             140
           ]
@@ -1074,12 +930,12 @@
             "name": "image",
             "type": "IMAGE",
             "linkIds": [
-              119
+              177
             ],
             "localized_name": "image",
             "pos": {
-              "0": 3210.610107421875,
-              "1": 595.9816284179688
+              "0": 3185.427490234375,
+              "1": 595.6407470703125
             }
           },
           {
@@ -1092,8 +948,8 @@
             ],
             "localized_name": "vae",
             "pos": {
-              "0": 3210.610107421875,
-              "1": 615.9816284179688
+              "0": 3185.427490234375,
+              "1": 615.6407470703125
             }
           },
           {
@@ -1105,8 +961,8 @@
             ],
             "localized_name": "model",
             "pos": {
-              "0": 3210.610107421875,
-              "1": 635.9816284179688
+              "0": 3185.427490234375,
+              "1": 635.6407470703125
             }
           },
           {
@@ -1118,8 +974,8 @@
             ],
             "localized_name": "positive",
             "pos": {
-              "0": 3210.610107421875,
-              "1": 655.9816284179688
+              "0": 3185.427490234375,
+              "1": 655.6407470703125
             }
           },
           {
@@ -1131,8 +987,8 @@
             ],
             "localized_name": "negative",
             "pos": {
-              "0": 3210.610107421875,
-              "1": 675.9816284179688
+              "0": 3185.427490234375,
+              "1": 675.6407470703125
             }
           }
         ],
@@ -1185,11 +1041,102 @@
             "bgcolor": "#fff0"
           },
           {
+            "id": 50,
+            "type": "UpscaleModelLoader",
+            "pos": [
+              2945.328125,
+              282.2075500488281
+            ],
+            "size": [
+              301.6999206542969,
+              58
+            ],
+            "flags": {
+              "collapsed": false
+            },
+            "order": 1,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [
+              {
+                "localized_name": "UPSCALE_MODEL",
+                "name": "UPSCALE_MODEL",
+                "type": "UPSCALE_MODEL",
+                "slot_index": 0,
+                "links": [
+                  50,
+                  116
+                ]
+              }
+            ],
+            "properties": {
+              "cnr_id": "comfy-core",
+              "ver": "0.3.27",
+              "Node name for S&R": "UpscaleModelLoader"
+            },
+            "widgets_values": [
+              "4x_NMKD-Siax_200k.pth"
+            ],
+            "color": "#432",
+            "bgcolor": "#653"
+          },
+          {
+            "id": 47,
+            "type": "ImageUpscaleWithModel",
+            "pos": [
+              3297.549072265625,
+              282.2159423828125
+            ],
+            "size": [
+              267.8101501464844,
+              46
+            ],
+            "flags": {
+              "collapsed": false
+            },
+            "order": 3,
+            "mode": 0,
+            "inputs": [
+              {
+                "localized_name": "upscale_model",
+                "name": "upscale_model",
+                "type": "UPSCALE_MODEL",
+                "link": 50
+              },
+              {
+                "localized_name": "image",
+                "name": "image",
+                "type": "IMAGE",
+                "link": 177
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "IMAGE",
+                "name": "IMAGE",
+                "type": "IMAGE",
+                "slot_index": 0,
+                "links": [
+                  49
+                ]
+              }
+            ],
+            "title": "UpscaleImage1",
+            "properties": {
+              "cnr_id": "comfy-core",
+              "ver": "0.3.27",
+              "Node name for S&R": "ImageUpscaleWithModel"
+            },
+            "widgets_values": [],
+            "color": "#432",
+            "bgcolor": "#653"
+          },
+          {
             "id": 92,
             "type": "ImageUpscaleWithModel",
             "pos": [
-              3606.234130859375,
-              283.8638000488281
+              3630.825927734375,
+              282.5173034667969
             ],
             "size": [
               267.8101501464844,
@@ -1202,7 +1149,7 @@
             "mode": 0,
             "inputs": [
               {
-                "localized_name": "modèle_d'agrandissement",
+                "localized_name": "upscale_model",
                 "name": "upscale_model",
                 "type": "UPSCALE_MODEL",
                 "link": 116
@@ -1225,6 +1172,7 @@
                 ]
               }
             ],
+            "title": "UpscaleImage2",
             "properties": {
               "cnr_id": "comfy-core",
               "ver": "0.3.27",
@@ -1235,77 +1183,107 @@
             "bgcolor": "#653"
           },
           {
-            "id": 49,
-            "type": "KSampler",
+            "id": 46,
+            "type": "ImageScaleBy",
             "pos": [
-              3291.3564453125,
-              622.0236206054688
+              3298.270751953125,
+              380.2553405761719
             ],
             "size": [
-              305.61517333984375,
-              474.00006103515625
+              251.720703125,
+              83.74797058105469
             ],
-            "flags": {},
-            "order": 5,
+            "flags": {
+              "collapsed": false
+            },
+            "order": 2,
             "mode": 0,
             "inputs": [
               {
-                "localized_name": "model",
-                "name": "model",
-                "type": "MODEL",
-                "link": 60
-              },
-              {
-                "localized_name": "positive",
-                "name": "positive",
-                "type": "CONDITIONING",
-                "link": 61
-              },
-              {
-                "localized_name": "negative",
-                "name": "negative",
-                "type": "CONDITIONING",
-                "link": 62
-              },
-              {
-                "localized_name": "latent_image",
-                "name": "latent_image",
-                "type": "LATENT",
-                "link": 52
+                "localized_name": "image",
+                "name": "image",
+                "type": "IMAGE",
+                "link": 49
               }
             ],
             "outputs": [
               {
-                "localized_name": "LATENT",
-                "name": "LATENT",
-                "type": "LATENT",
+                "localized_name": "IMAGE",
+                "name": "IMAGE",
+                "type": "IMAGE",
                 "slot_index": 0,
                 "links": [
-                  56
+                  51
                 ]
               }
             ],
+            "title": "UpscaleBy",
             "properties": {
               "cnr_id": "comfy-core",
               "ver": "0.3.27",
-              "Node name for S&R": "KSampler"
+              "Node name for S&R": "ImageScaleBy"
             },
             "widgets_values": [
-              114100882752376,
-              "randomize",
-              8,
-              1,
-              "dpmpp_2m",
-              "karras",
-              0.85
-            ]
+              "lanczos",
+              0.3
+            ],
+            "color": "#432",
+            "bgcolor": "#653"
+          },
+          {
+            "id": 91,
+            "type": "ImageScaleBy",
+            "pos": [
+              3630.392333984375,
+              380.6080017089844
+            ],
+            "size": [
+              251.720703125,
+              82
+            ],
+            "flags": {
+              "collapsed": false
+            },
+            "order": 7,
+            "mode": 0,
+            "inputs": [
+              {
+                "localized_name": "image",
+                "name": "image",
+                "type": "IMAGE",
+                "link": 113
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "IMAGE",
+                "name": "IMAGE",
+                "type": "IMAGE",
+                "slot_index": 0,
+                "links": [
+                  171
+                ]
+              }
+            ],
+            "title": "ResizeBy",
+            "properties": {
+              "cnr_id": "comfy-core",
+              "ver": "0.3.27",
+              "Node name for S&R": "ImageScaleBy"
+            },
+            "widgets_values": [
+              "lanczos",
+              0.5
+            ],
+            "color": "#432",
+            "bgcolor": "#653"
           },
           {
             "id": 48,
             "type": "VAEEncode",
             "pos": [
-              3297.990966796875,
-              515.8051147460938
+              3292.2900390625,
+              518.0206298828125
             ],
             "size": [
               140,
@@ -1366,7 +1344,7 @@
             "mode": 0,
             "inputs": [
               {
-                "localized_name": "échantillons",
+                "localized_name": "samples",
                 "name": "samples",
                 "type": "LATENT",
                 "link": 56
@@ -1397,190 +1375,70 @@
             "widgets_values": []
           },
           {
-            "id": 47,
-            "type": "ImageUpscaleWithModel",
+            "id": 49,
+            "type": "KSampler",
             "pos": [
-              3297.549072265625,
-              282.2159423828125
+              3291.3564453125,
+              622.0236206054688
             ],
             "size": [
-              267.8101501464844,
-              46
+              305.61517333984375,
+              474.00006103515625
             ],
-            "flags": {
-              "collapsed": false
-            },
-            "order": 3,
+            "flags": {},
+            "order": 5,
             "mode": 0,
             "inputs": [
               {
-                "localized_name": "modèle_d'agrandissement",
-                "name": "upscale_model",
-                "type": "UPSCALE_MODEL",
-                "link": 50
+                "localized_name": "model",
+                "name": "model",
+                "type": "MODEL",
+                "link": 60
               },
               {
-                "localized_name": "image",
-                "name": "image",
-                "type": "IMAGE",
-                "link": 119
+                "localized_name": "positive",
+                "name": "positive",
+                "type": "CONDITIONING",
+                "link": 61
+              },
+              {
+                "localized_name": "negative",
+                "name": "negative",
+                "type": "CONDITIONING",
+                "link": 62
+              },
+              {
+                "localized_name": "latent_image",
+                "name": "latent_image",
+                "type": "LATENT",
+                "link": 52
               }
             ],
             "outputs": [
               {
-                "localized_name": "IMAGE",
-                "name": "IMAGE",
-                "type": "IMAGE",
+                "localized_name": "LATENT",
+                "name": "LATENT",
+                "type": "LATENT",
                 "slot_index": 0,
                 "links": [
-                  49
+                  56
                 ]
               }
             ],
             "properties": {
               "cnr_id": "comfy-core",
               "ver": "0.3.27",
-              "Node name for S&R": "ImageUpscaleWithModel"
-            },
-            "widgets_values": [],
-            "color": "#432",
-            "bgcolor": "#653"
-          },
-          {
-            "id": 50,
-            "type": "UpscaleModelLoader",
-            "pos": [
-              2945.328125,
-              282.2075500488281
-            ],
-            "size": [
-              301.6999206542969,
-              58
-            ],
-            "flags": {
-              "collapsed": false
-            },
-            "order": 1,
-            "mode": 0,
-            "inputs": [],
-            "outputs": [
-              {
-                "localized_name": "MODÈLE_DE_MISE_À_L'ÉCHELLE",
-                "name": "UPSCALE_MODEL",
-                "type": "UPSCALE_MODEL",
-                "slot_index": 0,
-                "links": [
-                  50,
-                  116
-                ]
-              }
-            ],
-            "properties": {
-              "cnr_id": "comfy-core",
-              "ver": "0.3.27",
-              "Node name for S&R": "UpscaleModelLoader"
+              "Node name for S&R": "KSampler"
             },
             "widgets_values": [
-              "4x_NMKD-Siax_200k.pth"
-            ],
-            "color": "#432",
-            "bgcolor": "#653"
-          },
-          {
-            "id": 46,
-            "type": "ImageScaleBy",
-            "pos": [
-              3298.270751953125,
-              380.2553405761719
-            ],
-            "size": [
-              251.720703125,
-              83.74797058105469
-            ],
-            "flags": {
-              "collapsed": false
-            },
-            "order": 2,
-            "mode": 0,
-            "inputs": [
-              {
-                "localized_name": "image",
-                "name": "image",
-                "type": "IMAGE",
-                "link": 49
-              }
-            ],
-            "outputs": [
-              {
-                "localized_name": "IMAGE",
-                "name": "IMAGE",
-                "type": "IMAGE",
-                "slot_index": 0,
-                "links": [
-                  51
-                ]
-              }
-            ],
-            "title": "UpscaleBy",
-            "properties": {
-              "cnr_id": "comfy-core",
-              "ver": "0.3.27",
-              "Node name for S&R": "ImageScaleBy"
-            },
-            "widgets_values": [
-              "lanczos",
-              0.3
-            ],
-            "color": "#432",
-            "bgcolor": "#653"
-          },
-          {
-            "id": 91,
-            "type": "ImageScaleBy",
-            "pos": [
-              3606.224853515625,
-              380.0730895996094
-            ],
-            "size": [
-              251.720703125,
-              82
-            ],
-            "flags": {
-              "collapsed": false
-            },
-            "order": 7,
-            "mode": 0,
-            "inputs": [
-              {
-                "localized_name": "image",
-                "name": "image",
-                "type": "IMAGE",
-                "link": 113
-              }
-            ],
-            "outputs": [
-              {
-                "localized_name": "IMAGE",
-                "name": "IMAGE",
-                "type": "IMAGE",
-                "slot_index": 0,
-                "links": [
-                  171
-                ]
-              }
-            ],
-            "title": "ResizeBy",
-            "properties": {
-              "cnr_id": "comfy-core",
-              "ver": "0.3.27",
-              "Node name for S&R": "ImageScaleBy"
-            },
-            "widgets_values": [
-              "lanczos",
-              0.4
-            ],
-            "color": "#432",
-            "bgcolor": "#653"
+              434535128834570,
+              "randomize",
+              8,
+              1,
+              "dpmpp_2m",
+              "karras",
+              0.7
+            ]
           }
         ],
         "groups": [],
@@ -1650,14 +1508,6 @@
             "type": "IMAGE"
           },
           {
-            "id": 119,
-            "origin_id": -10,
-            "origin_slot": 0,
-            "target_id": 47,
-            "target_slot": 1,
-            "type": "IMAGE"
-          },
-          {
             "id": 66,
             "origin_id": -10,
             "origin_slot": 1,
@@ -1703,6 +1553,14 @@
             "origin_slot": 0,
             "target_id": -20,
             "target_slot": 0,
+            "type": "IMAGE"
+          },
+          {
+            "id": 177,
+            "origin_id": -10,
+            "origin_slot": 0,
+            "target_id": 47,
+            "target_slot": 1,
             "type": "IMAGE"
           }
         ],
@@ -1771,6 +1629,54 @@
         "widgets": [],
         "nodes": [
           {
+            "id": 116,
+            "type": "ChannelMixerNode",
+            "pos": [
+              3954.008544921875,
+              697.3990478515625
+            ],
+            "size": [
+              270.7109375,
+              202
+            ],
+            "flags": {},
+            "order": 1,
+            "mode": 4,
+            "inputs": [
+              {
+                "localized_name": "image",
+                "name": "image",
+                "type": "IMAGE",
+                "link": 163
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "IMAGE",
+                "name": "IMAGE",
+                "type": "IMAGE",
+                "links": [
+                  161
+                ]
+              }
+            ],
+            "title": "ChannelMixer",
+            "properties": {
+              "aux_id": "orion4d/ComfyUI-Image-Effects",
+              "ver": "42926e936933520575dbfe32408ba237a0bf62cc",
+              "Node name for S&R": "ChannelMixerNode"
+            },
+            "widgets_values": [
+              "Red",
+              30,
+              59,
+              11,
+              0,
+              true,
+              false
+            ]
+          },
+          {
             "id": 118,
             "type": "VibranceNode",
             "pos": [
@@ -1783,7 +1689,7 @@
             ],
             "flags": {},
             "order": 2,
-            "mode": 0,
+            "mode": 4,
             "inputs": [
               {
                 "localized_name": "image",
@@ -1828,7 +1734,7 @@
             ],
             "flags": {},
             "order": 3,
-            "mode": 0,
+            "mode": 4,
             "inputs": [
               {
                 "localized_name": "image",
@@ -1875,7 +1781,7 @@
             ],
             "flags": {},
             "order": 0,
-            "mode": 0,
+            "mode": 4,
             "inputs": [
               {
                 "localized_name": "image",
@@ -1907,54 +1813,6 @@
               true,
               0,
               0
-            ]
-          },
-          {
-            "id": 116,
-            "type": "ChannelMixerNode",
-            "pos": [
-              3954.008544921875,
-              697.3990478515625
-            ],
-            "size": [
-              270.7109375,
-              202
-            ],
-            "flags": {},
-            "order": 1,
-            "mode": 0,
-            "inputs": [
-              {
-                "localized_name": "image",
-                "name": "image",
-                "type": "IMAGE",
-                "link": 163
-              }
-            ],
-            "outputs": [
-              {
-                "localized_name": "IMAGE",
-                "name": "IMAGE",
-                "type": "IMAGE",
-                "links": [
-                  161
-                ]
-              }
-            ],
-            "title": "ChannelMixer",
-            "properties": {
-              "aux_id": "orion4d/ComfyUI-Image-Effects",
-              "ver": "42926e936933520575dbfe32408ba237a0bf62cc",
-              "Node name for S&R": "ChannelMixerNode"
-            },
-            "widgets_values": [
-              "Red",
-              30,
-              59,
-              11,
-              0,
-              true,
-              false
             ]
           }
         ],
@@ -2144,7 +2002,7 @@
             ],
             "outputs": [
               {
-                "localized_name": "MODÈLE",
+                "localized_name": "MODEL",
                 "name": "MODEL",
                 "type": "MODEL",
                 "links": [
@@ -2201,7 +2059,7 @@
             ],
             "outputs": [
               {
-                "localized_name": "MODÈLE",
+                "localized_name": "MODEL",
                 "name": "MODEL",
                 "type": "MODEL",
                 "links": [
@@ -2258,7 +2116,7 @@
             ],
             "outputs": [
               {
-                "localized_name": "MODÈLE",
+                "localized_name": "MODEL",
                 "name": "MODEL",
                 "type": "MODEL",
                 "links": [
@@ -2360,13 +2218,13 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.985178674407395,
+      "scale": 1,
       "offset": [
-        -1840.4580458294372,
-        64.14847884638672
+        -2359.8011322021484,
+        45.27947998046875
       ]
     },
-    "frontendVersion": "1.25.9"
+    "frontendVersion": "1.26.11"
   },
   "version": 0.4
 }

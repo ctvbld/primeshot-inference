@@ -12,10 +12,10 @@ import time
 import sys
 import urllib.request
 import urllib.error
-from pathlib import Path
-from typing import Dict, Any, List, Tuple
 import modal
 import modal.experimental
+from pathlib import Path
+from typing import Dict, Any, List, Tuple
 
 sys.path.insert(0, "/root/lib")
 
@@ -26,6 +26,8 @@ models_volume = modal.Volume.from_name("models-vol", create_if_missing=True)
 aws_secret = modal.Secret.from_name("aws-secret")
 inference_secret = modal.Secret.from_name("inference-secret")
 supabase_secret = modal.Secret.from_name("supabase-secret")
+
+
 
 # Central GPU names (hardcoded routing)
 DEFAULT_GPU_TYPE = "H200"
@@ -65,13 +67,7 @@ cuda_image = (
         "libasound2", "libgtk-3-0", "libsm6", "libxext6",
         "mesa-utils", "libgl1-mesa-dev", "libgles2-mesa-dev"
     ])
-
-    .run_commands("locale-gen en_US.UTF-8")  # Generate English locale
     .env({
-        # Locale settings
-        "LANG": "en_US.UTF-8", 
-        "LC_ALL": "en_US.UTF-8", 
-        "LANGUAGE": "en_US:en",
         # Prevent interactive prompts in pip and other tools
         "DEBIAN_FRONTEND": "noninteractive",
         "PIP_NO_INPUT": "1",
@@ -110,6 +106,10 @@ cuda_image = (
     )
     # Install Triton for SageAttention optimization
     .pip_install("triton>=3.2.0")
+    # Install FlashAttention-3 for Hopper (H100/H200) acceleration if wheels are available
+    .run_commands(
+        "pip install 'flash-attn>=2.5.7' --no-build-isolation || echo 'flash-attn install skipped'"
+    )
     # Install SageAttention 2.2.0+ using run_commands (same as working AI Toolkit)
     .run_commands([
         "pip install sageattention>=2.2.0 --no-deps"
@@ -136,16 +136,15 @@ cuda_image = (
         "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/rgthree/rgthree-comfy.git",
         "cd /root/comfy/ComfyUI/custom_nodes/rgthree-comfy && pip install -r requirements.txt --no-input"
     )
-    # Install ControlAltAI nodes for resolution controls (uses pyproject.toml)
-    .run_commands(
-        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/gseth/ControlAltAI-Nodes.git",
-        "cd /root/comfy/ComfyUI/custom_nodes/ControlAltAI-Nodes && pip install . --no-input"
-    )
-    .run_commands(
-       "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/yolain/ComfyUI-Easy-Use",
-       "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-Easy-Use && pip install -r requirements.txt --no-input"
-    )
     # START TO UNUSED NODES
+    # .run_commands(
+    #     "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/gseth/ControlAltAI-Nodes.git",
+    #     "cd /root/comfy/ComfyUI/custom_nodes/ControlAltAI-Nodes && pip install . --no-input"
+    # )
+    # .run_commands(
+    #    "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/yolain/ComfyUI-Easy-Use",
+    #    "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-Easy-Use && pip install -r requirements.txt --no-input"
+    # )
     # .run_commands(
     #     "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/kijai/ComfyUI-KJNodes",
     #     "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-KJNodes && pip install -r requirements.txt --no-input"
@@ -235,13 +234,24 @@ def _launch_inference_runtime(port: int) -> None:
     
     # LoRA models directory will be created and populated on-demand per job
     
+    # Helper to detect FlashAttention availability
+    def _has_flash_attention() -> bool:
+        try:
+            import importlib
+            return importlib.util.find_spec("flash_attn") is not None
+        except Exception:
+            return False
+
     # Set up environment variables for performance optimization
     env = os.environ.copy()
     env.update({
         'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True,backend:cudaMallocAsync',
         'TORCH_ALLOW_TF32_CUBLAS_OVERRIDE': '1',
         'NVIDIA_TF32_OVERRIDE': '1',
-        'SAGE_ATTENTION_BACKEND': 'triton',
+        # Prefer FlashAttention-3 on Hopper if available; fallback to Triton SageAttention
+        'SAGE_ATTENTION_BACKEND': 'flash' if _has_flash_attention() else 'triton',
+        # Ensure PyTorch SDPA does not disable flash kernels if present
+        'PYTORCH_SDP_DISABLE_FLASH_ATTENTION': '0',
         'COMFYUI_MODEL_DEVICE': 'cuda',
         'COMFYUI_VAE_DEVICE': 'cuda', 
         'COMFYUI_CLIP_DEVICE': 'cuda',
@@ -276,6 +286,84 @@ def _launch_inference_runtime(port: int) -> None:
             raise RuntimeError("ComfyUI failed to become ready within 30 seconds")
     except Exception as e:
         print(f"❌ Failed to verify ComfyUI readiness: {e}")
+
+    # Preload core models (UNet / VAE / CLIP) to avoid first-request cold latency
+    try:
+        preload_core_models(port)
+    except Exception as e:
+        print(f"⚠️ Preload failed (continuing): {e}")
+
+
+def preload_core_models(port: int) -> None:
+    """Warm model weights by submitting a minimal one-shot prompt.
+
+    Uses the baked workflow as a template and reduces steps/resolution to force
+    fast model initialization without meaningful generation cost.
+    """
+    from lib.comfyui_server import ComfyUIServer
+    from lib.workflow_patcher import patch_workflow
+    import json
+    from pathlib import Path
+
+    server = ComfyUIServer(port)
+
+    # Load a baked default workflow (prefer 1K variant)
+    wf_path_candidates = [
+        Path("/root/workflows/V1.0_1K.json"),
+        Path("/root/workflows/V1.0_Comfyui.json")
+    ]
+
+    workflow = None
+    for p in wf_path_candidates:
+        if p.exists():
+            try:
+                workflow = json.loads(p.read_text())
+                break
+            except Exception:
+                continue
+
+    if not isinstance(workflow, dict):
+        print("ℹ️ No baked workflow found for preload; skipping warmup")
+        return
+
+    # Patch: tiny resolution, single image, minimal steps
+    tiny_w, tiny_h = 256, 256
+    preload_overrides = {
+        # Try both common titles; patcher will ignore missing
+        "KSampler": {"steps": 1, "cfg": 1.0, "denoise": 0.5},
+        "KSamplerWithNAG": {"steps": 1, "cfg": 1.0, "denoise": 0.5}
+    }
+
+    try:
+        preloaded = patch_workflow(
+            workflow=workflow,
+            prompt="warmup",
+            negative_prompt="",
+            width=tiny_w,
+            height=tiny_h,
+            seed=42,
+            images_count=1,
+            quality="1K",
+            aspect_ratio="1:1",
+            settings_override=preload_overrides,
+            lora_filename=None,
+            character_lora=None,
+            style_lora=None,
+            bypass_nodes=None,
+            enable_previews=False,
+            job_id=None,
+            user_id=None,
+        )
+    except Exception as e:
+        print(f"⚠️ Failed to patch workflow for preload: {e}")
+        return
+
+    try:
+        resp = server.submit_prompt(preloaded, client_id="preload")
+        prompt_id = resp.get("prompt_id") if isinstance(resp, dict) else None
+        print(f"🚀 Preload prompt submitted (prompt_id={prompt_id})")
+    except Exception as e:
+        print(f"⚠️ Failed to submit preload prompt: {e}")
 
 
 def poll_server_health(port: int) -> None:
@@ -925,11 +1013,10 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         
 
 
-        # Handle seed generation - if seed is -1 or None, generate a random seed
-        seed_value = p.get("seed")
-        if seed_value is None or seed_value == -1:
-            import random
-            seed_value = random.randint(0, 2**32 - 1)
+        # Handle seed: if -1, keep sentinel so each image chooses its own random seed later
+        seed_value = p.get("seed", -1)
+        if seed_value is None:
+            seed_value = -1
         
         # Get number of images to generate
         nb_takes = int(p.get("nb_takes", 1))
@@ -1477,7 +1564,7 @@ class Fast:
     """H200 worker (Fast)."""
 
     @modal.enter()
-    def setup_environment(self):
+    def launch_comfyui(self):
         os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
         _launch_inference_runtime(PORT)
 

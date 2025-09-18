@@ -9,8 +9,7 @@ from .workflow_patcher_utils import (
     WorkflowNodeManager,
     normalize_title_key,
     get_title_aliases,
-    get_quality_settings,
-    get_aspect_ratio_mapping
+    get_quality_settings
 )
 from .constants import (
     LATENT_NODE_TYPES,
@@ -25,21 +24,43 @@ logger = logging.getLogger(__name__)
 def compute_dimensions(quality: str, aspect_ratio: str) -> Tuple[int, int]:
     """Compute dimensions based on quality and aspect ratio.
     
-    Always uses 1K base for initial generation.
-    Upscaling to 2K/4K is handled by conditional upscale nodes.
+    Returns explicit ImageLatent width/height per quality and aspect ratio.
     """
-    base_1k = 1024
+    q = str(quality or "1K").upper()
+    ar = str(aspect_ratio or "1:1")
     
-    # Handle supported aspect ratios
-    if aspect_ratio == "1:1":
-        return base_1k, base_1k  # 1024x1024
-    elif aspect_ratio == "3:2":  # Landscape
-        return base_1k, int(round(base_1k * 2 / 3))  # 1024x683
-    elif aspect_ratio == "2:3":  # Portrait
-        return int(round(base_1k * 2 / 3)), base_1k  # 683x1024
-    else:
-        # Default to square for unknown ratios
-        return base_1k, base_1k
+    # 1K mappings
+    if q == "1K":
+        if ar == "1:1":
+            return 1024, 1024
+        if ar == "2:3":
+            return 896, 1280
+        if ar == "3:2":
+            return 1280, 896
+        return 1024, 1024
+    
+    # 2K mappings
+    if q == "2K":
+        if ar == "1:1":
+            return 1280, 1280
+        if ar == "2:3":
+            return 896, 1408
+        if ar == "3:2":
+            return 1408, 896
+        return 1280, 1280
+    
+    # 4K mappings
+    if q == "4K":
+        if ar == "1:1":
+            return 1408, 1408
+        if ar == "2:3":
+            return 960, 1471
+        if ar == "3:2":
+            return 1471, 960
+        return 1408, 1408
+    
+    # Fallback: default to 1K square
+    return 1024, 1024
 
 
 class WorkflowPatcher:
@@ -142,20 +163,6 @@ class WorkflowPatcher:
     
     def _patch_resolution(self, width: int, height: int, quality: str, aspect_ratio: str) -> None:
         """Patch resolution settings."""
-        # Update ResolutionCalc if present
-        quality_settings = get_quality_settings(quality)
-        ar_mapping = get_aspect_ratio_mapping()
-        
-        resolution_nodes = self.manager.find_nodes_by_title("ResolutionCalc")
-        for node_id, node in resolution_nodes:
-            inputs = node.setdefault("inputs", {})
-            inputs["megapixel"] = quality_settings["megapixel"]
-            
-            if aspect_ratio in ar_mapping:
-                inputs["aspect_ratio"] = ar_mapping[aspect_ratio]
-            
-            logger.info(f"✅ Updated ResolutionCalc (node {node_id})")
-        
         # Update latent nodes
         updated = False
         for node_type in LATENT_NODE_TYPES:
@@ -384,13 +391,6 @@ class WorkflowPatcher:
                     logger.info(f"✅ Wired SaveOrig (node {node_id}) -> [{target}, 0]")
                     save_nodes_wired.append(("SaveOrig", node_id))
                     
-                elif title == "SaveWeb" or prefix.startswith("web_"):
-                    # Prefer scaled down version
-                    target = scale_down_id or vae_id
-                    inputs["images"] = [target, 0]
-                    logger.info(f"✅ Wired SaveWeb (node {node_id}) -> [{target}, 0]")
-                    save_nodes_wired.append(("SaveWeb", node_id))
-                    
                 elif needs_rewiring:
                     # Generic broken connection
                     inputs["images"] = [vae_id, 0]
@@ -419,7 +419,7 @@ class WorkflowPatcher:
         
         # Update titled nodes first
         updated_titles = 0
-        for title in ["SaveWeb", "SaveOrig"]:
+        for title in ["SaveOrig"]:
             for node_id, node in self.manager.find_nodes_by_title(title):
                 inputs = node.setdefault("inputs", {})
                 
@@ -436,7 +436,7 @@ class WorkflowPatcher:
                     # Fallback to filename prefix
                     current_prefix = str(inputs.get("filename_prefix", ""))
                     safe_prefix = current_prefix if current_prefix else (
-                        "web_" if title == "SaveWeb" else "orig_"
+                        "orig_"
                     )
                     inputs["filename_prefix"] = f"{subfolder}/{safe_prefix}"
                     logger.info(f"✅ Set {title} (node {node_id}) filename_prefix = {inputs['filename_prefix']}")

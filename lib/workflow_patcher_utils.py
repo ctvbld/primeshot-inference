@@ -165,7 +165,6 @@ def get_title_aliases() -> Dict[str, str]:
         "lightleaks": "LightLeaks",
         "vibsat": "VibSat",
         # Utility/config nodes
-        "resolutioncalc": "ResolutionCalc",
         "upscaleby": "UpscaleBy",
         "resizeby": "ResizeBy",
     }
@@ -175,27 +174,14 @@ def get_quality_settings(quality: str) -> Dict[str, Any]:
     """Get quality-specific settings."""
     quality = str(quality or "1K").upper()
     
-    settings = {
-        "megapixel": "1.0",
-        "upscale_scale": 0.35,
-        "resize_scale": 0.50
-    }
+    settings = {}
     
     if quality == "2K":
         settings["upscale_scale"] = 0.30
-        settings["resize_scale"] = 0.40
+        settings["resize_scale"] = 0.30
     elif quality == "4K":
         settings["megapixel"] = "1.6"
-        settings["upscale_scale"] = 0.35
+        settings["upscale_scale"] = 0.30
         settings["resize_scale"] = 0.50
     
     return settings
-
-
-def get_aspect_ratio_mapping() -> Dict[str, str]:
-    """Get mapping of simple aspect ratios to ComfyUI format."""
-    return {
-        "1:1": "1:1 (Perfect Square)",
-        "2:3": "2:3 (Classic Portrait)",
-        "3:2": "3:2 (Golden Landscape)",
-    }
