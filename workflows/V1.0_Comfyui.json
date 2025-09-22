@@ -1,8 +1,8 @@
 {
   "id": "00000000-0000-0000-0000-000000000000",
   "revision": 0,
-  "last_node_id": 145,
-  "last_link_id": 206,
+  "last_node_id": 147,
+  "last_link_id": 207,
   "nodes": [
     {
       "id": 44,
@@ -42,49 +42,6 @@
       "widgets_values": [
         5
       ]
-    },
-    {
-      "id": 125,
-      "type": "aa822b65-c23c-4ecf-a78c-ac28d6480fb1",
-      "pos": [
-        2077.5361328125,
-        647.1840209960938
-      ],
-      "size": [
-        259.91357421875,
-        46
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 180
-        }
-      ],
-      "outputs": [
-        {
-          "name": "MODEL",
-          "type": "MODEL",
-          "links": [
-            181
-          ]
-        },
-        {
-          "name": "CLIP",
-          "type": "CLIP",
-          "links": [
-            182
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.51"
-      },
-      "widgets_values": []
     },
     {
       "id": 7,
@@ -195,75 +152,6 @@
       ]
     },
     {
-      "id": 43,
-      "type": "KSamplerWithNAG",
-      "pos": [
-        2858.783447265625,
-        233.14614868164062
-      ],
-      "size": [
-        286.7650451660156,
-        590
-      ],
-      "flags": {},
-      "order": 10,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 39
-        },
-        {
-          "name": "positive",
-          "type": "CONDITIONING",
-          "link": 40
-        },
-        {
-          "name": "negative",
-          "type": "CONDITIONING",
-          "link": 41
-        },
-        {
-          "name": "nag_negative",
-          "type": "CONDITIONING",
-          "link": 42
-        },
-        {
-          "name": "latent_image",
-          "type": "LATENT",
-          "link": 206
-        }
-      ],
-      "outputs": [
-        {
-          "name": "LATENT",
-          "type": "LATENT",
-          "links": [
-            27
-          ]
-        }
-      ],
-      "properties": {
-        "aux_id": "ChenDarYen/ComfyUI-NAG",
-        "ver": "25bd940444732e21726944d03893a2f6055f5392",
-        "Node name for S&R": "KSamplerWithNAG"
-      },
-      "widgets_values": [
-        855559017210757,
-        "randomize",
-        10,
-        1,
-        1,
-        2.5,
-        0.25,
-        0,
-        "res_2s",
-        "bong_tangent",
-        1
-      ]
-    },
-    {
       "id": 130,
       "type": "SaveImagePlus",
       "pos": [
@@ -344,42 +232,6 @@
       "widgets_values": []
     },
     {
-      "id": 145,
-      "type": "EmptyLatentImage",
-      "pos": [
-        2403.19140625,
-        66.88404083251953
-      ],
-      "size": [
-        270,
-        106
-      ],
-      "flags": {},
-      "order": 2,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "LATENT",
-          "type": "LATENT",
-          "links": [
-            206
-          ]
-        }
-      ],
-      "title": "ImageLatent",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.59",
-        "Node name for S&R": "EmptyLatentImage"
-      },
-      "widgets_values": [
-        1536,
-        1536,
-        1
-      ]
-    },
-    {
       "id": 42,
       "type": "CLIPTextEncode",
       "pos": [
@@ -420,44 +272,6 @@
       ]
     },
     {
-      "id": 124,
-      "type": "6cafed03-6161-445a-94db-659dede18609",
-      "pos": [
-        3182.465576171875,
-        541.828857421875
-      ],
-      "size": [
-        192.74842834472656,
-        28.60375213623047
-      ],
-      "flags": {},
-      "order": 14,
-      "mode": 4,
-      "inputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "link": 178
-        }
-      ],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            199
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.51"
-      },
-      "widgets_values": [],
-      "color": "#323",
-      "bgcolor": "#535"
-    },
-    {
       "id": 134,
       "type": "PreviewImage",
       "pos": [
@@ -487,70 +301,24 @@
       "widgets_values": []
     },
     {
-      "id": 3,
-      "type": "CLIPTextEncode",
+      "id": 125,
+      "type": "aa822b65-c23c-4ecf-a78c-ac28d6480fb1",
       "pos": [
-        2403.079345703125,
-        234.5582275390625
+        2077.5361328125,
+        647.1840209960938
       ],
       "size": [
-        400,
-        200
+        259.91357421875,
+        46
       ],
       "flags": {},
-      "order": 7,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "clip",
-          "type": "CLIP",
-          "link": 23
-        }
-      ],
-      "outputs": [
-        {
-          "name": "CONDITIONING",
-          "type": "CONDITIONING",
-          "links": [
-            40,
-            175
-          ]
-        }
-      ],
-      "title": "PositivePrompt",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.51",
-        "Node name for S&R": "CLIPTextEncode"
-      },
-      "widgets_values": [
-        "A dark, cinematic studio portrait of a female, late 20s with blue-green eyes, tightly framed from the upper chest, looking directly at the camera and showing a calm, positive and slightly introspective expression. The lighting is very low-key and directional, illuminating only the subject’s left side, while the right side of the face falls into deep shadow. The background is a seamless dark navy backdrop, perfectly flat, evenly lit without shadows enhancing the dark mood. Wearing a white silk blouse with subtle ruffles under a red tailored blazer, feminine fit for female form, peaked lapels for sharp structure. The overall mood is subdued, minimalistic, and intimate, with strong contrast, defined shadows, and a highly professional editorial style."
-      ]
-    },
-    {
-      "id": 38,
-      "type": "LoraLoader",
-      "pos": [
-        2078.125732421875,
-        471.658447265625
-      ],
-      "size": [
-        270,
-        126
-      ],
-      "flags": {},
-      "order": 5,
+      "order": 4,
       "mode": 0,
       "inputs": [
         {
           "name": "model",
           "type": "MODEL",
-          "link": 181
-        },
-        {
-          "name": "clip",
-          "type": "CLIP",
-          "link": 182
+          "link": 180
         }
       ],
       "outputs": [
@@ -558,28 +326,22 @@
           "name": "MODEL",
           "type": "MODEL",
           "links": [
-            30
+            181
           ]
         },
         {
           "name": "CLIP",
           "type": "CLIP",
           "links": [
-            31
+            182
           ]
         }
       ],
-      "title": "StyleLora",
       "properties": {
         "cnr_id": "comfy-core",
-        "ver": "0.3.51",
-        "Node name for S&R": "LoraLoader"
+        "ver": "0.3.51"
       },
-      "widgets_values": [
-        "training_studiopro_loras_wan_lora_20250725_005619.safetensors",
-        0.5,
-        0.5
-      ]
+      "widgets_values": []
     },
     {
       "id": 14,
@@ -633,10 +395,212 @@
         "Node name for S&R": "LoraLoader"
       },
       "widgets_values": [
-        "e595aa3a-343a-4425-9fc0-332d236d6ee2_training_5958dd32-f5a8-40dd-b73f-37ee0c516372_loras_lora_20250822_195758_038eda7d.safetensors",
+        "fc9f0a5d-73cf-45f3-a58e-6131bed67d21_training_2a98e2f4-d628-431b-bff7-ec4fbcce7e0e_loras_lora_20250921_144723_782dc8e4.safetensors",
         1,
         1
       ]
+    },
+    {
+      "id": 43,
+      "type": "KSamplerWithNAG",
+      "pos": [
+        2858.783447265625,
+        233.14614868164062
+      ],
+      "size": [
+        286.7650451660156,
+        590
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 39
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 40
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 41
+        },
+        {
+          "name": "nag_negative",
+          "type": "CONDITIONING",
+          "link": 42
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 206
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            27
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "ChenDarYen/ComfyUI-NAG",
+        "ver": "25bd940444732e21726944d03893a2f6055f5392",
+        "Node name for S&R": "KSamplerWithNAG"
+      },
+      "widgets_values": [
+        22080772664761,
+        "randomize",
+        10,
+        1,
+        1,
+        2.5,
+        0.25,
+        0,
+        "res_2s",
+        "bong_tangent",
+        0.97
+      ]
+    },
+    {
+      "id": 38,
+      "type": "LoraLoader",
+      "pos": [
+        2078.125732421875,
+        471.658447265625
+      ],
+      "size": [
+        270,
+        126
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 181
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 182
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            30
+          ]
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            31
+          ]
+        }
+      ],
+      "title": "StyleLora",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.51",
+        "Node name for S&R": "LoraLoader"
+      },
+      "widgets_values": [
+        "training_blindlight_loras_lora_20250915_094231_b0a940a5.safetensors",
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "id": 3,
+      "type": "CLIPTextEncode",
+      "pos": [
+        2403.079345703125,
+        234.5582275390625
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 23
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            40,
+            175
+          ]
+        }
+      ],
+      "title": "PositivePrompt",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.51",
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "A warm, natural hyper close-up portrait of a woman, late 20s, green eyes, light blond hair, framed from the chin to the top of the forehead, cropping the hairline, a serene and glowing expression. The lighting is soft, warm afternoon sunlight streaming through Venetian blinds, casting strong and striking shadow patterns across the face and highlighting a dewy complexion. The background consists of muted teal walls, evenly diffused, enhancing the warmth and subtle contrast of the scene. Wearing a white silk blouse with subtle ruffles under a red tailored blazer, feminine fit for female form, peaked lapels for sharp structure.. The overall mood is hyperrealistic and refined, with intricate textures, delicate light and shadow interplay, and a palette of warm neutrals and soft pastels."
+      ]
+    },
+    {
+      "id": 124,
+      "type": "6cafed03-6161-445a-94db-659dede18609",
+      "pos": [
+        3182.465576171875,
+        541.828857421875
+      ],
+      "size": [
+        192.74842834472656,
+        28.60375213623047
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 178
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            199
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.51"
+      },
+      "widgets_values": [],
+      "color": "#323",
+      "bgcolor": "#535"
     },
     {
       "id": 123,
@@ -651,7 +615,7 @@
       ],
       "flags": {},
       "order": 12,
-      "mode": 0,
+      "mode": 4,
       "inputs": [
         {
           "name": "image",
@@ -695,6 +659,42 @@
       "widgets_values": [],
       "color": "#223",
       "bgcolor": "#335"
+    },
+    {
+      "id": 145,
+      "type": "EmptyLatentImage",
+      "pos": [
+        2403.19140625,
+        66.88404083251953
+      ],
+      "size": [
+        270,
+        106
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            206
+          ]
+        }
+      ],
+      "title": "ImageLatent",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.59",
+        "Node name for S&R": "EmptyLatentImage"
+      },
+      "widgets_values": [
+        1024,
+        1024,
+        1
+      ]
     }
   ],
   "links": [
@@ -1024,7 +1024,7 @@
               "allow_interaction": true
             },
             "order": 0,
-            "mode": 0,
+            "mode": 4,
             "inputs": [],
             "outputs": [],
             "title": "Denoise between 0.75-0.95",
@@ -1055,11 +1055,11 @@
               "collapsed": false
             },
             "order": 1,
-            "mode": 0,
+            "mode": 4,
             "inputs": [],
             "outputs": [
               {
-                "localized_name": "UPSCALE_MODEL",
+                "localized_name": "MODÈLE_DE_MISE_À_L'ÉCHELLE",
                 "name": "UPSCALE_MODEL",
                 "type": "UPSCALE_MODEL",
                 "slot_index": 0,
@@ -1095,10 +1095,10 @@
               "collapsed": false
             },
             "order": 3,
-            "mode": 0,
+            "mode": 4,
             "inputs": [
               {
-                "localized_name": "upscale_model",
+                "localized_name": "modèle_d'agrandissement",
                 "name": "upscale_model",
                 "type": "UPSCALE_MODEL",
                 "link": 50
@@ -1146,10 +1146,10 @@
               "collapsed": false
             },
             "order": 8,
-            "mode": 0,
+            "mode": 4,
             "inputs": [
               {
-                "localized_name": "upscale_model",
+                "localized_name": "modèle_d'agrandissement",
                 "name": "upscale_model",
                 "type": "UPSCALE_MODEL",
                 "link": 116
@@ -1197,7 +1197,7 @@
               "collapsed": false
             },
             "order": 2,
-            "mode": 0,
+            "mode": 4,
             "inputs": [
               {
                 "localized_name": "image",
@@ -1245,7 +1245,7 @@
               "collapsed": false
             },
             "order": 7,
-            "mode": 0,
+            "mode": 4,
             "inputs": [
               {
                 "localized_name": "image",
@@ -1293,7 +1293,7 @@
               "collapsed": false
             },
             "order": 4,
-            "mode": 0,
+            "mode": 4,
             "inputs": [
               {
                 "localized_name": "pixels",
@@ -1341,10 +1341,10 @@
               "collapsed": false
             },
             "order": 6,
-            "mode": 0,
+            "mode": 4,
             "inputs": [
               {
-                "localized_name": "samples",
+                "localized_name": "échantillons",
                 "name": "samples",
                 "type": "LATENT",
                 "link": 56
@@ -1387,7 +1387,7 @@
             ],
             "flags": {},
             "order": 5,
-            "mode": 0,
+            "mode": 4,
             "inputs": [
               {
                 "localized_name": "model",
@@ -1431,13 +1431,13 @@
               "Node name for S&R": "KSampler"
             },
             "widgets_values": [
-              434535128834570,
+              348108014595814,
               "randomize",
               8,
               1,
               "dpmpp_2m",
               "karras",
-              0.7
+              0.85
             ]
           }
         ],
@@ -1641,7 +1641,7 @@
             ],
             "flags": {},
             "order": 1,
-            "mode": 4,
+            "mode": 0,
             "inputs": [
               {
                 "localized_name": "image",
@@ -1689,7 +1689,7 @@
             ],
             "flags": {},
             "order": 2,
-            "mode": 4,
+            "mode": 0,
             "inputs": [
               {
                 "localized_name": "image",
@@ -1734,7 +1734,7 @@
             ],
             "flags": {},
             "order": 3,
-            "mode": 4,
+            "mode": 0,
             "inputs": [
               {
                 "localized_name": "image",
@@ -1781,7 +1781,7 @@
             ],
             "flags": {},
             "order": 0,
-            "mode": 4,
+            "mode": 0,
             "inputs": [
               {
                 "localized_name": "image",
@@ -1973,63 +1973,6 @@
             ]
           },
           {
-            "id": 30,
-            "type": "LoraLoader",
-            "pos": [
-              2036.2933349609375,
-              1021.67236328125
-            ],
-            "size": [
-              270,
-              126
-            ],
-            "flags": {},
-            "order": 2,
-            "mode": 0,
-            "inputs": [
-              {
-                "localized_name": "model",
-                "name": "model",
-                "type": "MODEL",
-                "link": 34
-              },
-              {
-                "localized_name": "clip",
-                "name": "clip",
-                "type": "CLIP",
-                "link": 35
-              }
-            ],
-            "outputs": [
-              {
-                "localized_name": "MODEL",
-                "name": "MODEL",
-                "type": "MODEL",
-                "links": [
-                  32
-                ]
-              },
-              {
-                "localized_name": "CLIP",
-                "name": "CLIP",
-                "type": "CLIP",
-                "links": [
-                  33
-                ]
-              }
-            ],
-            "properties": {
-              "cnr_id": "comfy-core",
-              "ver": "0.3.51",
-              "Node name for S&R": "LoraLoader"
-            },
-            "widgets_values": [
-              "Wan2.1_T2V_14B_FusionX_LoRA.safetensors",
-              0.4,
-              0.4
-            ]
-          },
-          {
             "id": 29,
             "type": "LoraLoader",
             "pos": [
@@ -2059,7 +2002,7 @@
             ],
             "outputs": [
               {
-                "localized_name": "MODEL",
+                "localized_name": "MODÈLE",
                 "name": "MODEL",
                 "type": "MODEL",
                 "links": [
@@ -2082,6 +2025,63 @@
             },
             "widgets_values": [
               "Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors",
+              0.4,
+              0.4
+            ]
+          },
+          {
+            "id": 30,
+            "type": "LoraLoader",
+            "pos": [
+              2032.51953125,
+              1014.40869140625
+            ],
+            "size": [
+              270,
+              126
+            ],
+            "flags": {},
+            "order": 2,
+            "mode": 0,
+            "inputs": [
+              {
+                "localized_name": "model",
+                "name": "model",
+                "type": "MODEL",
+                "link": 34
+              },
+              {
+                "localized_name": "clip",
+                "name": "clip",
+                "type": "CLIP",
+                "link": 35
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "MODÈLE",
+                "name": "MODEL",
+                "type": "MODEL",
+                "links": [
+                  32
+                ]
+              },
+              {
+                "localized_name": "CLIP",
+                "name": "CLIP",
+                "type": "CLIP",
+                "links": [
+                  33
+                ]
+              }
+            ],
+            "properties": {
+              "cnr_id": "comfy-core",
+              "ver": "0.3.51",
+              "Node name for S&R": "LoraLoader"
+            },
+            "widgets_values": [
+              "Wan2.1_T2V_14B_FusionX_LoRA.safetensors",
               0.4,
               0.4
             ]
@@ -2116,7 +2116,7 @@
             ],
             "outputs": [
               {
-                "localized_name": "MODEL",
+                "localized_name": "MODÈLE",
                 "name": "MODEL",
                 "type": "MODEL",
                 "links": [
@@ -2132,6 +2132,7 @@
                 ]
               }
             ],
+            "title": "FaceNatLora",
             "properties": {
               "cnr_id": "comfy-core",
               "ver": "0.3.51",
@@ -2139,8 +2140,8 @@
             },
             "widgets_values": [
               "FusionX_FaceNaturalizer.safetensors",
-              0.6,
-              0.6
+              0.2,
+              0.2
             ]
           }
         ],
@@ -2218,10 +2219,10 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 1,
+      "scale": 0.4722171969560353,
       "offset": [
-        -2359.8011322021484,
-        45.27947998046875
+        -652.9328517346279,
+        458.1392387914631
       ]
     },
     "frontendVersion": "1.26.11"

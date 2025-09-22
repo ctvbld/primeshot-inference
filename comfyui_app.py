@@ -270,6 +270,7 @@ def _launch_inference_runtime(port: int) -> None:
 
     # ComfyUI is now ready for direct API calls
     # Wait for ComfyUI to be ready
+    print("🔥  Using FlashAttention-3" if _has_flash_attention() else "🔄 Using Triton SageAttention")
     print("🔄 Waiting for ComfyUI to be ready...")
     try:
         import time
@@ -309,8 +310,7 @@ def preload_core_models(port: int) -> None:
 
     # Load a baked default workflow (prefer 1K variant)
     wf_path_candidates = [
-        Path("/root/workflows/V1.0_1K.json"),
-        Path("/root/workflows/V1.0_Comfyui.json")
+        Path("/root/workflows/V1.0_1K.json")
     ]
 
     workflow = None
@@ -329,10 +329,18 @@ def preload_core_models(port: int) -> None:
     # Patch: tiny resolution, single image, minimal steps
     tiny_w, tiny_h = 256, 256
     preload_overrides = {
-        # Try both common titles; patcher will ignore missing
+        # Try both common sampler titles; patcher will ignore missing
         "KSampler": {"steps": 1, "cfg": 1.0, "denoise": 0.5},
         "KSamplerWithNAG": {"steps": 1, "cfg": 1.0, "denoise": 0.5}
     }
+
+    # Ensure LoRA loaders are bypassed for warmup to avoid validation issues
+    bypass_specs = [
+        {"ui_name": "StyleLora", "passthrough_input_key": "model", "output_index": 0, "remove": False},
+        {"ui_name": "StyleLora", "passthrough_input_key": "clip",  "output_index": 1, "remove": True},
+        {"ui_name": "CharacterLora", "passthrough_input_key": "model", "output_index": 0, "remove": False},
+        {"ui_name": "CharacterLora", "passthrough_input_key": "clip",  "output_index": 1, "remove": True},
+    ]
 
     try:
         preloaded = patch_workflow(
@@ -349,7 +357,7 @@ def preload_core_models(port: int) -> None:
             lora_filename=None,
             character_lora=None,
             style_lora=None,
-            bypass_nodes=None,
+            bypass_nodes=bypass_specs,
             enable_previews=False,
             job_id=None,
             user_id=None,
@@ -366,17 +374,37 @@ def preload_core_models(port: int) -> None:
         print(f"⚠️ Failed to submit preload prompt: {e}")
 
 
-def poll_server_health(port: int) -> None:
-    import socket, urllib.request, urllib.error
+def poll_server_health(port: int, total_timeout: float = 90.0, per_try_timeout: float = 5.0) -> None:
+    import socket, urllib.request, urllib.error, time as _t
     
+    deadline = _t.time() + total_timeout
+    attempt = 0
+    backoff = 2.0
+    last_err = None
+    while _t.time() < deadline:
+        attempt += 1
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/system_stats")
+            urllib.request.urlopen(req, timeout=per_try_timeout)
+            print("✅ ComfyUI server is healthy")
+            return
+        except (socket.timeout, urllib.error.URLError) as e:
+            last_err = e
+            remaining = max(0.0, deadline - _t.time())
+            print(f"❌ Server health check attempt {attempt} failed ({str(e)}), {remaining:.1f}s left; retrying...")
+            _t.sleep(backoff)
+            backoff = min(backoff * 1.5, 8.0)
+            continue
+        except Exception as e:
+            last_err = e
+            break
+    # Give a final message and stop inputs to scale down gracefully
+    print(f"❌ Server health check failed after {attempt} attempts: {last_err}")
     try:
-        req = urllib.request.Request(f"http://127.0.0.1:{port}/system_stats")
-        urllib.request.urlopen(req, timeout=5)
-        print("✅ ComfyUI server is healthy")
-    except (socket.timeout, urllib.error.URLError) as e:
-        print(f"❌ Server health check failed: {str(e)}")
         modal.experimental.stop_fetching_inputs()
-        raise Exception("ComfyUI server is not healthy, stopping container")
+    except Exception:
+        pass
+    raise Exception("ComfyUI server is not healthy after retries, stopping container")
     
 
 def find_generated_images(
@@ -838,13 +866,10 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
     created_lora_filenames: list[str] = []
     
     # Choose Supabase creds based on env flag in input_data (same pattern as training)
-    env_tag = (input_data.get("env") or "dev").lower()
+    # Prefer explicit input, then ENV var, finally default to prod
+    env_tag = (input_data.get("env") or os.getenv("ENV") or "prod").lower()
     if env_tag not in {"dev", "staging", "prod"}:
         env_tag = "prod"
-
-    print(f"🔍 DEBUG: Environment resolution:")
-    print(f"🔍 DEBUG: input env = {input_data.get('env')}")
-    print(f"🔍 DEBUG: resolved env_tag = {env_tag}")
     
     # Get original values before override
     original_url = os.environ.get("SUPABASE_URL", "")
@@ -853,19 +878,11 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
     # Get environment-specific values
     env_url = os.getenv(f"SUPABASE_URL_{env_tag.upper()}")
     env_key = os.getenv(f"SUPABASE_SERVICE_ROLE_KEY_{env_tag.upper()}")
-    
-    print(f"🔍 DEBUG: Original SUPABASE_URL = {original_url}")
-    print(f"🔍 DEBUG: Environment-specific SUPABASE_URL_{env_tag.upper()} = {env_url}")
-    print(f"🔍 DEBUG: Original SUPABASE_SERVICE_ROLE_KEY = {'***' + original_key[-4:] if original_key else 'None'}")
-    print(f"🔍 DEBUG: Environment-specific SUPABASE_SERVICE_ROLE_KEY_{env_tag.upper()} = {'***' + env_key[-4:] if env_key else 'None'}")
 
     # Override generic names so the rest of the code picks them up
     os.environ["SUPABASE_URL"] = env_url or original_url
     os.environ["SUPABASE_SERVICE_ROLE_KEY"] = env_key or original_key
-    
-    print(f"🔍 DEBUG: Final SUPABASE_URL = {os.environ.get('SUPABASE_URL')}")
-    print(f"🔍 DEBUG: Final SUPABASE_SERVICE_ROLE_KEY = {'***' + os.environ.get('SUPABASE_SERVICE_ROLE_KEY', '')[-4:] if os.environ.get('SUPABASE_SERVICE_ROLE_KEY') else 'None'}")
-    
+
     from job_tracker import get_job_tracker
     tracker = get_job_tracker()
     job_id = input_data.get("job_id") or str(uuid.uuid4())
@@ -901,18 +918,9 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             supabase_url = os.environ.get('SUPABASE_URL')
             service_role_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
             
-            print(f"🔍 DEBUG: Environment variables for inference-start:")
-            print(f"🔍 DEBUG: env_tag = {env_tag}")
-            print(f"🔍 DEBUG: SUPABASE_URL = {supabase_url}")
-            print(f"🔍 DEBUG: SUPABASE_SERVICE_ROLE_KEY = {'***' + service_role_key[-4:] if service_role_key else 'None'}")
-            
             if supabase_url and service_role_key:
                 start_url = f"{supabase_url}/functions/v1/inference-start"
                 start_body = {"job_id": job_id}
-                
-                print(f"🔍 DEBUG: Calling inference-start at: {start_url}")
-                print(f"🔍 DEBUG: Request body: {start_body}")
-                
                 start_req = urllib.request.Request(
                     url=start_url,
                     data=json.dumps(start_body).encode('utf-8'),
@@ -933,7 +941,6 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as e:
             print(f"⚠️ Failed to update job status to running: {e}")
             import traceback
-            print(f"🔍 DEBUG: Full error traceback: {traceback.format_exc()}")
         
         poll_server_health(PORT)
 
@@ -1045,6 +1052,8 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
 
         # 5) Sequential image generation loop
         all_generated_images = []
+        # Track enriched ComfyUI error details for better diagnostics on failure
+        last_comfy_error_details = None
         
         # Track S3 processing failures and threads
         s3_failure_tracker = {
@@ -1223,9 +1232,9 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
 
             print(f"🔧 Submitting image {image_index + 1} to ComfyUI...")
             
-            # Single readiness check
+            # Tolerant readiness check (reuse health checker with smaller cap)
             try:
-                urllib.request.urlopen(f"{comfyui_base}/system_stats", timeout=3.0)
+                poll_server_health(PORT)
                 print(f"✅ ComfyUI ready for image {image_index + 1}")
             except Exception as e:
                 print(f"⚠️ ComfyUI readiness check failed for image {image_index + 1}: {e}")
@@ -1269,13 +1278,6 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                     outputs, source = get_image_outputs(job_id, prompt_id, comfyui_base, timeout=600)
                     print(f"✅ Image {image_index + 1} completed! (source: {source})")
                     
-                    print(f"🔍 DEBUG: ComfyUI outputs for image {image_index + 1}:")
-                    print(f"🔍 DEBUG: Available output nodes: {list(outputs.keys())}")
-                    for node_id, node_output in outputs.items():
-                        print(f"🔍 DEBUG: Node {node_id} output keys: {list(node_output.keys())}")
-                        if "images" in node_output:
-                            print(f"🔍 DEBUG: Node {node_id} images: {node_output['images']}")
-                    
                     # Find generated images in outputs
                     generated_images = []
                     for node_id, node_output in outputs.items():
@@ -1290,7 +1292,6 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                     
                     print(f"🖼️ Found {len(generated_images)} images for image {image_index + 1}")
                     if generated_images:
-                        print(f"🔍 DEBUG: First image details: {generated_images[0]}")
                         all_generated_images.extend(generated_images)
                         
                         # Categorize and process images asynchronously
@@ -1324,6 +1325,47 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 except Exception as e:
                     # Handle timeout or other errors from get_image_outputs
                     error_msg = str(e)
+                    # Try to enrich with ComfyUI error context (from WS relay and history)
+                    try:
+                        from lib.ws_preview_relay import get_prompt_error_data, get_last_executing_node
+                        relay_error = get_prompt_error_data(job_id, prompt_id)
+                        last_exec = get_last_executing_node(job_id)
+                    except Exception as _ge:
+                        relay_error = {}
+                        last_exec = {}
+                        print(f"⚠️ Failed to get ComfyUI error details from relay: {_ge}")
+                    # Optionally fetch history entry for additional error context
+                    history_entry = {}
+                    try:
+                        history_url = f"{comfyui_base}/history/{prompt_id}"
+                        response = urllib.request.urlopen(history_url, timeout=10)
+                        history_data = json.loads(response.read().decode('utf-8'))
+                        if prompt_id in history_data:
+                            history_entry = history_data.get(prompt_id, {})
+                            # Drop heavy outputs to keep logs lean
+                            if isinstance(history_entry, dict) and "outputs" in history_entry:
+                                history_entry = {k: v for k, v in history_entry.items() if k != "outputs"}
+                    except Exception as _he:
+                        print(f"⚠️ Failed to fetch ComfyUI history for prompt {prompt_id}: {_he}")
+                    # Prepare redacted traceback head for logs
+                    def _head(txt: str, lines: int = 20) -> str:
+                        if not isinstance(txt, str):
+                            return ""
+                        return "\n".join(txt.splitlines()[:lines])
+                    comfy_error_details = {
+                        "prompt_id": prompt_id,
+                        "relay_error": relay_error,
+                        "last_executing_node": last_exec,
+                        "history_entry": history_entry,
+                    }
+                    last_comfy_error_details = comfy_error_details
+                    if relay_error:
+                        print(f"❌ ComfyUI error for image {image_index + 1}: {relay_error.get('exception_type') or 'Unknown'} - {relay_error.get('message')}\n{_head(relay_error.get('traceback'))}")
+                    if last_exec:
+                        print(f"🔎 Last executing node before failure: {last_exec}")
+                    if history_entry:
+                        print(f"📜 History entry sans outputs: {list(history_entry.keys())}")
+                    # Re-raise with original classification
                     if "timed out" in error_msg.lower():
                         raise RuntimeError(f"Image {image_index + 1} generation timed out")
                     else:
@@ -1365,10 +1407,6 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             supabase_url = os.environ.get('SUPABASE_URL')
             service_role_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
             
-            print(f"🔍 DEBUG: inference-complete call:")
-            print(f"🔍 DEBUG: SUPABASE_URL = {supabase_url}")
-            print(f"🔍 DEBUG: SUPABASE_SERVICE_ROLE_KEY = {'***' + service_role_key[-4:] if service_role_key else 'None'}")
-            
             if supabase_url and service_role_key:
                 import requests
                 ef_url = f"{supabase_url}/functions/v1/inference-complete"
@@ -1382,9 +1420,6 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                     'job_id': job_id,
                     'success': True
                 }
-                
-                print(f"🔍 DEBUG: Calling inference-complete at: {ef_url}")
-                print(f"🔍 DEBUG: Request body: {ef_body}")
                 
                 ef_resp = requests.post(ef_url, json=ef_body, headers=ef_headers, timeout=20)
                 if ef_resp.ok:
@@ -1462,6 +1497,22 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             error_details["category"] = "general_error"
             error_details["suggestion"] = "Check logs for detailed error information"
         
+        # Attach enriched ComfyUI error context if available from the generation loop
+        try:
+            if 'last_comfy_error_details' in locals() and last_comfy_error_details:
+                error_details["comfy_error_details"] = last_comfy_error_details
+            else:
+                # Fallback: try to grab latest from WS relay
+                from lib.ws_preview_relay import get_prompt_error_data, get_last_executing_node
+                relay_err = get_prompt_error_data(job_id)
+                last_exec = get_last_executing_node(job_id)
+                if relay_err or last_exec:
+                    error_details["comfy_error_details"] = {
+                        "relay_error": relay_err,
+                        "last_executing_node": last_exec,
+                    }
+        except Exception as _attach_e:
+            print(f"⚠️ Failed to attach ComfyUI error context: {_attach_e}")
         print(f"❌ Generation failed: {error_details}")
         
         try:
@@ -1480,7 +1531,8 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 "message": f"Generation failed: {error_details.get('suggestion', str(e))}",
                 "timestamp": int(time.time() * 1000),
                 "error": str(e),
-                "error_type": error_details.get("error_type", "Unknown")
+                "error_type": error_details.get("error_type", "Unknown"),
+                "comfy_error_details": error_details.get("comfy_error_details")
             }
             send_custom_message_to_job(job_id, failure_message)
             print(f"📤 Sent failure notification via WebSocket for job {job_id}")
@@ -1503,7 +1555,8 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 ef_body = {
                     'job_id': job_id,
                     'success': False,
-                    'error_message': str(e)
+                    'error_message': str(e),
+                    'comfy_error_details': error_details.get("comfy_error_details")
                 }
                 ef_resp = requests.post(ef_url, json=ef_body, headers=ef_headers, timeout=20)
                 if ef_resp.ok:

@@ -253,30 +253,50 @@ class WorkflowPatcher:
     
     def _apply_settings_override(self, settings_override: Dict[str, Any]) -> None:
         """Apply title-based node input overrides."""
+        if settings_override:
+            print(f"🔧 SETTINGS_OVERRIDE DEBUG: Processing settings_override: {settings_override}")
+            logger.info(f"🔧 Processing settings_override: {settings_override}")
+
         title_aliases = get_title_aliases()
-        
+
         for raw_title, overrides in settings_override.items():
             if not isinstance(overrides, dict):
+                print(f"⚠️ SETTINGS_OVERRIDE DEBUG: Skipping non-dict override for '{raw_title}': {overrides}")
+                logger.warning(f"⚠️ Skipping non-dict override for '{raw_title}': {overrides}")
                 continue
-            
+
             key = str(raw_title or "").strip()
             if not key:
+                print(f"⚠️ SETTINGS_OVERRIDE DEBUG: Skipping empty title key: {raw_title}")
+                logger.warning(f"⚠️ Skipping empty title key: {raw_title}")
                 continue
-            
+
             norm_key = normalize_title_key(key)
             target_title = title_aliases.get(norm_key, key)
-            
+
+            print(f"🔧 SETTINGS_OVERRIDE DEBUG: Processing overrides for '{raw_title}' (normalized: '{norm_key}' → target: '{target_title}')")
+            logger.info(f"🔧 Processing overrides for '{raw_title}' (normalized: '{norm_key}' → target: '{target_title}')")
+
             # Apply to all matching nodes
             applied = False
             for node_id, node in self.manager.find_nodes_by_title(target_title):
                 inputs = node.setdefault("inputs", {})
+                print(f"🔧 SETTINGS_OVERRIDE DEBUG: Applying {len(overrides)} overrides to {target_title} (node {node_id}):")
+                logger.info(f"🔧 Applying {len(overrides)} overrides to {target_title} (node {node_id}):")
+
                 for k, v in overrides.items():
+                    old_value = inputs.get(k)
                     inputs[k] = v
+                    print(f"  📝 SETTINGS_OVERRIDE DEBUG: {k}: {old_value} → {v}")
+                    logger.info(f"  📝 {k}: {old_value} → {v}")
+
+                print(f"✅ SETTINGS_OVERRIDE DEBUG: Applied overrides to {target_title} (node {node_id}): {list(overrides.keys())}")
                 logger.info(f"✅ Applied overrides to {target_title} (node {node_id}): {list(overrides.keys())}")
                 applied = True
-            
+
             if not applied:
-                logger.info(f"ℹ️ No node with title '{target_title}' found to override")
+                print(f"⚠️ SETTINGS_OVERRIDE DEBUG: No node with title '{target_title}' found to override")
+                logger.warning(f"⚠️ No node with title '{target_title}' found to override")
     
     def _auto_bypass_nodes(self, style_lora: str | None, settings_override: Dict[str, Any] | None) -> None:
         """Auto-bypass certain nodes based on configuration."""

@@ -29,6 +29,11 @@ class WebSocketRelay:
         self.last_activity_time = time.time()  # Track last activity for timeout detection
         self.last_progress_state = {}  # Track last seen progress state for fallback completion
         self.last_prompt_id: Optional[str] = None  # Track most recent prompt_id for graceful close
+        # Error tracking
+        self.last_error: Optional[dict] = None
+        self.errors_by_prompt: dict[str, dict] = {}
+        # Executing node tracking
+        self.last_executing_node: Optional[dict] = None
         
     def update_image_index(self, new_index: int):
         """Update the current image index being processed."""
@@ -343,10 +348,7 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                         
                         try:
                             # Handle both text (JSON) and binary (preview image) messages
-                            if isinstance(msg, bytes):
-                                # Binary message - likely a preview image from ComfyUI
-                                print(f"📸 Received binary preview data for job {job_id} (size: {len(msg)} bytes)")
-                                
+                            if isinstance(msg, bytes):                                
                                 # ComfyUI sends binary data with 8-byte header format
                                 try:
                                     image_data = msg
@@ -357,8 +359,6 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                         # The header indicates message type + format, followed by actual image data
                                         header = msg[:8]
                                         potential_image_data = msg[8:]
-                                        
-                                        print(f"🔍 Header: {header.hex()}, remaining data: {len(potential_image_data)} bytes")
                                         
                                         # Check if the data after header looks like a valid image
                                         if len(potential_image_data) > 0:
@@ -498,6 +498,15 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                 pid = (data.get("data", {}) or {}).get("prompt_id")
                                 if isinstance(pid, str) and pid:
                                     manager.last_prompt_id = pid
+                                # Track the currently executing node for diagnostics
+                                exec_data = data.get("data", {}) or {}
+                                node_id = exec_data.get("node") or exec_data.get("node_id")
+                                if node_id is not None:
+                                    manager.last_executing_node = {
+                                        "node_id": node_id,
+                                        "prompt_id": manager.last_prompt_id,
+                                        "timestamp": int(time.time() * 1000)
+                                    }
                                 
                             elif data.get("type") == "executed":
                                 if manager.generation_started:
@@ -527,7 +536,6 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                             elif data.get("type") == "execution_complete" or data.get("type") == "execution_success":
                                 event_type = data.get("type")
                                 print(f"🏁 {event_type.upper()} received for job {job_id}!")
-                                print(f"🏁 Full {event_type} data: {data}")
                                 
                                 # Don't send "completed" status for individual images - keep generating
                                 evt["status"] = "generating"
@@ -549,9 +557,6 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                 manager.completion_event.set()
                                 print(f"🔔 Signaled completion event for job {job_id}")
                                 
-                                # Mark job as completed and break out of loop
-                                print(f"🏁 ComfyUI execution_complete received for job {job_id}")
-                                
                                 # Send the completion message
                                 if broadcast_ws:
                                     try:
@@ -563,6 +568,45 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                 
                                 # Don't break - keep relay alive for next images
                                 print(f"🏁 Image completed but keeping relay alive for job {job_id}")
+                            
+                            # Capture ComfyUI execution errors when present
+                            elif str(data.get("type", "")).lower() in [
+                                "execution_error", "node_execution_error", "execution_failed", "error"
+                            ]:
+                                err_type = str(data.get("type") or "execution_error")
+                                err_data = data.get("data", {}) or {}
+                                # Try to extract commonly provided fields
+                                prompt_id = err_data.get("prompt_id") or manager.last_prompt_id
+                                node_id = err_data.get("node") or err_data.get("node_id")
+                                exception_type = err_data.get("exception_type") or data.get("exception_type")
+                                message = (
+                                    err_data.get("message")
+                                    or data.get("message")
+                                    or str(err_data)[:500]
+                                )
+                                traceback_text = err_data.get("traceback") or data.get("traceback")
+                                # Store error details
+                                error_details = {
+                                    "event_type": err_type,
+                                    "prompt_id": prompt_id,
+                                    "node_id": node_id,
+                                    "exception_type": exception_type,
+                                    "message": message,
+                                    "traceback": traceback_text,
+                                }
+                                manager.last_error = error_details
+                                if isinstance(prompt_id, str):
+                                    manager.errors_by_prompt[prompt_id] = error_details
+                                # Optional verbose traceback head
+                                debug_env = os.environ.get("COMFYUI_DEBUG_ERRORS", "false").lower() in ("1", "true", "yes")
+                                if debug_env and traceback_text:
+                                    try:
+                                        head = "\n".join(str(traceback_text).splitlines()[:20])
+                                        print(f"❌ Captured ComfyUI error [{exception_type or 'Unknown'}]: {message}\n{head}")
+                                    except Exception:
+                                        print(f"❌ Captured ComfyUI error [{exception_type or 'Unknown'}]: {message}")
+                                else:
+                                    print(f"❌ Captured ComfyUI execution error for job {job_id}: {exception_type or 'Unknown'} - {message}")
                             
                             elif data.get("type") == "progress_state":
                                 # Store progress state for fallback completion detection
@@ -579,7 +623,6 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                             else:
                                 # Log ALL unhandled event types to debug missing execution_complete
                                 event_type = data.get("type", "unknown")
-                                print(f"🔍 Unhandled ComfyUI event type '{event_type}' for job {job_id}")
                                 
                                 # Log the full data for unknown events to see if execution_complete is being missed
                                 if event_type not in ["progress", "status", "progress_state"]:
@@ -1068,6 +1111,24 @@ def get_prompt_completion_data(job_id: str, prompt_id: str) -> dict:
         print(f"⚠️ No completion data found for prompt {prompt_id}")
     
     return completion_data
+
+def get_prompt_error_data(job_id: str, prompt_id: Optional[str] = None) -> dict:
+    """Get the most recent ComfyUI error details. If prompt_id provided, returns for that prompt."""
+    if not hasattr(start_relay, '_active_relays') or job_id not in start_relay._active_relays:
+        print(f"⚠️ No active relay found for job {job_id} to get error data")
+        return {}
+    manager = start_relay._active_relays[job_id]
+    if prompt_id and prompt_id in manager.errors_by_prompt:
+        return manager.errors_by_prompt.get(prompt_id, {}) or {}
+    return manager.last_error or {}
+
+def get_last_executing_node(job_id: str) -> dict:
+    """Get the last executing node info for diagnostics."""
+    if not hasattr(start_relay, '_active_relays') or job_id not in start_relay._active_relays:
+        print(f"⚠️ No active relay found for job {job_id} to get last executing node")
+        return {}
+    manager = start_relay._active_relays[job_id]
+    return manager.last_executing_node or {}
 
 def wait_for_prompt_completion(job_id: str, prompt_id: str, timeout: float = 600) -> bool:
     """Wait for a specific prompt to complete using event-based signaling instead of polling."""

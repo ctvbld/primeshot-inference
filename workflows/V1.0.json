@@ -1,7 +1,7 @@
 {
   "3": {
     "inputs": {
-      "text": "",
+      "text": "A warm, natural hyper close-up portrait of a woman, late 20s, green eyes, light blond hair, framed from the chin to the top of the forehead, cropping the hairline, a serene and glowing expression. The lighting is soft, warm afternoon sunlight streaming through Venetian blinds, casting strong and striking shadow patterns across the face and highlighting a dewy complexion. The background consists of muted teal walls, evenly diffused, enhancing the warmth and subtle contrast of the scene. Wearing a white silk blouse with subtle ruffles under a red tailored blazer, feminine fit for female form, peaked lapels for sharp structure.. The overall mood is hyperrealistic and refined, with intricate textures, delicate light and shadow interplay, and a palette of warm neutrals and soft pastels.",
       "clip": [
         "14",
         1
@@ -32,7 +32,7 @@
     },
     "class_type": "UNETLoader",
     "_meta": {
-      "title": "Load Diffusion Model"
+      "title": "Charger Modèle Diffusion"
     }
   },
   "8": {
@@ -41,7 +41,7 @@
     },
     "class_type": "VAELoader",
     "_meta": {
-      "title": "Load VAE"
+      "title": "Charger VAE"
     }
   },
   "9": {
@@ -62,7 +62,7 @@
   },
   "14": {
     "inputs": {
-      "lora_name": "e595aa3a-343a-4425-9fc0-332d236d6ee2_training_5958dd32-f5a8-40dd-b73f-37ee0c516372_loras_lora_20250822_195758_038eda7d.safetensors",
+      "lora_name": "fc9f0a5d-73cf-45f3-a58e-6131bed67d21_training_2a98e2f4-d628-431b-bff7-ec4fbcce7e0e_loras_lora_20250921_144723_782dc8e4.safetensors",
       "strength_model": 1,
       "strength_clip": 1,
       "model": [
@@ -81,7 +81,7 @@
   },
   "38": {
     "inputs": {
-      "lora_name": "training_studiopro_loras_wan_lora_20250725_005619.safetensors",
+      "lora_name": "training_blindlight_loras_lora_20250915_094231_b0a940a5.safetensors",
       "strength_model": 0.5,
       "strength_clip": 0.5,
       "model": [
@@ -113,7 +113,7 @@
   },
   "43": {
     "inputs": {
-      "seed": 665065525733265,
+      "seed": 22080772664761,
       "steps": 10,
       "cfg": 1,
       "nag_scale": 1,
@@ -122,7 +122,7 @@
       "nag_sigma_end": 0,
       "sampler_name": "res_2s",
       "scheduler": "bong_tangent",
-      "denoise": 1,
+      "denoise": 0.97,
       "model": [
         "14",
         0
@@ -159,7 +159,7 @@
     },
     "class_type": "ModelSamplingSD3",
     "_meta": {
-      "title": "ModelSamplingSD3"
+      "title": "ModèleÉchantillonnageSD3"
     }
   },
   "130": {
@@ -168,7 +168,7 @@
       "file_type": "PNG",
       "remove_metadata": true,
       "images": [
-        "123:91",
+        "124:110",
         0
       ]
     },
@@ -179,8 +179,8 @@
   },
   "145": {
     "inputs": {
-      "width": 1280,
-      "height": 1280,
+      "width": 1536,
+      "height": 1536,
       "batch_size": 1
     },
     "class_type": "EmptyLatentImage",
@@ -196,26 +196,7 @@
     },
     "class_type": "CLIPLoader",
     "_meta": {
-      "title": "Load CLIP"
-    }
-  },
-  "125:30": {
-    "inputs": {
-      "lora_name": "Wan2.1_T2V_14B_FusionX_LoRA.safetensors",
-      "strength_model": 0.4,
-      "strength_clip": 0.4,
-      "model": [
-        "44",
-        0
-      ],
-      "clip": [
-        "125:22",
-        0
-      ]
-    },
-    "class_type": "LoraLoader",
-    "_meta": {
-      "title": "Load LoRA"
+      "title": "Charger CLIP"
     }
   },
   "125:29": {
@@ -234,14 +215,33 @@
     },
     "class_type": "LoraLoader",
     "_meta": {
-      "title": "Load LoRA"
+      "title": "Charger LoRA"
+    }
+  },
+  "125:30": {
+    "inputs": {
+      "lora_name": "Wan2.1_T2V_14B_FusionX_LoRA.safetensors",
+      "strength_model": 0.4,
+      "strength_clip": 0.4,
+      "model": [
+        "44",
+        0
+      ],
+      "clip": [
+        "125:22",
+        0
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "Charger LoRA"
     }
   },
   "125:45": {
     "inputs": {
       "lora_name": "FusionX_FaceNaturalizer.safetensors",
-      "strength_model": 0.6,
-      "strength_clip": 0.6,
+      "strength_model": 0.2,
+      "strength_clip": 0.2,
       "model": [
         "125:29",
         0
@@ -253,7 +253,7 @@
     },
     "class_type": "LoraLoader",
     "_meta": {
-      "title": "Load LoRA"
+      "title": "FaceNatLora"
     }
   },
   "123:50": {
@@ -262,7 +262,7 @@
     },
     "class_type": "UpscaleModelLoader",
     "_meta": {
-      "title": "Load Upscale Model"
+      "title": "Charger le modèle de mise à l'échelle"
     }
   },
   "123:47": {
@@ -311,6 +311,20 @@
       "title": "UpscaleBy"
     }
   },
+  "123:91": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "scale_by": 0.5,
+      "image": [
+        "123:92",
+        0
+      ]
+    },
+    "class_type": "ImageScaleBy",
+    "_meta": {
+      "title": "ResizeBy"
+    }
+  },
   "123:48": {
     "inputs": {
       "pixels": [
@@ -345,12 +359,12 @@
   },
   "123:49": {
     "inputs": {
-      "seed": 793347954837275,
+      "seed": 348108014595814,
       "steps": 8,
       "cfg": 1,
       "sampler_name": "dpmpp_2m",
       "scheduler": "karras",
-      "denoise": 0.7,
+      "denoise": 0.85,
       "model": [
         "14",
         0
@@ -373,18 +387,75 @@
       "title": "KSampler"
     }
   },
-  "123:91": {
+  "124:116": {
     "inputs": {
-      "upscale_method": "lanczos",
-      "scale_by": 0.3,
+      "output_channel": "Red",
+      "red_source": 30,
+      "green_source": 59,
+      "blue_source": 11,
+      "constant": 0,
+      "monochrome": true,
+      "preserve_luminosity": false,
       "image": [
-        "123:92",
+        "124:118",
         0
       ]
     },
-    "class_type": "ImageScaleBy",
+    "class_type": "ChannelMixerNode",
     "_meta": {
-      "title": "ResizeBy"
+      "title": "ChannelMixer"
+    }
+  },
+  "124:118": {
+    "inputs": {
+      "vibrance": 0,
+      "saturation": 0,
+      "protect_skin_tones": true,
+      "strength": 1,
+      "image": [
+        "124:121",
+        0
+      ]
+    },
+    "class_type": "VibranceNode",
+    "_meta": {
+      "title": "VibSat"
+    }
+  },
+  "124:121": {
+    "inputs": {
+      "leak_intensity": 0,
+      "leak_color": "warm",
+      "leak_count": 2,
+      "leak_position": "random",
+      "blur_amount": 0,
+      "custom_hue": 0,
+      "image": [
+        "123:91",
+        0
+      ]
+    },
+    "class_type": "LightLeaksNode",
+    "_meta": {
+      "title": "LightLeaks"
+    }
+  },
+  "124:110": {
+    "inputs": {
+      "grain_intensity": 0.1,
+      "grain_size": 1,
+      "film_type": "35mm",
+      "color_grain": true,
+      "vintage_tone": 0,
+      "vignette": 0,
+      "image": [
+        "124:116",
+        0
+      ]
+    },
+    "class_type": "FilmGrainNode",
+    "_meta": {
+      "title": "FilmGrain"
     }
   }
 }

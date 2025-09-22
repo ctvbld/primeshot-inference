@@ -3,22 +3,8 @@
 
 comfyui:
     base_path: /root/comfy/ComfyUI/
-    # You can use is_default to mark that these folders should be listed first, and used as the default dirs for eg downloads
-    #is_default: true
-    checkpoints: /models/checkpoints/
     clip: /models/clip/
-    clip_vision: /models/clip_vision/
-    configs: /models/configs/
-    controlnet: /models/controlnet/
     unet: /models/unet/
-    diffusion_models: /models/diffusion_models/
-    embeddings: /models/embeddings/
     loras: /models/loras/
     upscale_models: /models/upscale_models/
     vae: /models/vae/
-    style_models: /models/style_models/
-
-# Additional VAE paths for Flux models
-flux:
-    base_path: /models/flux1-dev/
-    vae: /models/flux1-dev/
