@@ -3,215 +3,60 @@
 # cmd: ["modal", "serve", "comfyui_app.py"]
 # ---
 
-# # ComfyUI Photography Platform with Flux + LoRA
-
-# Advanced photography platform using ComfyUI v0.3.46+ with Flux.1-dev + custom LoRAs + 4K upscaling.
-# Built following Modal's best practices with S3 integration and persistent model caching.
 
 import json
 import subprocess
 import uuid
 import os
 import time
-from pathlib import Path
-from typing import Dict, Any, List
-
+import sys
+import urllib.request
+import urllib.error
 import modal
 import modal.experimental
+from pathlib import Path
+from typing import Dict, Any, List, Tuple
+
+sys.path.insert(0, "/root/lib")
+
+app = modal.App(name="primeshot-inference")
 
 # Create Modal volumes for persistent storage
-vol = modal.Volume.from_name("models-vol", create_if_missing=True)
+models_volume = modal.Volume.from_name("models-vol", create_if_missing=True)
 aws_secret = modal.Secret.from_name("aws-secret")
+inference_secret = modal.Secret.from_name("inference-secret")
+supabase_secret = modal.Secret.from_name("supabase-secret")
 
-# ComfyUI API secret for API nodes authentication
-comfyui_secret = modal.Secret.from_name("comfyui-api-secret")
+
+
+# Central GPU names (hardcoded routing)
+DEFAULT_GPU_TYPE = "H200"
+
+# Define paths
+MODELS_PATH = "/models"
+PORT: int = 8000
+# GPU type for dev_server UI (H100 queues can be long). Override via DEV_SERVER_GPU.
+DEV_SERVER_GPU_TYPE = os.getenv("DEV_SERVER_GPU", "H100")
 
 # S3 mount for user LoRAs and outputs
-s3_mount = modal.CloudBucketMount(
+# Mount user-images/ prefix at /data for all relevant functions
+user_images_mount = {"/data": modal.CloudBucketMount(
     bucket_name="primeshot-uploads-01",
     key_prefix="user-images/",
     secret=aws_secret,
     read_only=False
-)
+)}
 
-# ## Model Setup Functions
+# Mount workflows/ prefix at /workflows for local file access to workflow JSON
+workflows_mount = {"/workflows": modal.CloudBucketMount(
+    bucket_name="primeshot-uploads-01",
+    key_prefix="workflows/",
+    secret=aws_secret,
+    read_only=True
+)}
 
-def setup_comfyui_locale():
-    """Configure ComfyUI to use English locale by setting internal configuration."""
-    import os
-    import json
-    
-    print("🌐 Configuring ComfyUI locale to English...")
-    
-    # ComfyUI user configuration directory (correct structure)
-    user_dir = "/root/comfy/ComfyUI/user"
-    default_dir = os.path.join(user_dir, "default") 
-    os.makedirs(default_dir, exist_ok=True)
-    
-    # Multiple settings files to try different approaches
-    settings_files = [
-        os.path.join(default_dir, "comfy.settings.json"),
-        os.path.join(default_dir, "settings.json"),
-        os.path.join(user_dir, "default.json"),
-    ]
-    
-    try:
-        # Try to create English locale settings in multiple formats
-        for settings_file in settings_files:
-            settings = {}
-            
-            # Load existing settings if they exist
-            if os.path.exists(settings_file):
-                try:
-                    with open(settings_file, 'r') as f:
-                        settings = json.load(f)
-                    print(f"📂 Loaded existing settings from {settings_file}")
-                except json.JSONDecodeError:
-                    print(f"⚠️ Invalid JSON in {settings_file}, creating new settings")
-                    settings = {}
-            
-            # Configure English locale settings
-            if "Comfy" not in settings:
-                settings["Comfy"] = {}
-            
-            # Set locale to English in multiple formats to ensure compatibility
-            settings["Comfy"]["Locale"] = "en"
-            settings["Comfy"]["Language"] = "en"
-            settings["Comfy"]["locale"] = "en"  # Lowercase variant
-            settings["Comfy"]["language"] = "en"  # Lowercase variant
-            
-            # Configure menu settings
-            if "Menu" not in settings["Comfy"]:
-                settings["Comfy"]["Menu"] = {}
-            settings["Comfy"]["Menu"]["UseNewMenu"] = "enabled"
-            
-            # Write settings
-            with open(settings_file, 'w') as f:
-                json.dump(settings, f, indent=2, ensure_ascii=False)
-            
-            print(f"✅ Created/updated settings: {settings_file}")
-        
-        # Also create a browser locale override script
-        browser_override_script = os.path.join(default_dir, "locale_override.js")
-        js_content = """
-// Force English locale in browser
-window.comfyUILocale = 'en';
-if (typeof Storage !== "undefined") {
-    localStorage.setItem('Comfy.Locale', 'en');
-    localStorage.setItem('Comfy.Language', 'en');
-}
-console.log('ComfyUI forced to English locale');
-"""
-        with open(browser_override_script, 'w') as f:
-            f.write(js_content)
-        
-        print(f"✅ Created browser locale override: {browser_override_script}")
-        
-        # Create environment file for additional locale configuration
-        env_file = os.path.join(default_dir, "locale.env")
-        env_content = """COMFYUI_LOCALE=en
-COMFYUI_LANGUAGE=en
-BROWSER_LOCALE=en
-LC_ALL=en_US.UTF-8
-LANG=en_US.UTF-8
-"""
-        with open(env_file, 'w') as f:
-            f.write(env_content)
-        
-        print(f"✅ Created locale environment file: {env_file}")
-        print(f"🌐 ComfyUI locale configured to English with multiple fallbacks")
-        
-        return True
-        
-    except Exception as e:
-        print(f"❌ Failed to configure ComfyUI locale: {str(e)}")
-        import traceback
-        print(f"📍 Error details: {traceback.format_exc()}")
-        return False
-
-def setup_model_paths_config():
-    """Configure ComfyUI model paths by copying extra_model_paths.yaml config file."""
-    import os
-    import shutil
-    
-    print("🔧 Configuring ComfyUI model paths...")
-    
-    # Copy extra_model_paths.yaml from project root to ComfyUI directory
-    # ComfyUI automatically loads extra_model_paths.yaml from its root directory
-    source_config = "/extra_model_paths.yaml"
-    target_config = "/root/comfy/ComfyUI/extra_model_paths.yaml"
-    
-    try:
-        if os.path.exists(source_config):
-            shutil.copy2(source_config, target_config)
-            print(f"✅ Copied model paths config: {source_config} -> {target_config}")
-        else:
-            print(f"⚠️ Model paths config not found: {source_config}")
-            return False
-    except Exception as e:
-        print(f"❌ Failed to copy model paths config: {str(e)}")
-        return False
-    
-    # Verify models are accessible
-    if os.path.exists("/models"):
-        print("🔍 Available models in /models:")
-        import subprocess
-        
-        # Check for Flux models in both checkpoints and unet directories
-        print("\n📁 Checking /models/checkpoints:")
-        subprocess.run("find /models/checkpoints -name '*flux*' -type f 2>/dev/null || echo 'No flux models found in checkpoints'", shell=True)
-        
-        print("\n📁 Checking /models/unet:")
-        subprocess.run("find /models/unet -name '*flux*' -type f 2>/dev/null || echo 'No flux models found in unet'", shell=True)
-        
-        print("\n📁 Checking /models/clip:")
-        subprocess.run("find /models/clip -name '*.safetensors' -type f 2>/dev/null | head -5", shell=True)
-        
-        print("\n📁 Checking /models/vae:")
-        subprocess.run("find /models/vae -name '*.safetensors' -type f 2>/dev/null | head -3", shell=True)
-        
-        print("\n📁 Checking /models/clip_vision:")
-        subprocess.run("find /models/clip_vision -name '*.safetensors' -type f 2>/dev/null | head -5", shell=True)
-        
-        # Check essential models
-        essential_models = [
-            ("/models/checkpoints/flux1-dev-fp8.safetensors", "Flux FP8 (checkpoints)"),
-            ("/models/unet/flux1-dev.safetensors", "Flux UNET"),
-            ("/models/unet/flux1-dev-fp8.safetensors", "Flux FP8 UNET"),
-            ("/models/clip/clip_l.safetensors", "CLIP-L"),
-            ("/models/clip/t5xxl_fp8_e4m3fn.safetensors", "T5XXL FP8"),
-            ("/models/vae/sdxl-vae-fp16-fix/diffusion_pytorch_model.safetensors", "VAE"),
-            ("/models/vae/ae.safetensors", "Flux VAE"),
-        ]
-        
-        print("\n🔍 Model availability check:")
-        for model_path, name in essential_models:
-            if os.path.exists(model_path):
-                if os.path.isfile(model_path):
-                    size_gb = os.path.getsize(model_path) / (1024*1024*1024)
-                    print(f"✅ {name}: {size_gb:.1f}GB")
-                else:
-                    print(f"✅ {name}: Available")
-            else:
-                print(f"⚠️ {name}: Not found")
-        
-        print("✅ ComfyUI configured to use /models volume via extra_model_paths.yaml")
-        
-    else:
-        print("⚠️ /models directory not found")
-    
-    return True
-
-# ## Image Building
-
-# Define the base image with CUDA development tools for SageAttention compilation
-cuda_version = "12.8.0"  # Use available CUDA version
-flavor = "devel"  # Includes full CUDA toolkit for compilation
-operating_sys = "ubuntu22.04"
-tag = f"{cuda_version}-{flavor}-{operating_sys}"
-
-image = (
-    modal.Image.from_registry(f"nvidia/cuda:{tag}", add_python="3.12")
+cuda_image = (
+    modal.Image.from_registry("nvidia/cuda:12.8.0-devel-ubuntu22.04", add_python="3.12")
     .entrypoint([])  # Remove verbose logging by base image on entry
     .apt_install([
         "git", "build-essential", "cmake", "ninja-build",
@@ -222,12 +67,7 @@ image = (
         "libasound2", "libgtk-3-0", "libsm6", "libxext6",
         "mesa-utils", "libgl1-mesa-dev", "libgles2-mesa-dev"
     ])
-    .run_commands("locale-gen en_US.UTF-8")  # Generate English locale
     .env({
-        # Locale settings
-        "LANG": "en_US.UTF-8", 
-        "LC_ALL": "en_US.UTF-8", 
-        "LANGUAGE": "en_US:en",
         # Prevent interactive prompts in pip and other tools
         "DEBIAN_FRONTEND": "noninteractive",
         "PIP_NO_INPUT": "1",
@@ -266,6 +106,10 @@ image = (
     )
     # Install Triton for SageAttention optimization
     .pip_install("triton>=3.2.0")
+    # Install FlashAttention-3 for Hopper (H100/H200) acceleration if wheels are available
+    .run_commands(
+        "pip install 'flash-attn>=2.5.7' --no-build-isolation || echo 'flash-attn install skipped'"
+    )
     # Install SageAttention 2.2.0+ using run_commands (same as working AI Toolkit)
     .run_commands([
         "pip install sageattention>=2.2.0 --no-deps"
@@ -277,6 +121,9 @@ image = (
     .pip_install("opencv-python-headless==4.8.1.78")  # OpenCV without GUI dependencies
     # Install optimized xformers for additional attention acceleration
     .pip_install("xformers>=0.0.28")  # Latest xformers for attention optimizations
+    .pip_install("websockets>=12.0")  # For ComfyUI WS preview/progress relay
+    # Common dependencies required by various custom nodes
+    .pip_install("diffusers>=0.30.0", "transformers>=4.42.0", "accelerate>=0.30.0", "safetensors>=0.4.3", "psutil>=6.0.0")
     .run_commands(  # install ComfyUI with NVIDIA support
         "comfy --skip-prompt install --fast-deps --nvidia"
     )
@@ -289,35 +136,40 @@ image = (
         "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/rgthree/rgthree-comfy.git",
         "cd /root/comfy/ComfyUI/custom_nodes/rgthree-comfy && pip install -r requirements.txt --no-input"
     )
-    # Install ControlAltAI nodes for resolution controls (uses pyproject.toml)
-    .run_commands(
-        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/gseth/ControlAltAI-Nodes.git",
-        "cd /root/comfy/ComfyUI/custom_nodes/ControlAltAI-Nodes && pip install . --no-input"
-    )
-    .run_commands(
-        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/kijai/ComfyUI-KJNodes",
-        "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-KJNodes && pip install -r requirements.txt --no-input"
-    )
-    .run_commands(
-       "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/yolain/ComfyUI-Easy-Use",
-       "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-Easy-Use && pip install -r requirements.txt --no-input"
-    )
-    .run_commands(
-        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/vrgamegirl19/comfyui-vrgamedevgirl",
-        "cd /root/comfy/ComfyUI/custom_nodes/comfyui-vrgamedevgirl && pip install -r requirements.txt --no-input"
-    )
-    .run_commands(
-        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/kaibioinfo/ComfyUI_AdvancedRefluxControl"
-    )
+    # START TO UNUSED NODES
+    # .run_commands(
+    #     "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/gseth/ControlAltAI-Nodes.git",
+    #     "cd /root/comfy/ComfyUI/custom_nodes/ControlAltAI-Nodes && pip install . --no-input"
+    # )
+    # .run_commands(
+    #    "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/yolain/ComfyUI-Easy-Use",
+    #    "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-Easy-Use && pip install -r requirements.txt --no-input"
+    # )
+    # .run_commands(
+    #     "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/kijai/ComfyUI-KJNodes",
+    #     "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-KJNodes && pip install -r requirements.txt --no-input"
+    # )
+    # .run_commands(
+    #     "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/vrgamegirl19/comfyui-vrgamedevgirl",
+    #     "cd /root/comfy/ComfyUI/custom_nodes/comfyui-vrgamedevgirl && pip install -r requirements.txt --no-input"
+    # )
+    # END TO UNUSED NODES
     # Install RES4LYF advanced sampling nodes
     .run_commands(
         "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/ClownsharkBatwing/RES4LYF.git",
         "cd /root/comfy/ComfyUI/custom_nodes/RES4LYF && pip install -r requirements.txt --no-input 2>/dev/null || echo 'No requirements.txt found for RES4LYF'"
     )
-    # Install bilbox-comfyui photo prompt and post-processing nodes
+    # Install post-processing nodes
     .run_commands(
-        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/syllebra/bilbox-comfyui.git", 
-        "cd /root/comfy/ComfyUI/custom_nodes/bilbox-comfyui && pip install -r requirements.txt --no-input"
+        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/orion4d/ComfyUI-Image-Effects.git", 
+        "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-Image-Effects && pip install -r requirements.txt --no-input"
+    )
+    # NAG restores effective negative prompting in few-step diffusion models, and complements CFG in multi-step sampling for improved quality and control.
+    .run_commands(
+        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/ChenDarYen/ComfyUI-NAG"
+    )
+    .run_commands(
+        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/Goktug/comfyui-saveimage-plus.git"
     )
     # Post-installation compatibility fixes for attention mask issues
     .run_commands(
@@ -326,32 +178,1933 @@ image = (
         # Verify Python environment is clean
         "python -c 'import torch; print(f\"PyTorch: {torch.__version__}\"); import xformers; print(f\"xformers: {xformers.__version__}\")'"
     )
+
     # Add workflow templates directory and job tracker
-    .add_local_dir("workflows", "/root/workflows")
+    .add_local_dir("workflows", "/root/workflows", copy=True)
+    .add_local_dir("lib", "/root/lib", copy=True)
     .add_local_file("job_tracker.py", "/root/job_tracker.py")
     .add_local_file("extra_model_paths.yaml", "/extra_model_paths.yaml")
 )
 
-# ## Modal App Definition
+# ## Model Setup Functions
+def setup_model_paths_config():
+    """Configure ComfyUI model paths by copying extra_model_paths.yaml config file."""
+    import os
+    import shutil
+    
+    print("🔧 Configuring ComfyUI model paths...")
+    
+    # Copy extra_model_paths.yaml from project root to ComfyUI directory
+    # ComfyUI automatically loads extra_model_paths.yaml from its root directory
+    source_config = "/extra_model_paths.yaml"
+    target_config = "/root/comfy/ComfyUI/extra_model_paths.yaml"
+    
+    try:
+        if os.path.exists(source_config):
+            shutil.copy2(source_config, target_config)
+            print(f"✅ Copied model paths config: {source_config} -> {target_config}")
+        else:
+            print(f"⚠️ Model paths config not found: {source_config}")
+            return False
+    except Exception as e:
+        print(f"❌ Failed to copy model paths config: {str(e)}")
+        return False
+    
+    # Models will be discovered by ComfyUI during initialization
+    print("✅ ComfyUI configured to use /models volume via extra_model_paths.yaml")
+    
+    return True
 
-app = modal.App(name="comfyui", image=image)
+
+# Shared runtime launcher so both Fast and Slow classes stay DRY
+def _launch_inference_runtime(port: int) -> None:
+    print("🔄 Initializing ComfyUI production environment...")
+    
+    # Send global status: container is starting up (cold start)
+    try:
+        from lib.ws_preview_relay import send_global_job_status
+        # Note: We don't have job_id here, so this will be sent for the first job that connects
+        print("📤 Container starting up - will send 'initializing' status for first job")
+    except Exception as e:
+        print(f"⚠️ Failed to import global status function: {e}")
+    
+    if not setup_model_paths_config():
+        raise RuntimeError("Failed to configure model paths")
+    os.makedirs("/root/comfy/ComfyUI/models/loras", exist_ok=True)
+    
+    # LoRA models directory will be created and populated on-demand per job
+    
+    # Helper to detect FlashAttention availability
+    def _has_flash_attention() -> bool:
+        try:
+            import importlib
+            return importlib.util.find_spec("flash_attn") is not None
+        except Exception:
+            return False
+
+    # Set up environment variables for performance optimization
+    env = os.environ.copy()
+    env.update({
+        'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True,backend:cudaMallocAsync',
+        'TORCH_ALLOW_TF32_CUBLAS_OVERRIDE': '1',
+        'NVIDIA_TF32_OVERRIDE': '1',
+        # Prefer FlashAttention-3 on Hopper if available; fallback to Triton SageAttention
+        'SAGE_ATTENTION_BACKEND': 'flash' if _has_flash_attention() else 'triton',
+        # Ensure PyTorch SDPA does not disable flash kernels if present
+        'PYTORCH_SDP_DISABLE_FLASH_ATTENTION': '0',
+        'COMFYUI_MODEL_DEVICE': 'cuda',
+        'COMFYUI_VAE_DEVICE': 'cuda', 
+        'COMFYUI_CLIP_DEVICE': 'cuda',
+        'COMFYUI_LOWVRAM': 'false',
+        'COMFYUI_NOVRAM': 'false'
+    })
+    
+    # Launch ComfyUI with optimized settings and preview support
+    # Use default ComfyUI output directory, job isolation handled via filename_prefix
+    cmd = (
+        f"comfy launch --background -- --port {port} --use-sage-attention --gpu-only "
+        f"--bf16-unet --bf16-vae --output-directory /root/comfy/ComfyUI/output --preview-method auto"
+    )
+    subprocess.run(cmd, shell=True, check=True, env=env)
+    print("✅ ComfyUI server running with SageAttention and performance optimizations")
+
+    # ComfyUI is now ready for direct API calls
+    # Wait for ComfyUI to be ready
+    print("🔥  Using FlashAttention-3" if _has_flash_attention() else "🔄 Using Triton SageAttention")
+    print("🔄 Waiting for ComfyUI to be ready...")
+    try:
+        import time
+        
+        for _ in range(30):  # 30 second timeout
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/system_stats", timeout=3)
+                print("✅ ComfyUI is ready and responding")
+                break
+            except Exception as e:
+                print(f"⏳ ComfyUI not ready yet: {e}")
+                time.sleep(1)
+        else:
+            raise RuntimeError("ComfyUI failed to become ready within 30 seconds")
+    except Exception as e:
+        print(f"❌ Failed to verify ComfyUI readiness: {e}")
+
+    # Preload core models (UNet / VAE / CLIP) to avoid first-request cold latency
+    try:
+        preload_core_models(port)
+    except Exception as e:
+        print(f"⚠️ Preload failed (continuing): {e}")
+
+
+def preload_core_models(port: int) -> None:
+    """Warm model weights by submitting a minimal one-shot prompt.
+
+    Uses the baked workflow as a template and reduces steps/resolution to force
+    fast model initialization without meaningful generation cost.
+    """
+    from lib.comfyui_server import ComfyUIServer
+    from lib.workflow_patcher import patch_workflow
+    import json
+    from pathlib import Path
+
+    server = ComfyUIServer(port)
+
+    # Load a baked default workflow (prefer 1K variant)
+    wf_path_candidates = [
+        Path("/root/workflows/V1.0_1K.json")
+    ]
+
+    workflow = None
+    for p in wf_path_candidates:
+        if p.exists():
+            try:
+                workflow = json.loads(p.read_text())
+                break
+            except Exception:
+                continue
+
+    if not isinstance(workflow, dict):
+        print("ℹ️ No baked workflow found for preload; skipping warmup")
+        return
+
+    # Patch: tiny resolution, single image, minimal steps
+    tiny_w, tiny_h = 256, 256
+    preload_overrides = {
+        # Try both common sampler titles; patcher will ignore missing
+        "KSampler": {"steps": 1, "cfg": 1.0, "denoise": 0.5},
+        "KSamplerWithNAG": {"steps": 1, "cfg": 1.0, "denoise": 0.5}
+    }
+
+    # Ensure LoRA loaders are bypassed for warmup to avoid validation issues
+    bypass_specs = [
+        {"ui_name": "StyleLora", "passthrough_input_key": "model", "output_index": 0, "remove": False},
+        {"ui_name": "StyleLora", "passthrough_input_key": "clip",  "output_index": 1, "remove": True},
+        {"ui_name": "CharacterLora", "passthrough_input_key": "model", "output_index": 0, "remove": False},
+        {"ui_name": "CharacterLora", "passthrough_input_key": "clip",  "output_index": 1, "remove": True},
+    ]
+
+    try:
+        preloaded = patch_workflow(
+            workflow=workflow,
+            prompt="warmup",
+            negative_prompt="",
+            width=tiny_w,
+            height=tiny_h,
+            seed=42,
+            images_count=1,
+            quality="1K",
+            aspect_ratio="1:1",
+            settings_override=preload_overrides,
+            lora_filename=None,
+            character_lora=None,
+            style_lora=None,
+            bypass_nodes=bypass_specs,
+            enable_previews=False,
+            job_id=None,
+            user_id=None,
+        )
+    except Exception as e:
+        print(f"⚠️ Failed to patch workflow for preload: {e}")
+        return
+
+    try:
+        resp = server.submit_prompt(preloaded, client_id="preload")
+        prompt_id = resp.get("prompt_id") if isinstance(resp, dict) else None
+        print(f"🚀 Preload prompt submitted (prompt_id={prompt_id})")
+    except Exception as e:
+        print(f"⚠️ Failed to submit preload prompt: {e}")
+
+
+def poll_server_health(port: int, total_timeout: float = 90.0, per_try_timeout: float = 5.0) -> None:
+    import socket, urllib.request, urllib.error, time as _t
+    
+    deadline = _t.time() + total_timeout
+    attempt = 0
+    backoff = 2.0
+    last_err = None
+    while _t.time() < deadline:
+        attempt += 1
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/system_stats")
+            urllib.request.urlopen(req, timeout=per_try_timeout)
+            print("✅ ComfyUI server is healthy")
+            return
+        except (socket.timeout, urllib.error.URLError) as e:
+            last_err = e
+            remaining = max(0.0, deadline - _t.time())
+            print(f"❌ Server health check attempt {attempt} failed ({str(e)}), {remaining:.1f}s left; retrying...")
+            _t.sleep(backoff)
+            backoff = min(backoff * 1.5, 8.0)
+            continue
+        except Exception as e:
+            last_err = e
+            break
+    # Give a final message and stop inputs to scale down gracefully
+    print(f"❌ Server health check failed after {attempt} attempts: {last_err}")
+    try:
+        modal.experimental.stop_fetching_inputs()
+    except Exception:
+        pass
+    raise Exception("ComfyUI server is not healthy after retries, stopping container")
+    
+
+def find_generated_images(
+    job_id: str,
+    output_dir: str = "/root/comfy/ComfyUI/output",
+    max_attempts: int = 10,
+    delay_seconds: float = 1.0
+) -> list[dict]:
+    """Find generated images in ComfyUI output directory with retries.
+    
+    Returns list of image info dicts with filename, subfolder, type fields.
+    """
+    import glob
+    
+    found_images = []
+    job_output_dir = os.path.join(output_dir, job_id)
+    
+    for attempt in range(max_attempts):
+        # Check job-specific directory first
+        if os.path.exists(job_output_dir):
+            files = [f for f in os.listdir(job_output_dir) 
+                    if f.endswith(('.png', '.webp', '.jpg', '.jpeg'))]
+            if files:
+                print(f"✅ Found {len(files)} files in job directory after {attempt + 1} attempts")
+                for filename in files:
+                    found_images.append({
+                        "filename": filename,
+                        "subfolder": job_id,
+                        "type": "output"
+                    })
+                return found_images
+        
+        # Check parent directory for job-prefixed files
+        if os.path.exists(output_dir):
+            parent_files = [f for f in os.listdir(output_dir) 
+                          if f.startswith(job_id) and f.endswith(('.png', '.webp', '.jpg', '.jpeg'))]
+            if parent_files:
+                print(f"✅ Found {len(parent_files)} files in parent directory")
+                for filename in parent_files:
+                    found_images.append({
+                        "filename": filename,
+                        "subfolder": "",
+                        "type": "output"
+                    })
+                return found_images
+            
+            # Also check for web_/orig_ prefixed files (recent files only)
+            all_files = glob.glob(os.path.join(output_dir, "*"))
+            image_files = [f for f in all_files 
+                         if os.path.splitext(f)[1].lower() in {'.png', '.webp', '.jpg', '.jpeg'}]
+            
+            # Sort by modification time and check recent files
+            if image_files:
+                image_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+                current_time = time.time()
+                for filepath in image_files[:20]:  # Check only 20 most recent
+                    # If file was created in last 30 seconds
+                    if current_time - os.path.getmtime(filepath) < 30:
+                        basename = os.path.basename(filepath)
+                        if basename.startswith(('web_', 'orig_')):
+                            found_images.append({
+                                "filename": basename,
+                                "subfolder": "",
+                                "type": "output"
+                            })
+                if found_images:
+                    print(f"✅ Found {len(found_images)} recent files")
+                    return found_images
+        
+        if attempt < max_attempts - 1:
+            print(f"⏳ Directory scan attempt {attempt + 1}/{max_attempts}, waiting {delay_seconds}s...")
+            time.sleep(delay_seconds)
+            delay_seconds = min(delay_seconds * 1.5, 3.0)  # Exponential backoff
+    
+    return found_images
+
+
+def get_image_outputs(
+    job_id: str,
+    prompt_id: str,
+    comfyui_base: str,
+    timeout: int = 600
+) -> tuple[dict, str]:
+    """Get image outputs using multiple methods with fallback.
+    
+    Returns (outputs_dict, source) where source indicates the method used.
+    """
+    from lib.ws_preview_relay import wait_for_prompt_completion, get_prompt_completion_data
+    
+    start_time = time.time()
+    
+    # Method 1: WebSocket completion data
+    print(f"⏳ Waiting for completion via WebSocket...")
+    completed = wait_for_prompt_completion(job_id, prompt_id, timeout=timeout)
+    
+    if completed:
+        print(f"✅ WebSocket reported completion (took {time.time() - start_time:.1f}s)")
+        completion_data = get_prompt_completion_data(job_id, prompt_id)
+        
+        if completion_data and completion_data.get("outputs"):
+            return completion_data["outputs"], "websocket"
+    
+    # Method 2: ComfyUI History API
+    print(f"⚠️ WebSocket data incomplete, trying history API...")
+    history_start = time.time()
+    history_url = f"{comfyui_base}/history/{prompt_id}"
+    
+    for attempt in range(8):
+        try:
+            response = urllib.request.urlopen(history_url, timeout=10)
+            history_data = json.loads(response.read().decode('utf-8'))
+            
+            if prompt_id in history_data:
+                outputs = history_data[prompt_id].get("outputs", {})
+                if outputs:
+                    print(f"✅ Got outputs from history (took {time.time() - history_start:.1f}s)")
+                    return outputs, "history"
+        except Exception as e:
+            if attempt == 0:
+                print(f"⚠️ History API error: {e}")
+        
+        backoff = min(0.25 * (2 ** attempt), 2.0)
+        time.sleep(backoff)
+    
+    # Method 3: Directory scanning
+    print(f"⚠️ History unavailable, scanning output directory...")
+    dir_start = time.time()
+    found_images = find_generated_images(job_id)
+    
+    if found_images:
+        print(f"✅ Found images via directory scan (took {time.time() - dir_start:.1f}s)")
+        # Build outputs structure
+        outputs = {
+            "directory_scan": {"images": found_images}
+        }
+        return outputs, "directory"
+    
+    # All methods failed
+    total_time = time.time() - start_time
+    raise RuntimeError(f"Failed to get outputs after {total_time:.1f}s - all methods exhausted")
+
+
+def categorize_and_process_images(
+    generated_images: list[dict],
+    image_index: int,
+    job_id: str,
+    user_id: str,
+    bucket: str,
+    progress_ws_url: str,
+    failure_tracker: dict
+) -> list:
+    """Categorize images by type and start async S3 upload threads.
+    
+    Returns list of threading.Thread objects to wait on.
+    """
+    import threading
+    
+    threads = []
+    
+    # Categorize images
+    web_img = None
+    orig_img = None
+    
+    for img in generated_images:
+        fname = str(img.get("filename", "")).lower()
+        if fname.startswith("web_") or fname.endswith(".webp"):
+            web_img = img
+        elif fname.startswith("orig_") or fname.endswith(".png"):
+            orig_img = img
+    
+    # Use first image as web if none found
+    if web_img is None and generated_images:
+        web_img = generated_images[0]
+    
+    # Process web image
+    if web_img:
+        print(f"🔍 Starting async S3 processing (web) for image {image_index + 1}")
+        thread = threading.Thread(
+            target=process_and_save_single_image,
+            args=(web_img, image_index, job_id, user_id, bucket, progress_ws_url, failure_tracker),
+            daemon=True
+        )
+        thread.start()
+        threads.append(thread)
+    
+    # Process orig image if different from web
+    if orig_img and orig_img != web_img:
+        print(f"🔍 Starting async S3 processing (orig) for image {image_index + 1}")
+        thread = threading.Thread(
+            target=process_and_save_single_image,
+            args=(orig_img, image_index, job_id, user_id, bucket, progress_ws_url, failure_tracker),
+            daemon=True
+        )
+        thread.start()
+        threads.append(thread)
+    
+    return threads
+
+
+def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket, progress_ws_url, failure_tracker=None):
+    """
+    Process and save a single generated image to S3, then send WebSocket notification.
+    This runs asynchronously to not block the next generation.
+    Returns True if successful, False if failed.
+    """
+    print(f"🔄 Processing image {image_index + 1} for job {job_id}")
+    try:
+        import os
+        import shutil
+        import json
+        import time
+        from PIL import Image
+        
+        filename = img_info.get("filename")
+        subfolder = img_info.get("subfolder", "")
+        
+        if not filename:
+            if failure_tracker:
+                failure_tracker['failed_images'].add(image_index)
+                failure_tracker['errors'].append(f"Image {image_index + 1}: No filename provided")
+            return False
+            
+        # Skip temporary preview files
+        if "temp_" in filename.lower() or filename.startswith("ComfyUI_temp"):
+            return True  # Not a failure, just skipping
+            
+        # Construct full path to image file from ComfyUI's output directory
+        # ComfyUI saves to: /root/comfy/ComfyUI/output/{job_id}/IMG-{counter}_{timestamp}.png
+        if subfolder:
+            image_path = f"/root/comfy/ComfyUI/output/{subfolder}/{filename}"
+        else:
+            image_path = f"/root/comfy/ComfyUI/output/{filename}"
+            
+        if not os.path.exists(image_path):
+            if failure_tracker:
+                failure_tracker['failed_images'].add(image_index)
+                failure_tracker['errors'].append(f"Image {image_index + 1}: File not found at {image_path}")
+            return False
+            
+
+        
+        # Extract base name and extension from the image file
+        base_name = os.path.splitext(os.path.basename(filename))[0]  # e.g., "IMG-_00001_"
+        original_ext = os.path.splitext(image_path)[1]  # .png, .jpg, etc.
+        
+        # Use deterministic per-take numbering regardless of ComfyUI's internal counters
+        # This guarantees IMG-01..IMG-0N even if multiple Save nodes increment counters
+        base_name = f"IMG-{image_index + 1:02d}"
+        # Detect which Save node produced this file
+        # Convention from workflow: orig_*.png (original PNG), web_*.webp (1024px webp)
+        variant = "unknown"
+        try:
+            lower_name = filename.lower()
+            if lower_name.startswith("orig_"):
+                variant = "orig"
+            elif lower_name.startswith("web_"):
+                variant = "web"
+        except Exception:
+            pass
+        
+        print(f"🖼️ Processing ComfyUI image: {image_path}")
+        print(f"🔍 Cleaned base name: {base_name}")
+        
+        # Prepare target folders
+        orig_dir = f"/data/{user_id}/inference/{job_id}/orig"
+        web_dir = f"/data/{user_id}/inference/{job_id}/web"
+        os.makedirs(orig_dir, exist_ok=True)
+        os.makedirs(web_dir, exist_ok=True)
+
+        final_image_url = None
+
+        if variant == "orig":
+            # Just copy to orig folder, no processing
+            orig_filename = f"{base_name}{original_ext}"
+            orig_path = f"{orig_dir}/{orig_filename}"
+            shutil.copy(image_path, orig_path)
+            print(f"  ✅ Copied original PNG to S3 (orig variant): {orig_path}")
+        elif variant == "web":
+            # Use ComfyUI 1024px webp as the main web image; also make 720/480 from it
+            # Copy 1024 as IMG-XX.webp
+            web_1024_filename = f"{base_name}.webp"
+            web_1024_path = f"{web_dir}/{web_1024_filename}"
+            shutil.copy(image_path, web_1024_path)
+            print(f"  ✅ Saved 1024px WebP from workflow: {web_1024_path}")
+            # Create downscaled variants from the 1024 image
+            try:
+                with Image.open(web_1024_path) as img1024:
+                    if img1024.mode in ('RGBA', 'LA', 'P'):
+                        img1024 = img1024.convert('RGB')
+                    for size in (720, 480):
+                        web_copy = img1024.copy()
+                        web_copy.thumbnail((size, size), Image.Resampling.LANCZOS)
+                        web_path = f"{web_dir}/{base_name}-w{size}.webp"
+                        save_ok = False
+                        for attempt in range(3):
+                            try:
+                                web_copy.save(web_path, format='WEBP', quality=max(65, 85 - attempt * 10), method=6, optimize=True)
+                                if os.path.exists(web_path) and os.path.getsize(web_path) > 0:
+                                    save_ok = True
+                                    break
+                            except Exception:
+                                pass
+                            import time as _t
+                            _t.sleep(0.1 * (attempt + 1))
+                        if not save_ok and failure_tracker:
+                            failure_tracker['errors'].append(f"Image {image_index + 1}: Failed to save {size}px WebP to S3")
+            except Exception as _web_e:
+                print(f"⚠️ Failed to generate downscaled WEBP variants: {_web_e}")
+
+            final_image_url = f"user-images/{user_id}/inference/{job_id}/web/{web_1024_filename}"
+        else:
+            # Legacy path: generate from the given file (kept for compatibility)
+            # Copy original
+            orig_filename = f"{base_name}{original_ext}"
+            orig_path = f"{orig_dir}/{orig_filename}"
+            shutil.copy(image_path, orig_path)
+            print(f"  ✅ Copied original to S3: {orig_path}")
+            # Generate 1024/720/480 as before
+            with Image.open(image_path) as img:
+                if img.mode in ('RGBA', 'LA', 'P'):
+                    img = img.convert('RGB')
+                for size in (1024, 720, 480):
+                    web_img = img.copy()
+                    web_img.thumbnail((size, size), Image.Resampling.LANCZOS)
+                    web_filename = f"{base_name}.webp" if size == 1024 else f"{base_name}-w{size}.webp"
+                    web_path = f"{web_dir}/{web_filename}"
+                    save_ok = False
+                    for attempt in range(3):
+                        try:
+                            web_img.save(web_path, format='WEBP', quality=max(65, 85 - attempt * 10), method=6, optimize=True)
+                            if os.path.exists(web_path) and os.path.getsize(web_path) > 0:
+                                save_ok = True
+                                break
+                        except Exception:
+                            pass
+                        import time as _t
+                        _t.sleep(0.1 * (attempt + 1))
+                    if not save_ok and failure_tracker:
+                        failure_tracker['errors'].append(f"Image {image_index + 1}: Failed to save {size}px WebP to S3")
+                final_image_url = f"user-images/{user_id}/inference/{job_id}/web/{base_name}.webp"
+        
+
+        
+        # Send WebSocket notification only for the 1024px web image
+        if final_image_url:
+            try:
+                # Import the WebSocket relay functions
+                from lib.ws_preview_relay import send_custom_message_to_job
+                
+                final_image_data = {
+                    "job_id": job_id,
+                    "job_type": "inference",
+                    "image_index": image_index,
+                    "final_image_url": final_image_url,
+                    "status": "image_completed",
+                    "timestamp": int(time.time() * 1000),
+                    "message": f"Image {image_index + 1} completed and saved"
+                }
+                
+                print(f"🔍 Sending final image notification via existing broadcast connection:")
+                print(f"🔍 Data: {final_image_data}")
+                
+                # Send through the existing WebSocket broadcast connection
+                send_custom_message_to_job(job_id, final_image_data)
+                print(f"📤 Sent final image WebSocket notification for image {image_index + 1}: {final_image_url}")
+            except Exception as ws_e:
+                print(f"⚠️ Failed to send final image WebSocket notification for image {image_index + 1}: {ws_e}")
+                import traceback
+                print(f"📊 WebSocket error: {traceback.format_exc()}")
+        
+        # Save image to database via Edge Function (retry if needed). Only on web variant/legacy where final_image_url is set.
+        try:
+            import requests
+            import os
+            
+            # Get Supabase credentials (use the overridden environment variables)
+            supabase_url = os.environ.get('SUPABASE_URL')
+            service_role_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+            
+            if supabase_url and service_role_key and final_image_url:
+                # Call inference-save-image Edge Function
+                ef_url = f"{supabase_url}/functions/v1/inference-save-image"
+                ef_headers = {
+                    'Authorization': f'Bearer {service_role_key}',
+                    'Content-Type': 'application/json',
+                    'apikey': service_role_key,
+                }
+                
+                ef_body = {
+                    'job_id': job_id,
+                    'image_index': image_index,
+                    'user_id': user_id,
+                    'original_path': f"user-images/{user_id}/inference/{job_id}/orig/{base_name}.png",
+                    'web_path': final_image_url,
+                    'width': 1024,  # TODO: Change this to the actual width of the image when we have the final workflow
+                    'height': 1024,  # TODO: Change this to the actual height of the image when we have the final workflow
+                    'format': 'png',
+                    'bytes': 0  # We could calculate this but it's not critical
+                }
+                
+                ef_ok = False
+                ef_status = None
+                ef_text = None
+                for attempt in range(3):
+                    try:
+                        # Increase timeout to better tolerate dev/ngrok slowness
+                        ef_resp = requests.post(ef_url, json=ef_body, headers=ef_headers, timeout=30)
+                        ef_status = ef_resp.status_code
+                        if ef_resp.ok:
+                            ef_ok = True
+                            break
+                        else:
+                            ef_text = ef_resp.text
+                    except Exception as _ef_e:
+                        ef_text = str(_ef_e)
+                    import time as _t
+                    _t.sleep(0.5 * (attempt + 1))
+                if not ef_ok:
+                    # Non-fatal: we already saved to S3 and notified via WS. Log warning only.
+                    warn_msg = (
+                        f"Image {image_index + 1}: Edge Function save warning (status={ef_status}): {ef_text}"
+                    )
+                    print(f"⚠️ {warn_msg}")
+                    if failure_tracker:
+                        # Do not mark as failed; record warning for diagnostics.
+                        failure_tracker['errors'].append(warn_msg)
+                
+        except Exception as ef_e:
+            if failure_tracker:
+                failure_tracker['failed_images'].add(image_index)
+                failure_tracker['errors'].append(f"Image {image_index + 1}: Edge Function error: {str(ef_e)}")
+        
+        # If we got here and have a final_image_url, consider it successful
+        if final_image_url:
+            return True
+        else:
+            # If this was an orig-only save (no web variant), do not treat as failure
+            try:
+                if variant == "orig":
+                    return True
+            except Exception:
+                pass
+            if failure_tracker:
+                failure_tracker['failed_images'].add(image_index)
+                failure_tracker['errors'].append(f"Image {image_index + 1}: No final image URL generated")
+            return False
+                
+    except Exception as e:
+        if failure_tracker:
+            failure_tracker['failed_images'].add(image_index)
+            failure_tracker['errors'].append(f"Image {image_index + 1}: Processing error: {str(e)}")
+        return False
+
+
+def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
+    import sys; sys.path.append("/root")
+    
+    # Initialize variables that are used in exception handlers
+    created_lora_filenames: list[str] = []
+    
+    # Choose Supabase creds based on env flag in input_data (same pattern as training)
+    # Prefer explicit input, then ENV var, finally default to prod
+    env_tag = (input_data.get("env") or os.getenv("ENV") or "prod").lower()
+    if env_tag not in {"dev", "staging", "prod"}:
+        env_tag = "prod"
+    
+    # Get original values before override
+    original_url = os.environ.get("SUPABASE_URL", "")
+    original_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+    
+    # Get environment-specific values
+    env_url = os.getenv(f"SUPABASE_URL_{env_tag.upper()}")
+    env_key = os.getenv(f"SUPABASE_SERVICE_ROLE_KEY_{env_tag.upper()}")
+
+    # Override generic names so the rest of the code picks them up
+    os.environ["SUPABASE_URL"] = env_url or original_url
+    os.environ["SUPABASE_SERVICE_ROLE_KEY"] = env_key or original_key
+
+    from job_tracker import get_job_tracker
+    tracker = get_job_tracker()
+    job_id = input_data.get("job_id") or str(uuid.uuid4())
+    user_id = input_data.get("user_id", "unknown")
+    
+    try:
+        tracker.create_job(input_data, job_id)
+        tracker.mark_processing(job_id)
+        
+        print(f"🎯 Starting generation job: {job_id}")
+        
+        # Detect if this is a cold start (first job on container)
+        container_start_time = getattr(main, '_container_start_time', None)
+        if container_start_time is None:
+            # This is the first job on this container - mark as cold start
+            main._container_start_time = time.time()
+            is_cold_start = True
+        else:
+            # Container has been running, this is a warm start
+            is_cold_start = False
+        
+        # Send initial "starting" status for all jobs
+        try:
+            from lib.ws_preview_relay import send_global_job_status
+            send_global_job_status(job_id, "starting", "Starting up")
+        except Exception as e:
+            pass  # Non-critical
+        
+        # Update job status to 'running' via inference-start EF
+        try:
+            import json
+            
+            supabase_url = os.environ.get('SUPABASE_URL')
+            service_role_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+            
+            if supabase_url and service_role_key:
+                start_url = f"{supabase_url}/functions/v1/inference-start"
+                start_body = {"job_id": job_id}
+                start_req = urllib.request.Request(
+                    url=start_url,
+                    data=json.dumps(start_body).encode('utf-8'),
+                    headers={
+                        'Authorization': f'Bearer {service_role_key}',
+                        'Content-Type': 'application/json',
+                        'apikey': service_role_key,
+                    },
+                    method='POST'
+                )
+                
+                response = urllib.request.urlopen(start_req, timeout=10)
+                response_text = response.read().decode('utf-8')
+                print(f"✅ inference-start response: {response.status} - {response_text}")
+
+            else:
+                print("⚠️ Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY; skipping status update")
+        except Exception as e:
+            print(f"⚠️ Failed to update job status to running: {e}")
+            import traceback
+        
+        poll_server_health(PORT)
+
+        # Expect prepared payload from EF
+        prepared = input_data.get("prepared")
+        
+
+        
+        if not prepared:
+            raise RuntimeError("Missing 'prepared' payload from inference-create EF")
+
+        # Load workflow JSON (prefer mounted /workflows). Default to WAN2.1.json when not provided
+        from lib.workflow_loader import load_workflow_from_s3
+        # Select workflow by quality; fall back to prepared.workflow only if quality-based key is missing
+        p = input_data.get("params", {})
+        req_quality = str((p or {}).get("quality", "1K")).upper()
+        quality_wf = "V1.0_1K.json" if req_quality == "1K" else "V1.0.json"
+        chosen_key = quality_wf
+        try:
+            wf = load_workflow_from_s3(chosen_key)
+            print(f"🎯 Using quality-selected workflow: {chosen_key} (quality={req_quality})")
+        except FileNotFoundError as _e:
+            alt_key = prepared.get("workflow") or "V1.0_1K.json"
+            print(f"⚠️ Quality-selected workflow not found: {chosen_key}. Falling back to prepared key: {alt_key}")
+            wf = load_workflow_from_s3(alt_key)
+            chosen_key = alt_key
+        
+        from lib.workflow_patcher import compute_dimensions, patch_workflow
+        settings_override = input_data.get("settings_override") or {}
+        width, height = compute_dimensions(p.get("quality", "1K"), p.get("aspect_ratio", "1:1"))
+        
+        # Character/style LoRAs are absolute paths under /data from EF; link into models/loras
+        char_lora = prepared.get("character_lora")
+        style_lora = prepared.get("style_lora")
+        
+        # Track unique filenames we create so we can clean them up after the job finishes
+        # (created_lora_filenames is initialized at function start)
+
+        def _link_lora(abs_path: str | None) -> str | None:
+            if not abs_path:
+                return None
+            try:
+                from pathlib import Path as _P
+                import shutil as _sh
+                p = _P(abs_path)
+                
+                if not p.exists():
+                    return None
+        
+                dest_dir = _P("/root/comfy/ComfyUI/models/loras")
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                # Use a job-scoped unique filename to avoid cross-job collisions when multiple
+                # jobs link LoRAs with the same basename concurrently
+                unique_name = f"{job_id}__{p.name}"
+                dest = dest_dir / unique_name
+        
+                try:
+                    if dest.exists() or dest.is_symlink():
+                        dest.unlink()
+                except Exception:
+                    pass
+                try:
+                    dest.symlink_to(p)
+                except Exception as e:
+                    _sh.copy2(str(p), str(dest))
+                
+                created_lora_filenames.append(unique_name)
+                return unique_name
+        
+            except Exception as _e:
+                return None
+        
+
+        
+        char_name = _link_lora(char_lora)
+        style_name = _link_lora(style_lora)
+        
+
+
+        # Handle seed: if -1, keep sentinel so each image chooses its own random seed later
+        seed_value = p.get("seed", -1)
+        if seed_value is None:
+            seed_value = -1
+        
+        # Get number of images to generate
+        nb_takes = int(p.get("nb_takes", 1))
+
+        # 3) Generate client ID for ComfyUI API
+        comfyui_base = f"http://127.0.0.1:{PORT}"
+        
+        # 4) Start direct ComfyUI WebSocket monitoring for progress (non-blocking)
+        try:
+            import threading
+            from lib.ws_preview_relay import start_direct_comfyui_relay
+        
+            base = os.environ.get("PROGRESS_WS_URL") or "wss://creativebuild--primeshot-inference-progress.modal.run"
+        
+            if base:
+                progress_ws_url = base.replace("{job_id}", job_id) if "{job_id}" in base else base.rstrip("/") + f"/ws/broadcast/{job_id}"
+                
+
+        
+        except Exception as e:
+            print(f"⚠️ Progress relay setup failed: {e}")
+            import traceback
+            print(f"📊 Full error: {traceback.format_exc()}")
+            base = None
+            progress_ws_url = None
+
+        # 5) Sequential image generation loop
+        all_generated_images = []
+        # Track enriched ComfyUI error details for better diagnostics on failure
+        last_comfy_error_details = None
+        
+        # Track S3 processing failures and threads
+        s3_failure_tracker = {
+            'failed_images': set(),
+            'errors': []
+        }
+        s3_processing_threads = []
+        
+        # Get AWS bucket early since it's needed in job metadata
+        bucket = os.environ.get("AWS_BUCKET")
+        
+        # Store enhanced job metadata for webhook retrieval and debugging
+        job_metadata = {
+            "user_id": user_id,
+            "character_id": input_data.get("character_id"),
+            "style_id": input_data.get("style_id"),
+            "workflow_key": chosen_key,
+            "dimensions": f"{width}x{height}",
+            "nb_takes": nb_takes,
+            "quality": p.get("quality", "1K"),
+            "aspect_ratio": p.get("aspect_ratio", "1:1"),
+            "seed": seed_value,
+            "character_lora": char_name,
+            "style_lora": style_name,
+            "comfyui_base": comfyui_base,
+            "s3_configured": bucket is not None,
+            "started_at": time.time(),
+            "gpu_type": input_data.get("gpu_type", "unknown"),
+            "env": env_tag
+        }
+        
+        # Store in a simple in-memory cache
+        if not hasattr(tracker, '_job_metadata'):
+            tracker._job_metadata = {}
+        tracker._job_metadata[job_id] = job_metadata
+        
+        print(f"🔍 Job metadata: {job_metadata}")
+        
+        # Start ONE WebSocket relay for the ENTIRE job (not per image)
+        if progress_ws_url:
+            try:
+                import threading
+                from lib.ws_preview_relay import start_relay
+                
+                # Use a single client ID for the entire job
+                job_client_id = str(uuid.uuid4())
+                comfy_ws_url = f"ws://127.0.0.1:{PORT}/ws?clientId={job_client_id}"
+                
+                print(f"🔌 WebSocket Configuration for job {job_id}:")
+                print(f"  📤 Progress Broadcast: {progress_ws_url}")
+                print(f"  🌐 Base URL: {progress_ws_url.split('/ws/broadcast/')[0]}")
+                
+                # Start the relay for the entire job
+                start_relay(progress_ws_url, comfy_ws_url, job_id, throttle_sec=1.5, image_index=0)
+                print(f"🔄 Started WebSocket relay for entire job {job_id}")
+            except Exception as e:
+                print(f"⚠️ WebSocket relay failed for job {job_id}: {e}")
+        
+        # Sequential generation loop
+        for image_index in range(nb_takes):
+            print(f"🎯 === GENERATING IMAGE {image_index + 1}/{nb_takes} ===")
+            
+            # Update the WebSocket relay with the current image index
+            if progress_ws_url:
+                try:
+                    from lib.ws_preview_relay import update_job_image_index
+                    update_job_image_index(job_id, image_index)
+                except Exception as e:
+                    print(f"⚠️ Failed to update image index: {e}")
+            
+            # Send global status when starting first image generation
+            # Status will be automatically switched to "generating" when first base64 image is received
+            
+            # Generate unique seed for each image (if original seed was random)
+            current_seed = seed_value + image_index if seed_value != -1 else None
+            if current_seed is None:
+                import random
+                current_seed = random.randint(0, 2**32 - 1)
+            
+            print(f"🎲 Using seed {current_seed} for image {image_index + 1}")
+            
+            # Send progress update for this image
+            if progress_ws_url:
+                try:
+                    import json
+                    
+                    progress_data = {
+                        "job_id": job_id,
+                        "status": "running",
+                        "progress": int((image_index / nb_takes) * 100),
+                        "image_index": image_index,
+                        "message": f"Generating image {image_index + 1} of {nb_takes}",
+                        "timestamp": time.time()
+                    }
+                    
+                    # Send to HTTP progress endpoint (fallback). Convert scheme and path.
+                    if "/ws/broadcast/" in progress_ws_url:
+                        post_url = (
+                            progress_ws_url
+                            .replace("wss://", "https://")
+                            .replace("ws://", "http://")
+                            .replace("/ws/broadcast/", "/api/progress/")
+                        )
+                        progress_body = json.dumps(progress_data).encode('utf-8')
+                        progress_req = urllib.request.Request(
+                            url=post_url,
+                            data=progress_body,
+                            headers={'Content-Type': 'application/json'},
+                            method='POST'
+                        )
+                        urllib.request.urlopen(progress_req, timeout=5)
+                    print(f"📊 Sent progress update: image {image_index + 1}/{nb_takes}")
+                except Exception as e:
+                    print(f"⚠️ Failed to send progress update: {e}")
+            
+            # Title-based overrides are handled centrally in patch_workflow now
+
+            # Patch workflow for single image with current seed
+            patched = patch_workflow(
+                wf,
+                prompt=prepared.get("prompt", ""),
+                negative_prompt=prepared.get("negative_prompt", ""),
+                width=width,
+                height=height,
+                seed=current_seed,
+                images_count=1,  # Always generate 1 image per call
+                quality=p.get("quality", "1K"),
+                aspect_ratio=p.get("aspect_ratio", "1:1"),
+                settings_override=settings_override,
+                lora_filename=None,
+                character_lora=char_name,
+                style_lora=style_name,
+                bypass_nodes=prepared.get("bypass_nodes"),
+                job_id=job_id,  # Pass job_id for output path isolation
+                user_id=user_id,  # Pass user_id for output path isolation
+            )
+            
+            # Use the same client ID for all images in this job
+            client_id = job_client_id
+            
+            # Submit to ComfyUI
+            body = {
+                "prompt": patched,
+                "client_id": client_id,
+                "workflow_key": chosen_key
+            }
+            
+            # Debug: summarize workflow before submitting to ComfyUI
+            try:
+                class_types = sorted({
+                    node.get("class_type", "")
+                    for node in patched.values()
+                    if isinstance(node, dict)
+                })
+                titles = [
+                    node.get("_meta", {}).get("title")
+                    for node in patched.values()
+                    if isinstance(node, dict) and node.get("_meta", {}).get("title")
+                ]
+                print(f"🔎 Workflow summary: nodes={len(patched)}, classes={class_types[:12]}")
+                if titles:
+                    print(f"🔎 Titles include: {titles[:12]}")
+                # Basic latent-node presence check
+                if not any(
+                    isinstance(n, dict) and n.get("class_type") in (
+                        "EmptyHunyuanLatentVideo",
+                        "EmptyLatentImage",
+                        "EmptySD3LatentImage",
+                        "EmptyLTXVLatentVideo",
+                    )
+                    for n in patched.values()
+                ):
+                    print("⚠️ No latent node found (EmptyHunyuanLatentVideo/EmptyLatentImage/EmptySD3LatentImage/EmptyLTXVLatentVideo)")
+            except Exception as _summ_e:
+                print(f"⚠️ Failed to summarize workflow: {_summ_e}")
+
+            print(f"🔧 Submitting image {image_index + 1} to ComfyUI...")
+            
+            # Tolerant readiness check (reuse health checker with smaller cap)
+            try:
+                poll_server_health(PORT)
+                print(f"✅ ComfyUI ready for image {image_index + 1}")
+            except Exception as e:
+                print(f"⚠️ ComfyUI readiness check failed for image {image_index + 1}: {e}")
+
+            # Submit to ComfyUI for this specific image
+            prompt_url = f"{comfyui_base}/prompt"
+            
+            try:
+                req = urllib.request.Request(
+                    url=prompt_url,
+                    data=json.dumps(body).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                try:
+                    response = urllib.request.urlopen(req, timeout=30)
+                    response_data = response.read().decode('utf-8')
+                    response_json = json.loads(response_data)
+                except urllib.error.HTTPError as http_err:
+                    err_body = ""
+                    try:
+                        err_body = http_err.read().decode('utf-8', errors='replace')
+                    except Exception:
+                        pass
+                    print(f"❌ ComfyUI /prompt HTTP {getattr(http_err, 'code', 'unknown')}. Body: {err_body[:2000]}")
+                    raise RuntimeError(f"HTTP {getattr(http_err, 'code', 'unknown')} from ComfyUI /prompt: {err_body[:200]}")
+                
+                print(f"📨 Submitted image {image_index + 1} to ComfyUI: {response_json}")
+                
+                # Extract prompt_id from response
+                prompt_id = response_json.get("prompt_id")
+                if not prompt_id:
+                    raise RuntimeError(f"No prompt_id in ComfyUI response for image {image_index + 1}: {response_json}")
+                
+                print(f"🎯 Image {image_index + 1} submitted! Prompt ID: {prompt_id}")
+                
+                # Get image outputs using our optimized helper
+                print(f"⏳ Waiting for image {image_index + 1} to complete...")
+                
+                try:
+                    outputs, source = get_image_outputs(job_id, prompt_id, comfyui_base, timeout=600)
+                    print(f"✅ Image {image_index + 1} completed! (source: {source})")
+                    
+                    # Find generated images in outputs
+                    generated_images = []
+                    for node_id, node_output in outputs.items():
+                        if "images" in node_output:
+                            for img in node_output["images"]:
+                                generated_images.append({
+                                    "filename": img.get("filename"),
+                                    "subfolder": img.get("subfolder", ""),
+                                    "type": img.get("type", "output"),
+                                    "image_index": image_index
+                                })
+                    
+                    print(f"🖼️ Found {len(generated_images)} images for image {image_index + 1}")
+                    if generated_images:
+                        all_generated_images.extend(generated_images)
+                        
+                        # Categorize and process images asynchronously
+                        threads = categorize_and_process_images(
+                            generated_images, image_index, job_id, user_id, 
+                            bucket, progress_ws_url, s3_failure_tracker
+                        )
+                        s3_processing_threads.extend(threads)
+                            
+                    else:
+                        # If outputs structure is empty, do one final directory scan
+                        print(f"⚠️ No images in outputs, attempting final directory scan...")
+                        final_images = find_generated_images(job_id, max_attempts=5)
+                        
+                        if final_images:
+                            # Found images via directory scan
+                            for img in final_images:
+                                img["image_index"] = image_index
+                                all_generated_images.append(img)
+                            
+                            print(f"✅ Recovered {len(final_images)} images via final directory scan")
+                            
+                            # Process these images too
+                            threads = categorize_and_process_images(
+                                final_images, image_index, job_id, user_id,
+                                bucket, progress_ws_url, s3_failure_tracker
+                            )
+                            s3_processing_threads.extend(threads)
+                        else:
+                            raise RuntimeError(f"No generated images found for image {image_index + 1}")
+                except Exception as e:
+                    # Handle timeout or other errors from get_image_outputs
+                    error_msg = str(e)
+                    # Try to enrich with ComfyUI error context (from WS relay and history)
+                    try:
+                        from lib.ws_preview_relay import get_prompt_error_data, get_last_executing_node
+                        relay_error = get_prompt_error_data(job_id, prompt_id)
+                        last_exec = get_last_executing_node(job_id)
+                    except Exception as _ge:
+                        relay_error = {}
+                        last_exec = {}
+                        print(f"⚠️ Failed to get ComfyUI error details from relay: {_ge}")
+                    # Optionally fetch history entry for additional error context
+                    history_entry = {}
+                    try:
+                        history_url = f"{comfyui_base}/history/{prompt_id}"
+                        response = urllib.request.urlopen(history_url, timeout=10)
+                        history_data = json.loads(response.read().decode('utf-8'))
+                        if prompt_id in history_data:
+                            history_entry = history_data.get(prompt_id, {})
+                            # Drop heavy outputs to keep logs lean
+                            if isinstance(history_entry, dict) and "outputs" in history_entry:
+                                history_entry = {k: v for k, v in history_entry.items() if k != "outputs"}
+                    except Exception as _he:
+                        print(f"⚠️ Failed to fetch ComfyUI history for prompt {prompt_id}: {_he}")
+                    # Prepare redacted traceback head for logs
+                    def _head(txt: str, lines: int = 20) -> str:
+                        if not isinstance(txt, str):
+                            return ""
+                        return "\n".join(txt.splitlines()[:lines])
+                    comfy_error_details = {
+                        "prompt_id": prompt_id,
+                        "relay_error": relay_error,
+                        "last_executing_node": last_exec,
+                        "history_entry": history_entry,
+                    }
+                    last_comfy_error_details = comfy_error_details
+                    if relay_error:
+                        print(f"❌ ComfyUI error for image {image_index + 1}: {relay_error.get('exception_type') or 'Unknown'} - {relay_error.get('message')}\n{_head(relay_error.get('traceback'))}")
+                    if last_exec:
+                        print(f"🔎 Last executing node before failure: {last_exec}")
+                    if history_entry:
+                        print(f"📜 History entry sans outputs: {list(history_entry.keys())}")
+                    # Re-raise with original classification
+                    if "timed out" in error_msg.lower():
+                        raise RuntimeError(f"Image {image_index + 1} generation timed out")
+                    else:
+                        raise RuntimeError(f"Image {image_index + 1} generation failed: {error_msg}")
+                    
+            except Exception as e:
+                # Re-raise with image index context if not already included
+                error_msg = str(e)
+                if f"Image {image_index + 1}" not in error_msg:
+                    raise RuntimeError(f"Image {image_index + 1} generation failed: {error_msg}")
+                else:
+                    raise
+        
+        # Wait for all S3 processing threads to complete and check for failures
+        for thread in s3_processing_threads:
+            thread.join(timeout=30)  # Wait up to 30 seconds per thread
+        
+        # Check if any images failed to save
+        if s3_failure_tracker['failed_images']:
+            failed_count = len(s3_failure_tracker['failed_images'])
+            total_count = nb_takes
+            error_summary = "; ".join(s3_failure_tracker['errors'][:3])  # First 3 errors
+            if len(s3_failure_tracker['errors']) > 3:
+                error_summary += f" (and {len(s3_failure_tracker['errors']) - 3} more errors)"
+            
+            raise RuntimeError(f"Failed to save {failed_count}/{total_count} images to S3: {error_summary}")
+        
+        # Images are now processed asynchronously during generation
+        # We only need to call inference-complete Edge Function to mark the job as done
+        if not all_generated_images:
+            raise RuntimeError("No images were generated")
+        
+
+        
+        # Call inference-complete Edge Function to mark the job as completed
+        # (Individual images were already saved to S3 asynchronously during generation)
+        try:
+            # Use the overridden environment variables (already set based on env_tag in main function)
+            supabase_url = os.environ.get('SUPABASE_URL')
+            service_role_key = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+            
+            if supabase_url and service_role_key:
+                import requests
+                ef_url = f"{supabase_url}/functions/v1/inference-complete"
+                ef_headers = {
+                    'Authorization': f'Bearer {service_role_key}',
+                    'Content-Type': 'application/json',
+                    'apikey': service_role_key,
+                }
+                # Simple completion call - images were processed individually
+                ef_body = {
+                    'job_id': job_id,
+                    'success': True
+                }
+                
+                ef_resp = requests.post(ef_url, json=ef_body, headers=ef_headers, timeout=20)
+                if ef_resp.ok:
+                    print(f"✅ Called inference-complete Edge Function successfully")
+                    print(f"🎯 Inference pipeline completed successfully!")
+                else:
+                    print(f"⚠️ inference-complete EF error: {ef_resp.status_code} {ef_resp.text}")
+            else:
+                print(f"⚠️ Missing Supabase credentials for environment")
+                
+        except Exception as ef_e:
+            print(f"⚠️ Failed to call inference-complete Edge Function: {ef_e}")
+            import traceback
+            print(f"📊 Full error: {traceback.format_exc()}")
+        
+        print(f"✅ Successfully completed sequential generation job {job_id}")
+        
+        # Signal WebSocket relay that job is complete
+        try:
+            from lib.ws_preview_relay import signal_job_completion, get_active_relays
+            
+            print(f"📊 Active relays before completion: {get_active_relays()}")
+            signal_job_completion(job_id)
+            print(f"📊 Active relays after completion: {get_active_relays()}")
+            print(f"✅ WebSocket relay cleanup completed for job {job_id}")
+            
+        except Exception as signal_e:
+            print(f"⚠️ Failed to signal job completion: {signal_e}")
+            # Try to force cleanup anyway
+            try:
+                from lib.ws_preview_relay import cleanup_all_relays
+                cleanup_all_relays()
+            except Exception as cleanup_e:
+                print(f"⚠️ Failed to force cleanup relays: {cleanup_e}")
+        
+        # Clean up job-scoped LoRA links
+        try:
+            from pathlib import Path as _P
+            for fname in created_lora_filenames:
+                try:
+                    f = _P(f"/root/comfy/ComfyUI/models/loras/{fname}")
+                    if f.exists() or f.is_symlink():
+                        f.unlink()
+                        print(f"🧹 Removed job-scoped LoRA link: {fname}")
+                except Exception as _e:
+                    print(f"⚠️ Failed to remove LoRA link {fname}: {_e}")
+        except Exception as _cleanup_e:
+            print(f"⚠️ LoRA cleanup failed: {_cleanup_e}")
+        
+        # 5) Return accepted; completion goes via webhook -> EF -> DB
+        return {"status": "accepted", "job_id": job_id}
+    
+    except Exception as e:
+        error_details = {
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "job_id": job_id,
+            "user_id": user_id
+        }
+        
+        # Categorize error types for better debugging
+        if "connection refused" in str(e).lower():
+            error_details["category"] = "connection_error"
+            error_details["suggestion"] = "ComfyUI server may not be running or ready"
+        elif "timeout" in str(e).lower():
+            error_details["category"] = "timeout_error"
+            error_details["suggestion"] = "Request timed out - server may be overloaded"
+        elif "404" in str(e):
+            error_details["category"] = "endpoint_error"
+            error_details["suggestion"] = "ComfyUI endpoint not found - check server configuration"
+        elif "prompt_id" in str(e).lower():
+            error_details["category"] = "generation_error"
+            error_details["suggestion"] = "Issue with ComfyUI prompt generation or processing"
+        else:
+            error_details["category"] = "general_error"
+            error_details["suggestion"] = "Check logs for detailed error information"
+        
+        # Attach enriched ComfyUI error context if available from the generation loop
+        try:
+            if 'last_comfy_error_details' in locals() and last_comfy_error_details:
+                error_details["comfy_error_details"] = last_comfy_error_details
+            else:
+                # Fallback: try to grab latest from WS relay
+                from lib.ws_preview_relay import get_prompt_error_data, get_last_executing_node
+                relay_err = get_prompt_error_data(job_id)
+                last_exec = get_last_executing_node(job_id)
+                if relay_err or last_exec:
+                    error_details["comfy_error_details"] = {
+                        "relay_error": relay_err,
+                        "last_executing_node": last_exec,
+                    }
+        except Exception as _attach_e:
+            print(f"⚠️ Failed to attach ComfyUI error context: {_attach_e}")
+        print(f"❌ Generation failed: {error_details}")
+        
+        try:
+            tracker.mark_failed(job_id, str(e))
+        except Exception as tracker_e:
+            print(f"⚠️ Failed to update job tracker: {tracker_e}")
+        
+        # Send failure notification via WebSocket before cleanup
+        try:
+            from lib.ws_preview_relay import send_custom_message_to_job
+            failure_message = {
+                "job_id": job_id,
+                "job_type": "inference",
+                "status": "failed",
+                "progress": 0,
+                "message": f"Generation failed: {error_details.get('suggestion', str(e))}",
+                "timestamp": int(time.time() * 1000),
+                "error": str(e),
+                "error_type": error_details.get("error_type", "Unknown"),
+                "comfy_error_details": error_details.get("comfy_error_details")
+            }
+            send_custom_message_to_job(job_id, failure_message)
+            print(f"📤 Sent failure notification via WebSocket for job {job_id}")
+        except Exception as ws_fail_e:
+            print(f"⚠️ Failed to send failure notification via WebSocket: {ws_fail_e}")
+        
+        # Update database job status to failed via inference-complete EF
+        try:
+            import requests
+            env = (env_tag if 'env_tag' in locals() else (input_data.get("env") or "dev")).lower()
+            supabase_url = os.environ.get(f'SUPABASE_URL_{env.upper()}') or os.environ.get('SUPABASE_URL')
+            service_role_key = os.environ.get(f'SUPABASE_SERVICE_ROLE_KEY_{env.upper()}') or os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+            if supabase_url and service_role_key:
+                ef_url = f"{supabase_url}/functions/v1/inference-complete"
+                ef_headers = {
+                    'Authorization': f'Bearer {service_role_key}',
+                    'Content-Type': 'application/json',
+                    'apikey': service_role_key,
+                }
+                ef_body = {
+                    'job_id': job_id,
+                    'success': False,
+                    'error_message': str(e),
+                    'comfy_error_details': error_details.get("comfy_error_details")
+                }
+                ef_resp = requests.post(ef_url, json=ef_body, headers=ef_headers, timeout=20)
+                if ef_resp.ok:
+                    print(f"✅ Marked job {job_id} as failed via inference-complete EF")
+                else:
+                    print(f"⚠️ inference-complete EF failure update error: {ef_resp.status_code} {ef_resp.text}")
+            else:
+                print("⚠️ Missing Supabase credentials; cannot mark job failed in DB")
+        except Exception as ef_fail:
+            print(f"⚠️ Failed to update job failure via inference-complete EF: {ef_fail}")
+        
+        # Clean up WebSocket relay on failure
+        try:
+            from lib.ws_preview_relay import signal_job_completion, get_active_relays
+            print(f"📊 Active relays before failure cleanup: {get_active_relays()}")
+            signal_job_completion(job_id)
+            print(f"📊 Active relays after failure cleanup: {get_active_relays()}")
+        except Exception as cleanup_e:
+            print(f"⚠️ Failed to cleanup relay on failure: {cleanup_e}")
+        
+        # Attempt to remove job-scoped LoRA links on failure
+        try:
+            from pathlib import Path as _P
+            for fname in created_lora_filenames:
+                try:
+                    f = _P(f"/root/comfy/ComfyUI/models/loras/{fname}")
+                    if f.exists() or f.is_symlink():
+                        f.unlink()
+                        print(f"🧹 Removed job-scoped LoRA link after failure: {fname}")
+                except Exception as _e:
+                    print(f"⚠️ Failed to remove LoRA link {fname} after failure: {_e}")
+        except Exception as _cleanup_fail_e:
+            print(f"⚠️ LoRA cleanup on failure failed: {_cleanup_fail_e}")
+    
+        return {
+            "job_id": job_id, 
+            "status": "failed", 
+            "error": str(e),
+            "error_details": error_details
+        }
+    
+    finally:
+        pass
+
+
+@app.cls(
+    gpu="H200",  # Fast
+    image=cuda_image,
+    secrets=[aws_secret, inference_secret, supabase_secret],
+    volumes={**user_images_mount, **workflows_mount, MODELS_PATH: models_volume},
+    timeout=30000,
+    scaledown_window=300,
+    max_containers=40,
+    retries=3,
+)
+@modal.concurrent(max_inputs=1)
+class Fast:
+    """H200 worker (Fast)."""
+
+    @modal.enter()
+    def launch_comfyui(self):
+        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+        _launch_inference_runtime(PORT)
+
+    @modal.method()
+    def run_inference(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        return main(input_data)
+
+
+@app.cls(
+    gpu="H100",  # Quick
+    image=cuda_image,
+    secrets=[aws_secret, inference_secret, supabase_secret],
+    volumes={**user_images_mount, **workflows_mount, MODELS_PATH: models_volume},
+    timeout=30000,
+    scaledown_window=300,
+    max_containers=40,
+    retries=3,
+)
+@modal.concurrent(max_inputs=1)
+class Quick:
+    """H100 worker (Quick)."""
+
+    @modal.enter()
+    def setup_environment(self):
+        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+        _launch_inference_runtime(PORT)
+
+    @modal.method()
+    def run_inference(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        return main(input_data)
+
 
 @app.function(
-    gpu="H100",  # Cost-effective for UI development A10G
-    volumes={"/models": vol, "/data": s3_mount},
-    secrets=[comfyui_secret],  # Add ComfyUI secret for API nodes
-    max_containers=500,
-    timeout=3600
+    image=modal.Image.debian_slim().pip_install([
+        "fastapi[standard]==0.115.4",
+        "websockets>=12.0",
+        "uvicorn[standard]>=0.24.0",
+        "python-dotenv>=1.0.0",
+        "anthropic>=0.34.0"
+    ]),
+    secrets=[aws_secret, inference_secret, supabase_secret],
+    scaledown_window=300,  # 300 seconds (5 minutes)
 )
-@modal.concurrent(max_inputs=10, target_inputs=80)
-@modal.web_server(8000, startup_timeout=60)
+@modal.concurrent(max_inputs=100, target_inputs=80)
+@modal.fastapi_endpoint(method="POST", label="primeshot-inference", requires_proxy_auth=True)
+def api_endpoint(request_data: Dict[str, Any]):
+    """Accept prepared inference request and spawn GPU worker.
+
+    Contract: caller must provide `user_id`, `prepared`, and optional `params`.
+    This endpoint does NOT call inference-create EF; it just enqueues work.
+    """
+    from fastapi import HTTPException
+
+    user_id = request_data.get("user_id")
+    
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Missing required parameter: user_id")
+    
+    prepared = request_data.get("prepared")
+    
+    if not prepared:
+        raise HTTPException(status_code=400, detail="Missing required parameter: prepared")
+
+    job_id = request_data.get("job_id") or str(uuid.uuid4())
+    params = request_data.get("params", {})
+    settings_override = request_data.get("settings_override")
+    env = request_data.get("env")  # Get env parameter from request
+
+    print(f"Received prepared: {prepared}")
+    print(f"Received env: {env}")
+
+    # Try Fast (H200) first, fall back to Quick (H100) if spawn fails
+    try:
+        gpu = Fast()
+        payload = {
+            "user_id": user_id,
+            "job_id": job_id,
+            "prepared": prepared,
+            "params": params,
+            "settings_override": settings_override,
+            "env": env,  # Pass env to GPU worker
+            "gpu_type": "H200",
+        }
+        handle = gpu.run_inference.spawn(payload)
+        print(f"✅ Submitted inference to Fast (H200) for job {job_id}")
+        return {
+            "status": "accepted",
+            "gpu_type": "H200",
+            "job_handle": str(handle),
+            "job_id": job_id,
+        }
+    except Exception as e:
+        print(f"Spawn failed for Fast (H200): {e}. Falling back to Quick (H100)...")
+        try:
+            gpu = Quick()
+            payload = {
+                "user_id": user_id,
+                "job_id": job_id,
+                "prepared": prepared,
+                "params": params,
+                "settings_override": settings_override,
+                "env": env,  # Pass env to GPU worker
+                "gpu_type": "H100",
+            }
+            handle = gpu.run_inference.spawn(payload)
+            print(f"✅ Submitted inference to Quick (H100) for job {job_id}")
+            return {
+                "status": "accepted",
+                "gpu_type": "H100",
+                "job_handle": str(handle),
+                "job_id": job_id,
+            }
+        except Exception as e2:
+            raise HTTPException(status_code=503, detail=f"Submission failed for all GPU classes: {e2}")
+
+
+# Webhook endpoint removed - no longer using webhooks, only synchronous S3 mode
+
+
+# WebSocket Progress Server for Inference
+@app.function(
+    image=modal.Image.debian_slim().pip_install([
+        "fastapi[standard]==0.115.4",
+        "websockets>=12.0",
+        "uvicorn[standard]>=0.24.0",
+        "python-dotenv>=1.0.0"
+    ]),
+    scaledown_window=300,
+    timeout=720,
+)
+@modal.concurrent(max_inputs=600, target_inputs=480)
+@modal.asgi_app()
+def progress():
+    """
+    WebSocket Progress Server for real-time inference updates.
+    Endpoints:
+      - /ws/progress/{job_id}: clients subscribe to receive updates
+      - /ws/broadcast/{job_id}: producers send updates to listeners
+    """
+    import asyncio
+    import json
+    import logging
+    from typing import Dict, List
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi.middleware.cors import CORSMiddleware
+
+    # Logging (quiet by default)
+    log_level_name = os.getenv("INFERENCE_LOG_LEVEL", "WARNING").upper()
+    level = getattr(logging, log_level_name, logging.WARNING)
+    logger = logging.getLogger("inference_ws")
+    logger.setLevel(level)
+    
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setLevel(level)
+        handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logger.addHandler(handler)
+
+    web_app = FastAPI(title="Primeshot Inference Progress Server")
+    web_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    active_connections: Dict[str, List[WebSocket]] = {}
+    connection_timestamps: Dict[str, float] = {}  # Track when connections were created
+
+    class ConnectionManager:
+        @staticmethod
+        async def connect_listener(websocket: WebSocket, job_id: str) -> None:
+            await websocket.accept()
+            active_connections.setdefault(job_id, []).append(websocket)
+            connection_timestamps[job_id] = time.time()  # Track connection time
+
+        @staticmethod
+        def disconnect(websocket: WebSocket) -> None:
+            for job_id, sockets in list(active_connections.items()):
+                if websocket in sockets:
+                    sockets.remove(websocket)
+                if not sockets:
+                    active_connections.pop(job_id, None)
+                    connection_timestamps.pop(job_id, None)  # Clean up timestamp
+
+        @staticmethod
+        async def broadcast(job_id: str, message: str) -> None:
+            for ws in list(active_connections.get(job_id, [])):
+                try:
+                    await ws.send_text(message)
+                except Exception:
+                    ConnectionManager.disconnect(ws)
+        
+        @staticmethod
+        def cleanup_stale_connections(max_age_minutes: int = 15) -> None:
+            """Clean up connections older than max_age_minutes."""
+            import time
+            current_time = time.time()
+            max_age_seconds = max_age_minutes * 60
+            
+            stale_jobs = []
+            for job_id, timestamp in list(connection_timestamps.items()):
+                if current_time - timestamp > max_age_seconds:
+                    stale_jobs.append(job_id)
+            
+            for job_id in stale_jobs:
+                logger.info(f"Cleaning up stale connection for job {job_id}")
+                active_connections.pop(job_id, None)
+                connection_timestamps.pop(job_id, None)
+            
+            if stale_jobs:
+                logger.info(f"Cleaned up {len(stale_jobs)} stale connections")
+        
+        @staticmethod
+        def get_connection_stats() -> dict:
+            """Get statistics about active connections."""
+            import time
+            current_time = time.time()
+            
+            stats = {
+                "total_jobs": len(active_connections),
+                "total_connections": sum(len(sockets) for sockets in active_connections.values()),
+                "jobs_by_age": {}
+            }
+            
+            for job_id, timestamp in connection_timestamps.items():
+                age_minutes = int((current_time - timestamp) / 60)
+                age_bucket = f"{age_minutes//5 * 5}-{age_minutes//5 * 5 + 4}min"
+                stats["jobs_by_age"][age_bucket] = stats["jobs_by_age"].get(age_bucket, 0) + 1
+            
+            return stats
+
+    manager = ConnectionManager()
+
+    # Periodic cleanup task
+    async def periodic_cleanup():
+        """Periodically clean up stale connections."""
+        while True:
+            await asyncio.sleep(300)  # Run every 5 minutes
+            try:
+                manager.cleanup_stale_connections(max_age_minutes=15)
+                stats = manager.get_connection_stats()
+                logger.info(f"WebSocket stats: {stats}")
+            except Exception as e:
+                logger.error(f"Error in periodic cleanup: {e}")
+
+    # Store background tasks for proper cleanup
+    background_tasks = set()
+    
+    # Startup event to initialize background tasks
+    @web_app.on_event("startup")
+    async def startup_event():
+        """Initialize background tasks when the app starts"""
+        task = asyncio.create_task(periodic_cleanup())
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+        logger.info("Started periodic cleanup task")
+    
+    # Shutdown event to clean up background tasks
+    @web_app.on_event("shutdown")
+    async def shutdown_event():
+        """Clean up background tasks when the app shuts down"""
+        logger.info("Shutting down background tasks...")
+        for task in background_tasks:
+            task.cancel()
+        await asyncio.gather(*background_tasks, return_exceptions=True)
+        logger.info("Background tasks cleaned up")
+
+    @web_app.get("/health")
+    async def health_check():
+        """Health check endpoint for the progress server."""
+        return {"status": "healthy", "service": "primeshot-inference-progress"}
+
+    @web_app.get("/api/health")
+    async def api_health_check():
+        """API health check endpoint (matches training app pattern)."""
+        return {"status": "healthy", "service": "primeshot-inference-progress", "version": "1.0.0"}
+
+    @web_app.get("/stats")
+    async def get_stats():
+        """Get WebSocket connection statistics."""
+        return manager.get_connection_stats()
+
+    from fastapi import Request
+    @web_app.post("/api/progress/{job_id}")
+    async def http_progress(job_id: str, request: Request):
+        """HTTP fallback: accept JSON progress and rebroadcast to WS listeners."""
+        try:
+            payload_bytes = await request.body()
+            # Validate minimally by ensuring it's JSON
+            import json as _j
+            _j.loads(payload_bytes)
+            payload_text = payload_bytes.decode("utf-8")
+            await manager.broadcast(job_id, payload_text)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @web_app.websocket("/ws/progress/{job_id}")
+    async def websocket_progress_endpoint(websocket: WebSocket, job_id: str):
+        await manager.connect_listener(websocket, job_id)
+        try:
+            # Keep the connection open; listeners don't send messages
+            while True:
+                await asyncio.sleep(60)
+    
+        except WebSocketDisconnect:
+            manager.disconnect(websocket)
+
+    @web_app.websocket("/ws/broadcast/{job_id}")
+    async def websocket_broadcast_endpoint(websocket: WebSocket, job_id: str):
+        await websocket.accept()
+    
+        try:
+            while True:
+                data = await websocket.receive_text()
+                try:
+                    # Ensure JSON payload
+                    json.loads(data)
+                    await manager.broadcast(job_id, data)
+                except Exception as e:
+                    logger.error(f"Invalid broadcast payload: {e}")
+    
+        except WebSocketDisconnect:
+            pass
+
+    # --- Lightweight LoRA linker UI & endpoints for development ---
+    from fastapi.responses import HTMLResponse, JSONResponse
+    from fastapi import Form
+
+    LORA_MODELS_DIR = "/root/comfy/ComfyUI/models/loras"
+
+    def _resolve_lora_source(path: str) -> str:
+        p = (path or "").strip()
+        if p.startswith("s3://"):
+            # Our mounts:
+            #   /data -> s3://primeshot-uploads-01/user-images/
+            #   /workflows -> s3://primeshot-uploads-01/workflows/
+            remainder = p[len("s3://"):]
+            bucket = remainder
+            key = ""
+            if "/" in remainder:
+                bucket, key = remainder.split("/", 1)
+            # Normalize known prefixes regardless of bucket name
+            if key.startswith("user-images/"):
+                return f"/data/{key[len('user-images/') :]}"
+            if key.startswith("workflows/"):
+                return f"/workflows/{key[len('workflows/') :]}"
+            # Fallback: assume it's a path under user-images prefix
+            if key:
+                return f"/data/{key}"
+            return "/data"
+        return p
+
+    def _safe_link_name(source_path: str) -> str:
+        # Create deterministic, conflict-free link name
+        if source_path.startswith("/data/"):
+            rel = source_path[len("/data/"):]
+            return rel.replace("/", "_").replace("\\", "_")
+        return os.path.basename(source_path)
+
+    @web_app.get("/lora", response_class=HTMLResponse)
+    async def lora_form():
+        html = """
+        <!doctype html>
+        <html>
+        <head>
+            <meta charset=\"utf-8\" />
+            <title>LoRA Linker</title>
+            <style>
+                body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 40px; }
+                input[type=text] { width: 600px; padding: 8px; }
+                button { padding: 8px 12px; }
+                code { background: #f3f3f3; padding: 2px 4px; }
+                .note { color: #555; margin-top: 8px; }
+                .links { margin-top: 20px; }
+            </style>
+        </head>
+        <body>
+            <h2>LoRA Linker (Dev)</h2>
+            <form id=\"linkForm\" method=\"post\" action=\"/lora/link\">
+                <label>Paste S3 path (e.g. <code>s3://primeshot-uploads-01/path/model.safetensors</code>) or an existing <code>/data/...</code> path:</label><br/>
+                <input type=\"text\" name=\"path\" placeholder=\"s3://primeshot-uploads-01/lora/foo.safetensors\" />
+                <button type=\"submit\">Link</button>
+            </form>
+            <div class=\"note\">Links are created in <code>/root/comfy/ComfyUI/models/loras</code>. Refresh ComfyUI after linking to see new LoRAs.</div>
+            <div class=\"links\">
+                <h3>Current Links</h3>
+                <ul id=\"list\"></ul>
+            </div>
+            <script>
+                async function refreshList() {
+                    const res = await fetch('/lora/list');
+                    const data = await res.json();
+                    const ul = document.getElementById('list');
+                    ul.innerHTML = '';
+                    (data.links || []).forEach(name => {
+                        const li = document.createElement('li');
+                        const btn = document.createElement('button');
+                        btn.textContent = 'unlink';
+                        btn.onclick = async () => {
+                            const fd = new FormData();
+                            fd.append('name', name);
+                            await fetch('/lora/unlink', { method: 'POST', body: fd });
+                            refreshList();
+                        };
+                        li.textContent = name + ' ';
+                        li.appendChild(btn);
+                        ul.appendChild(li);
+                    });
+                }
+                refreshList();
+            </script>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html)
+
+    @web_app.post("/lora/link")
+    async def lora_link(request: Request, path: str = Form(None)):
+        try:
+            # Accept JSON payloads as well as form-encoded
+            if path is None:
+                try:
+                    payload_bytes = await request.body()
+                    if payload_bytes:
+                        data = json.loads(payload_bytes.decode("utf-8"))
+                        path = (data or {}).get("path")
+                except Exception:
+                    path = None
+            if not path:
+                return JSONResponse({"ok": False, "error": "Missing 'path'"}, status_code=400)
+
+            source_path = _resolve_lora_source(path)
+            if not os.path.exists(source_path):
+                return JSONResponse({"ok": False, "error": f"Not found: {source_path}"}, status_code=404)
+
+            os.makedirs(LORA_MODELS_DIR, exist_ok=True)
+            link_name = _safe_link_name(source_path)
+            target_path = os.path.join(LORA_MODELS_DIR, link_name)
+
+            if os.path.exists(target_path) or os.path.islink(target_path):
+                os.unlink(target_path)
+            os.symlink(source_path, target_path)
+
+            return JSONResponse({"ok": True, "linked": link_name, "source": source_path})
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    @web_app.get("/lora/list")
+    async def lora_list():
+        try:
+            os.makedirs(LORA_MODELS_DIR, exist_ok=True)
+            links = sorted([name for name in os.listdir(LORA_MODELS_DIR)])
+            return {"ok": True, "links": links}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @web_app.post("/lora/unlink")
+    async def lora_unlink(name: str = Form(...)):
+        try:
+            target_path = os.path.join(LORA_MODELS_DIR, name)
+            if os.path.exists(target_path) or os.path.islink(target_path):
+                os.unlink(target_path)
+                return {"ok": True, "removed": name}
+            return {"ok": False, "error": "Not found"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    return web_app
+
+
+
+@app.function(
+    gpu=DEV_SERVER_GPU_TYPE,
+    image=cuda_image,
+    volumes={**user_images_mount, **workflows_mount, MODELS_PATH: models_volume},
+    max_containers=1,
+    timeout=60 * 60,  # 1 hour total timeout
+    scaledown_window=1800  # keep container warm for 30 minutes of idle
+)
+@modal.concurrent(max_inputs=999)
+@modal.asgi_app()
 def dev_server():
     """Interactive ComfyUI development server for workflow creation."""
     print("🚀 Starting ComfyUI development server...")
-    
-    # Configure ComfyUI locale to English first
-    if not setup_comfyui_locale():
-        print("⚠️ Warning: Failed to configure ComfyUI locale")
     
     # Configure ComfyUI with extra_model_paths.yaml
     if not setup_model_paths_config():
@@ -362,6 +2115,31 @@ def dev_server():
     lora_models_dir = "/root/comfy/ComfyUI/models/loras"
     os.makedirs(lora_models_dir, exist_ok=True)
     
+    # Always link LoRAs from /data/style_loras (fast, specific directory)
+    def link_style_loras():
+        source_dir = "/data/style_loras"
+        linked_count = 0
+        if not os.path.exists(source_dir):
+            print(f"ℹ️ style_loras directory not found at {source_dir} (skipping)")
+            return 0
+        print(f"🔍 Scanning for style LoRAs in: {source_dir}")
+        for root, dirs, files in os.walk(source_dir):
+            for file in files:
+                if file.endswith('.safetensors'):
+                    source_path = os.path.join(root, file)
+                    relative_path = os.path.relpath(source_path, source_dir)
+                    safe_filename = relative_path.replace('/', '_').replace('\\', '_')
+                    target_path = os.path.join(lora_models_dir, safe_filename)
+                    try:
+                        if os.path.exists(target_path) or os.path.islink(target_path):
+                            os.unlink(target_path)
+                        os.symlink(source_path, target_path)
+                        linked_count += 1
+                        print(f"🔗 Linked style LoRA: {safe_filename}")
+                    except Exception as e:
+                        print(f"⚠️ Failed to link style LoRA {file}: {str(e)}")
+        return linked_count
+
     # Link all LoRAs from S3 bucket for dev server
     def link_all_loras():
         """Link all LoRAs from S3 bucket to make them available in dev server."""
@@ -395,35 +2173,29 @@ def dev_server():
                         os.symlink(source_path, target_path)
                         linked_count += 1
                         print(f"🔗 Linked LoRA: {safe_filename}")
+    
                     except Exception as e:
                         print(f"⚠️ Failed to link {file}: {str(e)}")
         
         return linked_count
     
-    # Link all LoRAs for dev testing
-    linked_loras = link_all_loras()
-    print(f"✅ Linked {linked_loras} LoRAs from S3 bucket for dev server")
+    # First, always link the specific style_loras
+    try:
+        style_count = link_style_loras()
+        print(f"✅ Linked {style_count} style LoRAs from /data/style_loras")
+    except Exception as e:
+        print(f"⚠️ Error linking style_loras: {e}")
+
+    # Optionally link all LoRAs for dev testing if enabled
+    if os.getenv("DEV_LINK_ALL_LORAS", "0") in ("1", "true", "True"): 
+        linked_loras = link_all_loras()
+        print(f"✅ Linked {linked_loras} LoRAs from S3 bucket for dev server")
+    else:
+        print("⏭️ Skipping bulk LoRA linking. Visit /lora to link specific files.")
     
     # Set comprehensive environment variables for English locale and performance optimization
     env = os.environ.copy()
     env.update({
-        'LANG': 'en_US.UTF-8',
-        'LC_ALL': 'en_US.UTF-8',
-        'LANGUAGE': 'en_US:en',
-        'LC_NUMERIC': 'en_US.UTF-8',
-        'LC_TIME': 'en_US.UTF-8',
-        'LC_COLLATE': 'en_US.UTF-8',
-        'LC_MONETARY': 'en_US.UTF-8',
-        'LC_MESSAGES': 'en_US.UTF-8',
-        'LC_PAPER': 'en_US.UTF-8',
-        'LC_NAME': 'en_US.UTF-8',
-        'LC_ADDRESS': 'en_US.UTF-8',
-        'LC_TELEPHONE': 'en_US.UTF-8',
-        'LC_MEASUREMENT': 'en_US.UTF-8',
-        'LC_IDENTIFICATION': 'en_US.UTF-8',
-        'COMFYUI_LOCALE': 'en',
-        'COMFYUI_LANGUAGE': 'en',
-        'COMFY_API_KEY': os.environ.get('COMFY_API_KEY', ''),  # Add API key for API nodes
         # Performance optimization environment variables
         'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True,backend:cudaMallocAsync',
         'TORCH_ALLOW_TF32_CUBLAS_OVERRIDE': '1',
@@ -437,619 +2209,228 @@ def dev_server():
         'COMFYUI_NOVRAM': 'false'
     })
     
-    # Launch ComfyUI UI server with SageAttention and H100 performance optimizations
+    # Launch ComfyUI on 8001; we'll serve a FastAPI app on 8000 that proxies to it
     subprocess.Popen(
-        "comfy launch -- --listen 0.0.0.0 --port 8000 --use-sage-attention --gpu-only --bf16-unet --bf16-vae --output-directory /data/outputs",
+        "comfy launch -- --listen 0.0.0.0 --port 8001 --use-sage-attention --gpu-only --bf16-unet --bf16-vae --output-directory /data/outputs --preview-method auto",
         shell=True,
         env=env
     )
-    print("🌐 ComfyUI UI available at the development server URL with API node support and English locale")
+    print("🌐 ComfyUI UI launched on 8001; proxy with /lora served on 8000")
 
-# ## Production Image Generation
+    # Build FastAPI proxy app with /lora endpoints
+    from fastapi import FastAPI, Request, WebSocket
+    from fastapi.responses import HTMLResponse, JSONResponse, Response
+    from fastapi import Form
+    import httpx
+    import websockets
+    import asyncio
 
-@app.cls(
-    scaledown_window=300,  # 5 minute keep-alive
-    gpu="H100",  # High-performance for batch inference
-    volumes={"/models": vol, "/data": s3_mount},
-    secrets=[aws_secret, comfyui_secret],  # Add ComfyUI secret for API nodes
-)
-@modal.concurrent(max_inputs=5)
-class ComfyUI:
-    """Production ComfyUI class for optimized batch image generation."""
-    
-    port: int = 8000
+    app_proxy = FastAPI(title="ComfyUI Dev Server with LoRA Linker")
 
-    @modal.enter()
-    def launch_comfy_background(self):
-        """Launch ComfyUI server in background when container starts."""
-        print("🔄 Initializing ComfyUI production environment...")
-        
-        # Configure ComfyUI locale to English first
-        if not setup_comfyui_locale():
-            print("⚠️ Warning: Failed to configure ComfyUI locale")
-        
-        # Configure ComfyUI with extra_model_paths.yaml
-        if not setup_model_paths_config():
-            raise RuntimeError("Failed to configure model paths")
-        
-        # Create LoRA directory for job-specific dynamic linking
-        os.makedirs("/root/comfy/ComfyUI/models/loras", exist_ok=True)
-        
-        # Set comprehensive environment variables including API key and performance optimizations
-        env = os.environ.copy()
-        env.update({
-            'LANG': 'en_US.UTF-8',
-            'LC_ALL': 'en_US.UTF-8',
-            'LANGUAGE': 'en_US:en',
-            'LC_NUMERIC': 'en_US.UTF-8',
-            'LC_TIME': 'en_US.UTF-8',
-            'LC_COLLATE': 'en_US.UTF-8',
-            'LC_MONETARY': 'en_US.UTF-8',
-            'LC_MESSAGES': 'en_US.UTF-8',
-            'LC_PAPER': 'en_US.UTF-8',
-            'LC_NAME': 'en_US.UTF-8',
-            'LC_ADDRESS': 'en_US.UTF-8',
-            'LC_TELEPHONE': 'en_US.UTF-8',
-            'LC_MEASUREMENT': 'en_US.UTF-8',
-            'LC_IDENTIFICATION': 'en_US.UTF-8',
-            'COMFYUI_LOCALE': 'en',
-            'COMFYUI_LANGUAGE': 'en',
-            'COMFY_API_KEY': os.environ.get('COMFY_API_KEY', ''),  # Add API key for API nodes
-            # Performance optimization environment variables
-            'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True,backend:cudaMallocAsync',
-            'TORCH_ALLOW_TF32_CUBLAS_OVERRIDE': '1',
-            'NVIDIA_TF32_OVERRIDE': '1',
-            'SAGE_ATTENTION_BACKEND': 'triton',
-            # H100 Performance: Force models to stay on GPU
-            'COMFYUI_MODEL_DEVICE': 'cuda',
-            'COMFYUI_VAE_DEVICE': 'cuda', 
-            'COMFYUI_CLIP_DEVICE': 'cuda',
-            'COMFYUI_LOWVRAM': 'false',
-            'COMFYUI_NOVRAM': 'false'
-        })
-        
-        # Launch ComfyUI server in background with SageAttention and H100 performance optimizations
-        cmd = f"comfy launch --background -- --port {self.port} --use-sage-attention --gpu-only --bf16-unet --bf16-vae --output-directory /data/outputs"  
-        subprocess.run(cmd, shell=True, check=True, env=env)
-        print("✅ ComfyUI server running with SageAttention and performance optimizations")
+    LORA_MODELS_DIR = "/root/comfy/ComfyUI/models/loras"
 
-    def setup_style_lora(self, lora_s3_path: str, style_id: str) -> str:
-        """Link specific LoRA from S3 path for this style only."""
-        if not lora_s3_path or lora_s3_path == "default.safetensors":
-            return "default.safetensors"
-        
-        # Validate S3 path exists
-        if not os.path.exists(lora_s3_path):
-            raise FileNotFoundError(f"LoRA file not found: {lora_s3_path}")
-        
-        # Extract filename and create style-specific name
-        original_filename = os.path.basename(lora_s3_path)
-        style_lora_filename = f"style_{style_id}_{original_filename}"
-        
-        # Create symlink in ComfyUI models directory
-        lora_models_dir = "/root/comfy/ComfyUI/models/loras"
-        style_lora_path = os.path.join(lora_models_dir, style_lora_filename)
-        
+    def _resolve_lora_source_dev(path: str) -> str:
+        p = (path or "").strip()
+        if p.startswith("s3://"):
+            remainder = p[len("s3://"):]
+            bucket = remainder
+            key = ""
+            if "/" in remainder:
+                bucket, key = remainder.split("/", 1)
+            if key.startswith("user-images/"):
+                return f"/data/{key[len('user-images/') :]}"
+            if key.startswith("workflows/"):
+                return f"/workflows/{key[len('workflows/') :]}"
+            if key:
+                return f"/data/{key}"
+            return "/data"
+        return p
+
+    def _safe_link_name_dev(source_path: str) -> str:
+        if source_path.startswith("/data/"):
+            rel = source_path[len("/data/"):]
+            return rel.replace("/", "_").replace("\\", "_")
+        return os.path.basename(source_path)
+
+    @app_proxy.get("/lora", response_class=HTMLResponse)
+    async def lora_form_dev():
+        html = """
+        <!doctype html>
+        <html>
+        <head>
+            <meta charset=\"utf-8\" />
+            <title>LoRA Linker</title>
+            <style>
+                body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 40px; }
+                input[type=text] { width: 600px; padding: 8px; }
+                button { padding: 8px 12px; }
+                code { background: #f3f3f3; padding: 2px 4px; }
+                .note { color: #555; margin-top: 8px; }
+                .links { margin-top: 20px; }
+            </style>
+        </head>
+        <body>
+            <h2>LoRA Linker (Dev)</h2>
+            <form id=\"linkForm\" method=\"post\" action=\"/lora/link\"> 
+                <label>Paste S3 path (e.g. <code>s3://primeshot-uploads-01/user-images/...</code>) or an existing <code>/data/...</code> path:</label><br/>
+                <input type=\"text\" name=\"path\" placeholder=\"s3://primeshot-uploads-01/user-images/..../model.safetensors\" />
+                <button type=\"submit\">Link</button>
+            </form>
+            <div class=\"note\">Links are created in <code>/root/comfy/ComfyUI/models/loras</code>. Refresh ComfyUI after linking to see new LoRAs.</div>
+            <div class=\"links\"> <h3>Current Links</h3> <ul id=\"list\"></ul> </div>
+            <script>
+                async function refreshList() {
+                    const res = await fetch('/lora/list');
+                    const data = await res.json();
+                    const ul = document.getElementById('list');
+                    ul.innerHTML = '';
+                    (data.links || []).forEach(name => {
+                        const li = document.createElement('li');
+                        const btn = document.createElement('button');
+                        btn.textContent = 'unlink';
+                        btn.onclick = async () => {
+                            const fd = new FormData();
+                            fd.append('name', name);
+                            await fetch('/lora/unlink', { method: 'POST', body: fd });
+                            refreshList();
+                        };
+                        li.textContent = name + ' ';
+                        li.appendChild(btn);
+                        ul.appendChild(li);
+                    });
+                }
+                refreshList();
+            </script>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html)
+
+    @app_proxy.post("/lora/link")
+    async def lora_link_dev(request: Request, path: str = Form(None)):
         try:
-            os.symlink(lora_s3_path, style_lora_path)
-            print(f"🔗 Linked LoRA for style {style_id}: {original_filename}")
-            return style_lora_filename
+            if path is None:
+                try:
+                    payload_bytes = await request.body()
+                    if payload_bytes:
+                        data = json.loads(payload_bytes.decode("utf-8"))
+                        path = (data or {}).get("path")
+                except Exception:
+                    path = None
+            if not path:
+                return JSONResponse({"ok": False, "error": "Missing 'path'"}, status_code=400)
+
+            source_path = _resolve_lora_source_dev(path)
+            if not os.path.exists(source_path):
+                return JSONResponse({"ok": False, "error": f"Not found: {source_path}"}, status_code=404)
+
+            os.makedirs(LORA_MODELS_DIR, exist_ok=True)
+            link_name = _safe_link_name_dev(source_path)
+            target_path = os.path.join(LORA_MODELS_DIR, link_name)
+            if os.path.exists(target_path) or os.path.islink(target_path):
+                os.unlink(target_path)
+            os.symlink(source_path, target_path)
+            return JSONResponse({"ok": True, "linked": link_name, "source": source_path})
         except Exception as e:
-            raise Exception(f"Failed to link LoRA: {str(e)}")
-    
-    def cleanup_style_lora(self, style_id: str) -> None:
-        """Remove style-specific LoRA symlinks."""
-        lora_models_dir = "/root/comfy/ComfyUI/models/loras"
-        
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    @app_proxy.get("/lora/list")
+    async def lora_list_dev():
         try:
-            # Find and remove all symlinks for this style
-            for filename in os.listdir(lora_models_dir):
-                if filename.startswith(f"style_{style_id}_"):
-                    lora_path = os.path.join(lora_models_dir, filename)
-                    if os.path.islink(lora_path):
-                        os.unlink(lora_path)
-                        print(f"🧹 Cleaned up LoRA symlink: {filename}")
+            os.makedirs(LORA_MODELS_DIR, exist_ok=True)
+            links = sorted([name for name in os.listdir(LORA_MODELS_DIR)])
+            return {"ok": True, "links": links}
         except Exception as e:
-            print(f"⚠️ Warning: Failed to cleanup LoRA symlinks: {str(e)}")
+            return {"ok": False, "error": str(e)}
 
-    def _workflow_uses_api_nodes(self, workflow: Dict[str, Any]) -> bool:
-        """Check if workflow contains API nodes that require credits."""
-        api_node_classes = [
-            "OpenAI", "DALL·E", "GPT", "Google", "Gemini", "Veo",
-            "Stability AI", "Black Forest Labs", "Luma", "Runway",
-            "Ideogram", "Kling", "MiniMax", "PixVerse", "Pika",
-            "Recraft", "Rodin", "Tripo"
-        ]
-        
-        for node_id, node_data in workflow.items():
-            class_type = node_data.get("class_type", "")
-            if any(api_class in class_type for api_class in api_node_classes):
-                print(f"🔑 Detected API node: {class_type} in node {node_id}")
-                return True
-        return False
-
-    def _validate_api_credits(self) -> None:
-        """Validate that API key has sufficient credits for API nodes."""
-        api_key = os.environ.get('COMFY_API_KEY', '')
-        if not api_key:
-            raise Exception("COMFY_API_KEY not found. API nodes require authentication.")
-        
+    @app_proxy.post("/lora/unlink")
+    async def lora_unlink_dev(name: str = Form(...)):
         try:
-            # Simple health check that also validates API key and credits
-            import urllib.request
-            import urllib.error
-            
-            # Check queue endpoint with API key
-            req = urllib.request.Request(f"http://127.0.0.1:{self.port}/queue")
-            req.add_header('Authorization', f'Bearer {api_key}')
-            
-            response = urllib.request.urlopen(req, timeout=10)
-            print("✅ API key validated and credits available")
-            
-        except urllib.error.HTTPError as e:
-            if e.code == 402:  # Payment required
-                raise Exception("Insufficient credits for API nodes. Please purchase more credits at https://platform.comfy.org")
-            elif e.code == 401:  # Unauthorized  
-                raise Exception("Invalid API key for ComfyUI API nodes. Check your COMFY_API_KEY.")
-            else:
-                print(f"⚠️ API validation warning (HTTP {e.code}): {e}")
+            target_path = os.path.join(LORA_MODELS_DIR, name)
+            if os.path.exists(target_path) or os.path.islink(target_path):
+                os.unlink(target_path)
+                return {"ok": True, "removed": name}
+            return {"ok": False, "error": "Not found"}
         except Exception as e:
-            print(f"⚠️ API validation warning: {str(e)}")
-            # Don't fail hard on validation errors in case of network issues
+            return {"ok": False, "error": str(e)}
 
-    @modal.method()
-    def generate_images(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate images using Flux + LoRA workflow."""
-        import sys
-        sys.path.append("/root")
-        
+    # Reverse proxy all other paths to ComfyUI on 8001
+    UPSTREAM = "http://127.0.0.1:8001"
+
+    def _filtered_headers(headers: dict) -> dict:
+        hop_by_hop = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade"}
+        return {k: v for k, v in headers.items() if k.lower() not in hop_by_hop}
+
+    @app_proxy.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]) 
+    async def proxy_http(request: Request, path: str):
+        if path.startswith("lora"):
+            return JSONResponse({"ok": False, "error": "Not found"}, status_code=404)
+        url = f"{UPSTREAM}/{path}"
+        method = request.method
+        headers = _filtered_headers(dict(request.headers))
+        body = await request.body()
         try:
-            # Import job tracker
-            from job_tracker import get_job_tracker
-            tracker = get_job_tracker()
-            
-            # Create style entry with optional style_id from request
-            style_id = request_data.get("style_id", str(uuid.uuid4()))
-            tracker.create_job(request_data, style_id)
-            tracker.mark_processing(style_id)
-            
-            print(f"🎯 Starting generation job: {style_id}")
-            
-            # Health check before processing
-            self.poll_server_health()
-            
-            # Extract workflow name and parameters
-            workflow_name = request_data.get("workflow_name", "flux_lora")
-            parameters = request_data.get("parameters", {})
-            
-            # Validate workflow and parameters
-            self.validate_workflow_request(workflow_name, parameters)
-            
-            # Setup style-specific LoRA (for workflows that need it)
-            style_lora_filename = None
-            if "lora_path" in parameters:
-                lora_s3_path = parameters.get("lora_path")
-                style_lora_filename = self.setup_style_lora(lora_s3_path, style_id)
-            
-            # Load and customize workflow
-            workflow = self.load_workflow_template(workflow_name)
-            user_id = request_data["user_id"]
-            workflow = self.inject_parameters(workflow, workflow_name, parameters, style_id, user_id, style_lora_filename)
-            
-            # Execute workflow
-            start_time = time.time()
-            result = self.execute_workflow(workflow, style_id, user_id)
-            execution_time = time.time() - start_time
-            
-            # Process results and upload to S3
-            output_urls = self.process_results(result, request_data, style_id)
-            
-            # Mark job as completed
-            tracker.mark_completed(style_id, output_urls, execution_time)
-            
-            # Cleanup style-specific LoRA
-            self.cleanup_style_lora(style_id)
-            
-            return {
-                "style_id": style_id,
-                "status": "completed",
-                "execution_time": execution_time,
-                "images_generated": len(output_urls),
-                "output_urls": output_urls,
-                "cost_estimate": len(output_urls) * 0.10
-            }
-            
-        except Exception as e:
-            print(f"❌ Generation failed: {str(e)}")
-            tracker.mark_failed(style_id, str(e))
-            
-            # Cleanup style-specific LoRA even on failure
-            self.cleanup_style_lora(style_id)
-            
-            return {
-                "style_id": style_id,
-                "status": "failed", 
-                "error": str(e)
-            }
+            async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+                upstream_resp = await client.request(method, url, headers=headers, content=body, params=dict(request.query_params))
+                resp_headers = _filtered_headers(dict(upstream_resp.headers))
+                return Response(content=upstream_resp.content, status_code=upstream_resp.status_code, headers=resp_headers)
+        except httpx.ConnectError:
+            return JSONResponse({"ok": False, "error": "ComfyUI upstream not ready"}, status_code=503)
 
-    def get_workflow_config(self) -> Dict[str, Any]:
-        """Load workflow configuration metadata."""
-        config_path = Path("/root/workflows/workflow_config.json")
-        if not config_path.exists():
-            raise FileNotFoundError("Workflow configuration not found")
-        return json.loads(config_path.read_text())
-
-    def load_workflow_template(self, workflow_name: str) -> Dict[str, Any]:
-        """Load specified workflow template with API node support."""
-        config = self.get_workflow_config()
-        
-        if workflow_name not in config["workflows"]:
-            available = list(config["workflows"].keys())
-            raise ValueError(f"Unknown workflow: {workflow_name}. Available: {available}")
-        
-        workflow_file = config["workflows"][workflow_name]["file"]
-        workflow_path = Path(f"/root/workflows/{workflow_file}")
-        
-        if not workflow_path.exists():
-            raise FileNotFoundError(f"Workflow file not found: {workflow_file}")
-        
-        workflow = json.loads(workflow_path.read_text())
-        
-        # Check if workflow uses API nodes and validate credits
-        if self._workflow_uses_api_nodes(workflow):
-            print(f"🔑 Workflow '{workflow_name}' uses API nodes - validating credits...")
-            self._validate_api_credits()
-        
-        return workflow
-
-    def validate_workflow_request(self, workflow_name: str, parameters: Dict[str, Any]) -> None:
-        """Validate workflow exists and parameters are correct."""
-        config = self.get_workflow_config()
-        
-        if workflow_name not in config["workflows"]:
-            available = list(config["workflows"].keys())
-            raise ValueError(f"Unknown workflow: {workflow_name}. Available: {available}")
-        
-        # Validate parameters against workflow config
-        workflow_config = config["workflows"][workflow_name]
-        param_definitions = workflow_config.get("parameters", {})
-        
-        # Check required parameters
-        for param_name, param_config in param_definitions.items():
-            if param_config.get("required", False) and param_name not in parameters:
-                raise ValueError(f"Missing required parameter: {param_name}")
-        
-        # Validate parameter types and ranges
-        for param_name, param_value in parameters.items():
-            if param_name in param_definitions:
-                param_config = param_definitions[param_name]
-                self._validate_parameter_value(param_name, param_value, param_config)
-
-    def _validate_parameter_value(self, param_name: str, value: Any, config: Dict[str, Any]) -> None:
-        """Validate individual parameter value."""
-        param_type = config.get("type", "string")
-        
-        # Type validation
-        if param_type == "integer" and not isinstance(value, int):
-            raise ValueError(f"Parameter {param_name} must be an integer")
-        elif param_type == "float" and not isinstance(value, (int, float)):
-            raise ValueError(f"Parameter {param_name} must be a number")
-        elif param_type == "string" and not isinstance(value, str):
-            raise ValueError(f"Parameter {param_name} must be a string")
-        
-        # Range validation
-        if "min" in config and value < config["min"]:
-            raise ValueError(f"Parameter {param_name} must be >= {config['min']}")
-        if "max" in config and value > config["max"]:
-            raise ValueError(f"Parameter {param_name} must be <= {config['max']}")
-        
-        # Options validation
-        if "options" in config and value not in config["options"]:
-            raise ValueError(f"Parameter {param_name} must be one of: {config['options']}")
-
-    def inject_parameters(self, workflow: Dict[str, Any], workflow_name: str, params: Dict[str, Any], style_id: str, user_id: str, style_lora_filename: str = None) -> Dict[str, Any]:
-        """Generic parameter injection for any workflow based on configuration."""
-        config = self.get_workflow_config()
-        workflow_config = config["workflows"][workflow_name]
-        param_definitions = workflow_config.get("parameters", {})
-        parameter_mappings = workflow_config.get("parameter_mappings", {})
-        
-        # Apply default values for missing parameters
-        processed_params = {}
-        for param_name, param_config in param_definitions.items():
-            if param_name in params:
-                processed_params[param_name] = params[param_name]
-            elif "default" in param_config:
-                processed_params[param_name] = param_config["default"]
-        
-        # Add user-specific output prefix automatically
-        processed_params["output_prefix"] = f"{user_id}/generated/{style_id}"
-        
-        # Apply each parameter using its mapping configuration
-        for param_name, param_value in processed_params.items():
-            mapping = parameter_mappings.get(param_name)
-            if mapping:
-                self._apply_parameter_mapping(workflow, mapping, param_value, style_id, style_lora_filename, workflow_name)
-        
-        print(f"✅ Applied {len(processed_params)} parameters to workflow {workflow_name}")
-        return workflow
-
-    def _apply_parameter_mapping(self, workflow: Dict[str, Any], mapping: Dict[str, Any], param_value: Any, style_id: str, style_lora_filename: str = None, workflow_name: str = None) -> None:
-        """Apply a single parameter mapping to the workflow."""
-        special_handler = mapping.get("special_handler")
-        
-        if special_handler == "resolution":
-            # Parse resolution and apply to width/height mappings
-            width, height = map(int, str(param_value).split('x'))
-            
-            width_mapping = mapping.get("width_mapping")
-            if width_mapping:
-                node_id = width_mapping["node"]
-                input_key = width_mapping["input_key"]
-                workflow[node_id]["inputs"][input_key] = width
-            
-            height_mapping = mapping.get("height_mapping")
-            if height_mapping:
-                node_id = height_mapping["node"]
-                input_key = height_mapping["input_key"]
-                workflow[node_id]["inputs"][input_key] = height
-            
-            # Handle upscale mappings with multipliers
-            upscale_width_mapping = mapping.get("upscale_width_mapping")
-            if upscale_width_mapping:
-                node_id = upscale_width_mapping["node"]
-                input_key = upscale_width_mapping["input_key"]
-                multiplier = upscale_width_mapping.get("multiplier", 1)
-                workflow[node_id]["inputs"][input_key] = width * multiplier
-            
-            upscale_height_mapping = mapping.get("upscale_height_mapping")
-            if upscale_height_mapping:
-                node_id = upscale_height_mapping["node"]
-                input_key = upscale_height_mapping["input_key"]
-                multiplier = upscale_height_mapping.get("multiplier", 1)
-                workflow[node_id]["inputs"][input_key] = height * multiplier
-                
-        elif special_handler == "random_seed":
-            # Generate random seed if -1
-            if param_value == -1:
-                import random
-                param_value = random.randint(0, 2**32 - 1)
-            
-            node_id = mapping["node"]
-            input_key = mapping["input_key"]
-            workflow[node_id]["inputs"][input_key] = param_value
-            
-        elif special_handler == "lora_file":
-            # Handle LoRA file linking (already processed)
-            if style_lora_filename and style_lora_filename != "default.safetensors":
-                # Find LoRA node by checking workflow config
-                config = self.get_workflow_config()
-                node_mappings = config["workflows"].get(workflow_name, {}).get("node_mappings", {})
-                if "lora_loader" in node_mappings:
-                    lora_node = node_mappings["lora_loader"]
-                    workflow[lora_node]["inputs"]["lora_name"] = style_lora_filename
-                    
-        elif special_handler == "style_output":
-            # Apply style-specific output prefix
-            node_id = mapping["node"]
-            input_key = mapping["input_key"]
-            workflow[node_id]["inputs"][input_key] = param_value
-            
-        else:
-            # Standard parameter mapping
-            node_id = mapping["node"]
-            
-            # Check if this is a widget mapping or input mapping
-            if "widget_index" in mapping:
-                # Widget value mapping
-                widget_index = mapping["widget_index"]
-                if "widgets_values" not in workflow[node_id]:
-                    workflow[node_id]["widgets_values"] = []
-                
-                # Ensure the widgets_values list is long enough
-                while len(workflow[node_id]["widgets_values"]) <= widget_index:
-                    workflow[node_id]["widgets_values"].append(None)
-                
-                workflow[node_id]["widgets_values"][widget_index] = param_value
-            else:
-                # Input mapping
-                input_key = mapping["input_key"]
-                workflow[node_id]["inputs"][input_key] = param_value
-            
-            # Apply secondary mappings (e.g., LoRA strength to both model and clip)
-            secondary_mappings = mapping.get("secondary_mappings", [])
-            for secondary in secondary_mappings:
-                sec_node_id = secondary["node"]
-                if "widget_index" in secondary:
-                    # Widget value mapping
-                    widget_index = secondary["widget_index"]
-                    if "widgets_values" not in workflow[sec_node_id]:
-                        workflow[sec_node_id]["widgets_values"] = []
-                    
-                    # Ensure the widgets_values list is long enough
-                    while len(workflow[sec_node_id]["widgets_values"]) <= widget_index:
-                        workflow[sec_node_id]["widgets_values"].append(None)
-                    
-                    workflow[sec_node_id]["widgets_values"][widget_index] = param_value
-                else:
-                    # Input mapping
-                    sec_input_key = secondary["input_key"]
-                    workflow[sec_node_id]["inputs"][sec_input_key] = param_value
-
-    def execute_workflow(self, workflow: Dict[str, Any], style_id: str, user_id: str) -> str:
-        """Execute ComfyUI workflow and return output directory."""
-        # Save workflow to temporary file
-        workflow_file = f"/tmp/workflow_{style_id}.json"
-        with open(workflow_file, 'w') as f:
-            json.dump(workflow, f)
-        
-        # Set environment variables including API key and performance optimizations for CLI execution
-        env = os.environ.copy()
-        env.update({
-            'COMFY_API_KEY': os.environ.get('COMFY_API_KEY', ''),
-            # Performance optimization environment variables
-            'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True,backend:cudaMallocAsync',
-            'TORCH_ALLOW_TF32_CUBLAS_OVERRIDE': '1',
-            'NVIDIA_TF32_OVERRIDE': '1',
-            'SAGE_ATTENTION_BACKEND': 'triton',
-            # H100 Performance: Force models to stay on GPU
-            'COMFYUI_MODEL_DEVICE': 'cuda',
-            'COMFYUI_VAE_DEVICE': 'cuda', 
-            'COMFYUI_CLIP_DEVICE': 'cuda',
-            'COMFYUI_LOWVRAM': 'false',
-            'COMFYUI_NOVRAM': 'false'
-        })
-        
-        # Run workflow using comfy CLI with performance optimizations and API key authentication
-        cmd = f"comfy run --workflow {workflow_file} --wait --timeout 1200 --verbose"
-        result = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True, env=env)
-        
-        print(f"✅ Workflow executed successfully for style {style_id}")
-        return f"/data/outputs/{user_id}/generated/{style_id}"
-
-    def process_results(self, output_dir: str, request_data: Dict[str, Any], style_id: str) -> List[str]:
-        """Process generated images and return S3 URLs."""
-        import boto3
-        
-        output_urls = []
-        user_id = request_data.get("user_id", "unknown")
-        
+    @app_proxy.websocket("/{path:path}")
+    async def proxy_ws(websocket: WebSocket, path: str):
+        if path.startswith("lora"):
+            await websocket.close()
+            return
+        await websocket.accept()
+        target = f"ws://127.0.0.1:8001/{path}"
         try:
-            # Initialize S3 client  
-            s3_client = boto3.client('s3')
-            bucket_name = "primeshot-uploads-01"
-            
-            # Find generated images
-            output_path = Path(output_dir)
-            image_files = list(output_path.glob(f"{user_id}/generated/{style_id}*.png"))
-            
-            for i, image_file in enumerate(image_files):
-                # Upload to S3
-                s3_key = f"user-images/{user_id}/generated/{style_id}/image_{i+1:03d}.png"
-                s3_client.upload_file(str(image_file), bucket_name, s3_key)
-                
-                # Generate URL
-                s3_url = f"s3://{bucket_name}/{s3_key}"
-                output_urls.append(s3_url)
-                
-                print(f"📤 Uploaded: {s3_url}")
-                
-        except Exception as e:
-            print(f"❌ Error processing results: {e}")
-        
-        return output_urls
+            async with websockets.connect(target) as upstream:
+                async def client_to_upstream():
+                    try:
+                        while True:
+                            message = await websocket.receive()
+                            if message.get("type") == "websocket.receive":
+                                if "text" in message and message["text"] is not None:
+                                    await upstream.send(message["text"])
+                                elif "bytes" in message and message["bytes"] is not None:
+                                    await upstream.send(message["bytes"])
+                    except Exception:
+                        try:
+                            await upstream.close()
+                        except Exception:
+                            pass
 
-    @modal.fastapi_endpoint(method="POST", label="inference", requires_proxy_auth=True)
-    def api(self, request_data: Dict[str, Any]):
-        """Main API endpoint for image generation."""
-        from fastapi import HTTPException
-        
-        # Validate required top-level parameters
-        if "user_id" not in request_data:
-            raise HTTPException(status_code=400, detail="Missing required parameter: user_id")
-        
-        # Get workflow and parameters
-        workflow_name = request_data.get("workflow_name", "flux_lora")
-        parameters = request_data.get("parameters", {})
-        user_id = request_data["user_id"]
-        
-        # Validate LoRA path for security (for any workflow that uses LoRAs)
-        if "lora_path" in parameters:
-            lora_path = parameters["lora_path"]
-            if lora_path != "default.safetensors":
-                # Ensure user can only access their own LoRAs
-                expected_prefix = f"/data/{user_id}/loras/"
-                if not lora_path.startswith(expected_prefix):
-                    raise HTTPException(
-                        status_code=403,
-                        detail=f"LoRA path must start with {expected_prefix} for security"
-                    )
-                
-                # Validate file extension
-                if not lora_path.endswith(".safetensors"):
-                    raise HTTPException(
-                        status_code=400,
-                        detail="LoRA file must have .safetensors extension"
-                    )
-        
-        # Execute generation
-        result = self.generate_images.local(request_data)
-        return result
+                async def upstream_to_client():
+                    try:
+                        while True:
+                            data = await upstream.recv()
+                            if isinstance(data, (bytes, bytearray)):
+                                await websocket.send_bytes(data)
+                            else:
+                                await websocket.send_text(str(data))
+                    except Exception:
+                        try:
+                            await websocket.close()
+                        except Exception:
+                            pass
 
-    def poll_server_health(self) -> None:
-        """Check if ComfyUI server is healthy."""
-        import socket
-        import urllib.request
-        import urllib.error
-        
-        try:
-            req = urllib.request.Request(f"http://127.0.0.1:{self.port}/system_stats")
-            urllib.request.urlopen(req, timeout=5)
-            print("✅ ComfyUI server is healthy")
-        except (socket.timeout, urllib.error.URLError) as e:
-            print(f"❌ Server health check failed: {str(e)}")
-            modal.experimental.stop_fetching_inputs()
-            raise Exception("ComfyUI server is not healthy, stopping container")
+                await asyncio.gather(client_to_upstream(), upstream_to_client())
+        except Exception:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
 
-# ## API Endpoints
+    @app_proxy.on_event("startup")
+    async def _wait_for_upstream():
+        # Give ComfyUI a moment to boot to reduce initial 503s
+        for _ in range(60):
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    await client.get(f"{UPSTREAM}/")
+                    break
+            except Exception:
+                await asyncio.sleep(2)
 
-# @app.function(
-#     image=modal.Image.debian_slim().pip_install(["fastapi==0.104.1"]).add_local_dir("workflows", "/root/workflows")
-# )
-# @modal.fastapi_endpoint(method="GET", label="workflows")
-# def list_workflows():
-#     """List available workflows and their parameters."""
-#     import json
-#     from pathlib import Path
-    
-#     try:
-#         config_path = Path("/root/workflows/workflow_config.json")
-#         if config_path.exists():
-#             return json.loads(config_path.read_text())
-#         else:
-#             return {"error": "Workflow configuration not found"}
-#     except Exception as e:
-#         return {"error": str(e)}
-
-# @app.function(
-#     image=modal.Image.debian_slim().pip_install(["fastapi==0.104.1", "pydantic>=2.8.0"]).add_local_file("job_tracker.py", "/root/job_tracker.py"),
-#     secrets=[aws_secret]
-# )
-# @modal.fastapi_endpoint(method="GET", label="job-status") 
-# def job_status_endpoint(job_id: str):
-#     """Get status of a generation job."""
-#     import sys
-#     sys.path.append("/root")
-    
-#     try:
-#         from job_tracker import get_job_tracker
-#         tracker = get_job_tracker()
-        
-#         job_status = tracker.get_job_status(job_id)
-        
-#         if not job_status:
-#             return {
-#                 "error": f"Job {job_id} not found",
-#                 "status": "error"
-#             }
-        
-#         return job_status
-        
-#     except Exception as e:
-#         return {
-#             "error": str(e),
-#             "status": "error"
-#         }
-
-@app.function(
-    image=modal.Image.debian_slim().pip_install(["fastapi==0.104.1"])
-)
-@modal.fastapi_endpoint(method="GET", label="health", requires_proxy_auth=True)
-def health_check():
-    """Health check endpoint."""
-    return {
-        "status": "healthy",
-        "service": "ComfyUI",
-        "version": "2.1.0",
-        "features": ["flux", "lora", "upscaling", "s3", "latest"]
-    } 
+    return app_proxy

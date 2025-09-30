@@ -16,7 +16,8 @@ local_test.py
 .cursor/
 
 # Models directory
-models/
+uploads/
+comfyui_api/
 
 # Python cache
 __pycache__/

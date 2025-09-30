@@ -99,17 +99,12 @@ def download_models():
     
     # Create all necessary directories
     directories = [
-        "/models/checkpoints",
         "/models/unet",
         "/models/upscale_models", 
         "/models/clip",
-        "/models/clip_vision",
         "/models/vae",
         "/models/loras",
-        "/models/controlnet",
-        "/models/style_models",
         "/models/Wan-AI",
-        "/models/vlm"
     ]
     
     for dir_path in directories:
@@ -121,68 +116,14 @@ def download_models():
         {
             "name": "Wan-AI Wan2.2-T2V-A14B",
             "type": "snapshot",
-            "check_path": "/models/Wan-AI/Wan2.2-T2V-A14B",
-            "repo_id": "Wan-AI/Wan2.2-T2V-A14B"
-        },
-        {
-            "name": "Wan-AI Wan2.2-TI2V-5B",
-            "type": "snapshot",
-            "check_path": "/models/Wan-AI/Wan2.2-TI2V-5B",
-            "repo_id": "Wan-AI/Wan2.2-TI2V-5B"
+            "check_path": "/models/ai-toolkit/Wan2.2-T2V-A14B-Diffusers-bf16",
+            "repo_id": "Wan-AI/Wan2.2-T2V-A14B-Diffusers-bf16"
         },
         {
             "name": "Wan-AI Wan2.1-T2V-14B",
             "type": "snapshot",
-            "check_path": "/models/Wan-AI/Wan2.1-T2V-14B",
-            "repo_id": "Wan-AI/Wan2.1-T2V-14B"
-        },
-        {
-            "name": "Wan-AI Wan2.2-TI2V-5B-Diffusers",
-            "type": "snapshot",
-            "check_path": "/models/Wan-AI/Wan2.2-TI2V-5B-Diffusers",
-            "repo_id": "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
-        },
-        {
-            "name": "Wan 2.2 T2V Low Noise 14B FP16 UNET (TextImage-to-Video - ~28GB)",
-            "type": "single_file",
-            "check_path": "/models/unet/wan2.2_t2v_low_noise_14B_fp16.safetensors",
-            "min_size_gb": 25,  # Should be around 28GB
-            "download_func": lambda: shutil.move(
-                hf_hub_download(
-                    repo_id="Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
-                    filename="split_files/diffusion_models/wan2.2_t2v_low_noise_14B_fp16.safetensors",
-                    local_dir="/models/unet"
-                ),
-                "/models/unet/wan2.2_t2v_low_noise_14B_fp16.safetensors"
-            )
-        },
-        {
-            "name": "Wan 2.2 T2V High Noise 14B FP16 UNET (TextImage-to-Video - ~28GB)",
-            "type": "single_file",
-            "check_path": "/models/unet/wan2.2_t2v_high_noise_14B_fp16.safetensors",
-            "min_size_gb": 25,  # Should be around 28GB
-            "download_func": lambda: shutil.move(
-                hf_hub_download(
-                    repo_id="Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
-                    filename="split_files/diffusion_models/wan2.2_t2v_high_noise_14B_fp16.safetensors",
-                    local_dir="/models/unet"
-                ),
-                "/models/unet/wan2.2_t2v_high_noise_14B_fp16.safetensors"
-            )
-        },
-        {
-            "name": "Wan 2.2 TI2V 5B FP16 UNET (TextImage-to-Video - ~10GB)",
-            "type": "single_file",
-            "check_path": "/models/unet/wan2.2_ti2v_5B_fp16.safetensors",
-            "min_size_gb": 10,  # Should be around 10GB
-            "download_func": lambda: shutil.move(
-                hf_hub_download(
-                    repo_id="Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
-                    filename="split_files/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors",
-                    local_dir="/models/unet"
-                ),
-                "/models/unet/wan2.2_ti2v_5B_fp16.safetensors"
-            )
+            "check_path": "/models/Wan-AI/Wan2.1-T2V-14B-Diffusers",
+            "repo_id": "Wan-AI/Wan2.1-T2V-14B-Diffusers"
         },
         {
             "name": "UMT5 XXL FP16 Text Encoder (Wan 2.2 Repackaged - ~10GB)",
@@ -220,28 +161,6 @@ def download_models():
             "download_func": lambda: hf_hub_download(
                 repo_id="gemasai/4x_NMKD-Siax_200k",
                 filename="4x_NMKD-Siax_200k.pth",
-                local_dir="/models/upscale_models"
-            )
-        },
-        {
-            "name": "RealESRGAN 4x+ Upscaler (General Purpose - 67MB)",
-            "type": "single_file",
-            "check_path": "/models/upscale_models/RealESRGAN_x4plus.pth",
-            "min_size_mb": 60,
-            "download_func": lambda: hf_hub_download(
-                repo_id="schwgHao/RealESRGAN_x4plus",
-                filename="RealESRGAN_x4plus.pth",
-                local_dir="/models/upscale_models"
-            )
-        },
-        {
-            "name": "4x_foolhardy_Remacri Upscaler (Sharp Details - 67MB)",
-            "type": "single_file",
-            "check_path": "/models/upscale_models/4x_foolhardy_Remacri.pth",
-            "min_size_mb": 60,
-            "download_func": lambda: hf_hub_download(
-                repo_id="FacehugmanIII/4x_foolhardy_Remacri",
-                filename="4x_foolhardy_Remacri.pth",
                 local_dir="/models/upscale_models"
             )
         },
@@ -385,18 +304,10 @@ def download_models():
     
     print(f"\n🔍 FINAL VERIFICATION:")
     essential_checks = [
-        ("/models/Wan-AI/Wan2.2-T2V-A14B", "Wan-AI Text-to-Video Model"),
-        ("/models/Wan-AI/Wan2.2-TI2V-5B", "Wan-AI TextImage-to-Video Model"),
-        ("/models/Wan-AI/Wan2.1-T2V-14B", "Wan-AI Text-to-Video Model"),
-        ("/models/Wan-AI/Wan2.2-T2V-A14B-Diffusers", "Wan-AI Text-to-Video Model (Diffusers)"),
-        ("/models/Wan-AI/Wan2.2-TI2V-5B-Diffusers", "Wan-AI TextImage-to-Video Model (Diffusers)"),
-        ("/models/unet/wan2.2_t2v_low_noise_14B_fp16.safetensors", "Wan 2.2 T2V Low Noise 14B FP16 UNET"),
-        ("/models/unet/wan2.2_t2v_high_noise_14B_fp16.safetensors", "Wan 2.2 T2V High Noise 14B FP16 UNET"),
-        ("/models/unet/wan2.2_ti2v_5B_fp16.safetensors", "Wan 2.2 TI2V 5B FP16 UNET"),
+        ("/models/ai-toolkit/Wan2.2-T2V-A14B-Diffusers-bf16", "Wan-AI 2.2 Text-to-Video Diffusers"),
+        ("/models/Wan-AI/Wan2.1-T2V-14B-Diffusers", "Wan-AI 2.1 Text-to-Video Diffusers"),
         ("/models/vae/wan_2.2_vae.safetensors", "Wan 2.2 VAE"),
         ("/models/upscale_models/4x_NMKD-Siax_200k.pth", "4x NMKD-Siax Upscaler"),
-        ("/models/upscale_models/RealESRGAN_x4plus.pth", "RealESRGAN 4x+ Upscaler"),
-        ("/models/upscale_models/4x_foolhardy_Remacri.pth", "4x Foolhardy Remacri Upscaler"),
         ("/models/loras/Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors", "WanVideo T2V 14B Light x2v CFG Step Distill LoRA"),
         ("/models/loras/Wan2.1_T2V_14B_FusionX_LoRA.safetensors", "Wan2.1 T2V 14B FusionX LoRA"),
     ]
@@ -422,10 +333,119 @@ def download_models():
     
     print(f"\n✅ Model download process completed!")
 
+def _volume_dir_exists(volume: modal.Volume, dir_path: str) -> bool:
+    """Return True if directory exists in the volume, else False."""
+    try:
+        volume.listdir(dir_path)
+        return True
+    except FileNotFoundError:
+        return False
+
+def _volume_file_exists(volume: modal.Volume, file_path: str) -> bool:
+    """Return True if file exists in the volume, else False."""
+    try:
+        # read_file raises FileNotFoundError when not present; avoid loading big files
+        # Use listdir on parent and check membership to avoid reading contents
+        parent = os.path.dirname(file_path) or "/"
+        base = os.path.basename(file_path)
+        entries = volume.listdir(parent)
+        names = []
+        for e in entries:
+            # e may be a string path or a mapping with name/path
+            if isinstance(e, str):
+                names.append(os.path.basename(e))
+            elif isinstance(e, dict):
+                name = e.get("name") or e.get("path") or ""
+                names.append(os.path.basename(str(name)))
+            else:
+                # Fallback to string representation
+                names.append(os.path.basename(str(e)))
+        return base in set(names)
+    except FileNotFoundError:
+        return False
+
+def _volume_list_names(volume: modal.Volume, dir_path: str) -> set:
+    """Return a set of basenames present in a volume directory."""
+    try:
+        entries = volume.listdir(dir_path)
+    except FileNotFoundError:
+        return set()
+    names = set()
+    for e in entries:
+        if isinstance(e, str):
+            names.add(os.path.basename(e))
+        elif isinstance(e, dict):
+            name = e.get("name") or e.get("path") or ""
+            names.add(os.path.basename(str(name)))
+        else:
+            names.add(os.path.basename(str(e)))
+    return names
+
+def upload_local_uploads(local_base: str = None, mappings: dict = None):
+    """
+    Upload files from local uploads/ subfolders into corresponding paths in the models volume.
+    - local_base: base directory on local filesystem (default: repo's modal_apps/inference/uploads)
+    - mappings: dict of { local_subdir: volume_subdir }, e.g., { "loras": "/loras" }
+    Behavior:
+      - Logs if a target directory does not exist in the volume
+      - Skips files that already exist in the volume
+      - Commits the volume if any uploads occurred
+    """
+    vol = models_volume  # modal.Volume.from_name("models-vol") already defined
+    if local_base is None:
+        local_base = str(Path(__file__).resolve().parents[1] / "uploads")
+    if mappings is None:
+        mappings = {"loras": "/loras"}
+
+    print(f"\n📤 Uploading from local uploads base: {local_base}")
+
+    total_uploaded = 0
+    for local_subdir, volume_subdir in mappings.items():
+        local_dir = os.path.join(local_base, local_subdir)
+        target_dir = volume_subdir
+
+        if not os.path.isdir(local_dir):
+            print(f"⏭️ Skip: local folder not found: {local_dir}")
+            continue
+
+        if not _volume_dir_exists(vol, target_dir):
+            print(f"⚠️ Modal folder missing: {target_dir} (create it by writing a file during a function run)")
+            continue
+
+        print(f"➡️  Syncing {local_dir} -> {target_dir}")
+
+        local_files = [f for f in os.listdir(local_dir) if os.path.isfile(os.path.join(local_dir, f))]
+        if not local_files:
+            print(f"(empty) {local_dir}")
+            continue
+
+        existing_names = _volume_list_names(vol, target_dir)
+        with vol.batch_upload() as batch:
+            for fname in local_files:
+                if fname in existing_names:
+                    print(f"✅ Exists, skip: {os.path.join(target_dir, fname)}")
+                    continue
+                local_path = os.path.join(local_dir, fname)
+                remote_path = os.path.join(target_dir, fname)
+                batch.put_file(local_path, remote_path)
+                total_uploaded += 1
+                print(f"📥 Queued upload: {remote_path}")
+
+    if total_uploaded > 0:
+        # batch_upload() finalizes uploads; explicit commit is only valid inside a container.
+        print(f"✅ Uploaded {total_uploaded} file(s) to volume.")
+    else:
+        print("✅ No uploads needed; volume already up to date.")
+
 @app.local_entrypoint()
 def main():
     """Run the comprehensive model download."""
     download_models.remote()
+
+@app.local_entrypoint()
+def upload_uploads():
+    """Upload local uploads (e.g., loras) to the models volume."""
+    upload_local_uploads()
 
 if __name__ == "__main__":
     # When called directly (not as Modal function), just verify models exist
@@ -433,18 +453,10 @@ if __name__ == "__main__":
     print("🔍 Checking if models are available...")
     
     essential_checks = [
-        ("/models/Wan-AI/Wan2.2-T2V-A14B", "Wan-AI Text-to-Video Model"),
-        ("/models/Wan-AI/Wan2.2-TI2V-5B", "Wan-AI TextImage-to-Video Model"),
-        ("/models/Wan-AI/Wan2.1-T2V-14B", "Wan-AI Text-to-Video Model"),
-        ("/models/Wan-AI/Wan2.2-T2V-A14B-Diffusers", "Wan-AI Text-to-Video Model"),
-        ("/models/Wan-AI/Wan2.2-TI2V-5B-Diffusers", "Wan-AI TextImage-to-Video Model"),
-        ("/models/unet/wan2.2_t2v_low_noise_14B_fp16.safetensors", "Wan 2.2 T2V Low Noise 14B FP16 UNET"),
-        ("/models/unet/wan2.2_t2v_high_noise_14B_fp16.safetensors", "Wan 2.2 T2V High Noise 14B FP16 UNET"),
-        ("/models/unet/wan2.2_ti2v_5B_fp16.safetensors", "Wan 2.2 TI2V 5B FP16 UNET"),
+        ("/models/ai-toolkit/Wan2.2-T2V-A14B-Diffusers-bf16", "Wan-AI 2.2 Text-to-Video Diffusers"),
+        ("/models/Wan-AI/Wan2.1-T2V-14B-Diffusers", "Wan-AI 2.1 Text-to-Video Diffusers"),
         ("/models/vae/wan_2.2_vae.safetensors", "Wan 2.2 VAE"),
         ("/models/upscale_models/4x_NMKD-Siax_200k.pth", "4x NMKD-Siax Upscaler"),
-        ("/models/upscale_models/RealESRGAN_x4plus.pth", "RealESRGAN 4x+ Upscaler"),
-        ("/models/upscale_models/4x_foolhardy_Remacri.pth", "4x Foolhardy Remacri Upscaler"),
         ("/models/loras/Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors", "WanVideo T2V 14B Light x2v CFG Step Distill LoRA"),
         ("/models/loras/Wan2.1_T2V_14B_FusionX_LoRA.safetensors", "Wan2.1 T2V 14B FusionX LoRA"),
     ]

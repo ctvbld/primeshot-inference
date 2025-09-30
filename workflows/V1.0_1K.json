@@ -1,0 +1,330 @@
+{
+  "3": {
+    "inputs": {
+      "text": "A warm, natural hyper close-up portrait of a woman, late 20s, green eyes, light blond hair, framed from the chin to the top of the forehead, cropping the hairline, a serene and glowing expression. The lighting is soft, warm afternoon sunlight streaming through Venetian blinds, casting strong and striking shadow patterns across the face and highlighting a dewy complexion. The background consists of muted teal walls, evenly diffused, enhancing the warmth and subtle contrast of the scene. Wearing a white silk blouse with subtle ruffles under a red tailored blazer, feminine fit for female form, peaked lapels for sharp structure.. The overall mood is hyperrealistic and refined, with intricate textures, delicate light and shadow interplay, and a palette of warm neutrals and soft pastels.",
+      "clip": [
+        "14",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "PositivePrompt"
+    }
+  },
+  "4": {
+    "inputs": {
+      "text": "plastic-like skin texture, oily appearance, unnatural texture, 3d render, cgi, doll, deformed, disfigured, poorly drawn, poor anatomy, bad hands, nude, bad hands, deformed, face asymmetry, eyes asymmetry, deformed eyes, deformed mouth, unwanted hair artifacts on face, grain, noise, artifacts, nipple, brand, text, writings, logo, initials, low quality, blurry face, ugly, poorly drawn hands, deformed face, extra limbs, bad anatomy, low resolution, unrealistic, cartoonish, watermark, text, signature, distorted proportions, creepy, glitch, jpeg artifacts,",
+      "clip": [
+        "14",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)"
+    }
+  },
+  "7": {
+    "inputs": {
+      "unet_name": "wan2.1_t2v_14B_fp16.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Charger Modèle Diffusion"
+    }
+  },
+  "8": {
+    "inputs": {
+      "vae_name": "wan_2.1_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Charger VAE"
+    }
+  },
+  "9": {
+    "inputs": {
+      "samples": [
+        "43",
+        0
+      ],
+      "vae": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "14": {
+    "inputs": {
+      "lora_name": "fc9f0a5d-73cf-45f3-a58e-6131bed67d21_training_2a98e2f4-d628-431b-bff7-ec4fbcce7e0e_loras_lora_20250921_144723_782dc8e4.safetensors",
+      "strength_model": 1,
+      "strength_clip": 1,
+      "model": [
+        "38",
+        0
+      ],
+      "clip": [
+        "38",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "CharacterLora"
+    }
+  },
+  "38": {
+    "inputs": {
+      "lora_name": "training_blindlight_loras_lora_20250915_094231_b0a940a5.safetensors",
+      "strength_model": 0.5,
+      "strength_clip": 0.5,
+      "model": [
+        "125:45",
+        0
+      ],
+      "clip": [
+        "125:45",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "StyleLora"
+    }
+  },
+  "42": {
+    "inputs": {
+      "text": "Static, motionless, still, ugly, bad quality, worst quality, poorly drawn, low resolution, lack of details, blurry face, blurry eyes",
+      "clip": [
+        "14",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "NegativePrompt"
+    }
+  },
+  "43": {
+    "inputs": {
+      "seed": 22080772664761,
+      "steps": 10,
+      "cfg": 1,
+      "nag_scale": 1,
+      "nag_tau": 2.5,
+      "nag_alpha": 0.25,
+      "nag_sigma_end": 0,
+      "sampler_name": "res_2s",
+      "scheduler": "bong_tangent",
+      "denoise": 0.97,
+      "model": [
+        "14",
+        0
+      ],
+      "positive": [
+        "3",
+        0
+      ],
+      "negative": [
+        "4",
+        0
+      ],
+      "nag_negative": [
+        "42",
+        0
+      ],
+      "latent_image": [
+        "145",
+        0
+      ]
+    },
+    "class_type": "KSamplerWithNAG",
+    "_meta": {
+      "title": "KSamplerWithNAG"
+    }
+  },
+  "44": {
+    "inputs": {
+      "shift": 5,
+      "model": [
+        "7",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingSD3",
+    "_meta": {
+      "title": "ModèleÉchantillonnageSD3"
+    }
+  },
+  "130": {
+    "inputs": {
+      "filename_prefix": "orig_",
+      "file_type": "PNG",
+      "remove_metadata": true,
+      "images": [
+        "124:110",
+        0
+      ]
+    },
+    "class_type": "SaveImagePlus",
+    "_meta": {
+      "title": "SaveOrig"
+    }
+  },
+  "145": {
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "ImageLatent"
+    }
+  },
+  "125:22": {
+    "inputs": {
+      "clip_name": "umt5_xxl_fp16.safetensors",
+      "type": "wan",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Charger CLIP"
+    }
+  },
+  "125:29": {
+    "inputs": {
+      "lora_name": "Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors",
+      "strength_model": 0.4,
+      "strength_clip": 0.4,
+      "model": [
+        "125:30",
+        0
+      ],
+      "clip": [
+        "125:30",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "Charger LoRA"
+    }
+  },
+  "125:30": {
+    "inputs": {
+      "lora_name": "Wan2.1_T2V_14B_FusionX_LoRA.safetensors",
+      "strength_model": 0.4,
+      "strength_clip": 0.4,
+      "model": [
+        "44",
+        0
+      ],
+      "clip": [
+        "125:22",
+        0
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "Charger LoRA"
+    }
+  },
+  "125:45": {
+    "inputs": {
+      "lora_name": "FusionX_FaceNaturalizer.safetensors",
+      "strength_model": 0.2,
+      "strength_clip": 0.2,
+      "model": [
+        "125:29",
+        0
+      ],
+      "clip": [
+        "125:29",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "FaceNatLora"
+    }
+  },
+  "124:116": {
+    "inputs": {
+      "output_channel": "Red",
+      "red_source": 30,
+      "green_source": 59,
+      "blue_source": 11,
+      "constant": 0,
+      "monochrome": true,
+      "preserve_luminosity": false,
+      "image": [
+        "124:118",
+        0
+      ]
+    },
+    "class_type": "ChannelMixerNode",
+    "_meta": {
+      "title": "ChannelMixer"
+    }
+  },
+  "124:118": {
+    "inputs": {
+      "vibrance": 0,
+      "saturation": 0,
+      "protect_skin_tones": true,
+      "strength": 1,
+      "image": [
+        "124:121",
+        0
+      ]
+    },
+    "class_type": "VibranceNode",
+    "_meta": {
+      "title": "VibSat"
+    }
+  },
+  "124:121": {
+    "inputs": {
+      "leak_intensity": 0,
+      "leak_color": "warm",
+      "leak_count": 2,
+      "leak_position": "random",
+      "blur_amount": 0,
+      "custom_hue": 0,
+      "image": [
+        "9",
+        0
+      ]
+    },
+    "class_type": "LightLeaksNode",
+    "_meta": {
+      "title": "LightLeaks"
+    }
+  },
+  "124:110": {
+    "inputs": {
+      "grain_intensity": 0.1,
+      "grain_size": 1,
+      "film_type": "35mm",
+      "color_grain": true,
+      "vintage_tone": 0,
+      "vignette": 0,
+      "image": [
+        "124:116",
+        0
+      ]
+    },
+    "class_type": "FilmGrainNode",
+    "_meta": {
+      "title": "FilmGrain"
+    }
+  }
+}
