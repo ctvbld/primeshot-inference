@@ -178,9 +178,8 @@ def get_quality_settings(quality: str) -> Dict[str, Any]:
     
     if quality == "2K":
         settings["upscale_scale"] = 0.30
-        settings["resize_scale"] = 0.30
+        settings["resize_scale"] = 0.28
     elif quality == "4K":
-        settings["megapixel"] = "1.6"
         settings["upscale_scale"] = 0.30
         settings["resize_scale"] = 0.50
     

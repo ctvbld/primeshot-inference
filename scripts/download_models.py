@@ -165,6 +165,17 @@ def download_models():
             )
         },
         {
+            "name": "4x_UltraSharpV2 Lite Upscaler (Best for Faces - 15MB)",
+            "type": "single_file",
+            "check_path": "/models/upscale_models/4x_UltraSharpV2_Lite.pth",
+            "min_size_mb": 15,
+            "download_func": lambda: hf_hub_download(
+                repo_id="Kim2091/UltraSharpV2",
+                filename="4x-UltraSharpV2_Lite.pth",
+                local_dir="/models/upscale_models"
+            )
+        },
+        {
             "name": "WanVideo T2V 14B Light x2v CFG Step Distill LoRA (Video Generation)",
             "type": "single_file",
             "check_path": "/models/loras/Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors",
@@ -419,17 +430,22 @@ def upload_local_uploads(local_base: str = None, mappings: dict = None):
             print(f"(empty) {local_dir}")
             continue
 
-        existing_names = _volume_list_names(vol, target_dir)
-        with vol.batch_upload() as batch:
-            for fname in local_files:
-                if fname in existing_names:
-                    print(f"✅ Exists, skip: {os.path.join(target_dir, fname)}")
-                    continue
-                local_path = os.path.join(local_dir, fname)
-                remote_path = os.path.join(target_dir, fname)
-                batch.put_file(local_path, remote_path)
+        # Upload each file in its own batch to avoid aborting the whole group
+        for fname in local_files:
+            local_path = os.path.join(local_dir, fname)
+            remote_path = os.path.join(target_dir, fname)
+            # Per-file existence check to avoid ALREADY_EXISTS errors
+            if _volume_file_exists(vol, remote_path):
+                print(f"✅ Exists, skip: {remote_path}")
+                continue
+            try:
+                with vol.batch_upload() as batch:
+                    batch.put_file(local_path, remote_path)
                 total_uploaded += 1
-                print(f"📥 Queued upload: {remote_path}")
+                print(f"📥 Uploaded: {remote_path}")
+            except FileExistsError:
+                # Gracefully handle race where file appeared between listing and upload
+                print(f"✅ Exists (race), skip: {remote_path}")
 
     if total_uploaded > 0:
         # batch_upload() finalizes uploads; explicit commit is only valid inside a container.

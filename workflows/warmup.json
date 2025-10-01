@@ -1,0 +1,205 @@
+{
+  "3": {
+    "inputs": {
+      "text": "a man",
+      "clip": [
+        "150",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "PositivePrompt"
+    }
+  },
+  "4": {
+    "inputs": {
+      "text": "plastic-like skin texture, oily appearance, unnatural texture, 3d render, cgi, doll, deformed, disfigured, poorly drawn, poor anatomy, bad hands, nude, bad hands, deformed, face asymmetry, eyes asymmetry, deformed eyes, deformed mouth, unwanted hair artifacts on face, grain, noise, artifacts, nipple, brand, text, writings, logo, initials, low quality, blurry face, ugly, poorly drawn hands, deformed face, extra limbs, bad anatomy, low resolution, unrealistic, cartoonish, watermark, text, signature, distorted proportions, creepy, glitch, jpeg artifacts,",
+      "clip": [
+        "150",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)"
+    }
+  },
+  "7": {
+    "inputs": {
+      "unet_name": "wan2.1_t2v_14B_fp16.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Charger Modèle Diffusion"
+    }
+  },
+  "8": {
+    "inputs": {
+      "vae_name": "wan_2.1_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Charger VAE"
+    }
+  },
+  "9": {
+    "inputs": {
+      "samples": [
+        "43",
+        0
+      ],
+      "vae": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "42": {
+    "inputs": {
+      "text": "Static, motionless, still, ugly, bad quality, worst quality, poorly drawn, low resolution, lack of details, blurry face, blurry eyes",
+      "clip": [
+        "150",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "NegativePrompt"
+    }
+  },
+  "43": {
+    "inputs": {
+      "seed": 251765475931644,
+      "steps": 1,
+      "cfg": 1,
+      "nag_scale": 0.8,
+      "nag_tau": 2.2,
+      "nag_alpha": 0.32,
+      "nag_sigma_end": 0.08,
+      "sampler_name": "euler",
+      "scheduler": "beta",
+      "denoise": 1,
+      "model": [
+        "150",
+        0
+      ],
+      "positive": [
+        "3",
+        0
+      ],
+      "negative": [
+        "4",
+        0
+      ],
+      "nag_negative": [
+        "42",
+        0
+      ],
+      "latent_image": [
+        "145",
+        0
+      ]
+    },
+    "class_type": "KSamplerWithNAG",
+    "_meta": {
+      "title": "KSamplerWithNAG"
+    }
+  },
+  "44": {
+    "inputs": {
+      "shift": 5,
+      "model": [
+        "7",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingSD3",
+    "_meta": {
+      "title": "ModèleÉchantillonnageSD3"
+    }
+  },
+  "134": {
+    "inputs": {
+      "images": [
+        "156",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Aperçu Image"
+    }
+  },
+  "145": {
+    "inputs": {
+      "width": 128,
+      "height": 128,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "ImageLatent"
+    }
+  },
+  "148": {
+    "inputs": {
+      "clip_name": "umt5_xxl_fp16.safetensors",
+      "type": "wan",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Charger CLIP"
+    }
+  },
+  "150": {
+    "inputs": {
+      "lora_name": "Wan2.1_T2V_14B_FusionX_LoRA.safetensors",
+      "strength_model": 0.4,
+      "strength_clip": 0.4,
+      "model": [
+        "44",
+        0
+      ],
+      "clip": [
+        "148",
+        0
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "Charger LoRA"
+    }
+  },
+  "156": {
+    "inputs": {
+      "upscale_model": [
+        "160",
+        0
+      ],
+      "image": [
+        "9",
+        0
+      ]
+    },
+    "class_type": "ImageUpscaleWithModel",
+    "_meta": {
+      "title": "UpscaleImage1"
+    }
+  },
+  "160": {
+    "inputs": {
+      "model_name": "4x-UltraSharpV2_Lite.pth"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {
+      "title": "Charger le modèle de mise à l'échelle"
+    }
+  }
+}

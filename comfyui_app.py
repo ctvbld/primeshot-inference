@@ -302,15 +302,14 @@ def preload_core_models(port: int) -> None:
     fast model initialization without meaningful generation cost.
     """
     from lib.comfyui_server import ComfyUIServer
-    from lib.workflow_patcher import patch_workflow
     import json
     from pathlib import Path
 
     server = ComfyUIServer(port)
 
-    # Load a baked default workflow (prefer 1K variant)
+    # Load the dedicated warmup workflow as-is
     wf_path_candidates = [
-        Path("/root/workflows/V1.0_1K.json")
+        Path("/root/workflows/warmup.json"),
     ]
 
     workflow = None
@@ -323,55 +322,15 @@ def preload_core_models(port: int) -> None:
                 continue
 
     if not isinstance(workflow, dict):
-        print("ℹ️ No baked workflow found for preload; skipping warmup")
-        return
-
-    # Patch: tiny resolution, single image, minimal steps
-    tiny_w, tiny_h = 256, 256
-    preload_overrides = {
-        # Try both common sampler titles; patcher will ignore missing
-        "KSampler": {"steps": 1, "cfg": 1.0, "denoise": 0.5},
-        "KSamplerWithNAG": {"steps": 1, "cfg": 1.0, "denoise": 0.5}
-    }
-
-    # Ensure LoRA loaders are bypassed for warmup to avoid validation issues
-    bypass_specs = [
-        {"ui_name": "StyleLora", "passthrough_input_key": "model", "output_index": 0, "remove": False},
-        {"ui_name": "StyleLora", "passthrough_input_key": "clip",  "output_index": 1, "remove": True},
-        {"ui_name": "CharacterLora", "passthrough_input_key": "model", "output_index": 0, "remove": False},
-        {"ui_name": "CharacterLora", "passthrough_input_key": "clip",  "output_index": 1, "remove": True},
-    ]
-
-    try:
-        preloaded = patch_workflow(
-            workflow=workflow,
-            prompt="warmup",
-            negative_prompt="",
-            width=tiny_w,
-            height=tiny_h,
-            seed=42,
-            images_count=1,
-            quality="1K",
-            aspect_ratio="1:1",
-            settings_override=preload_overrides,
-            lora_filename=None,
-            character_lora=None,
-            style_lora=None,
-            bypass_nodes=bypass_specs,
-            enable_previews=False,
-            job_id=None,
-            user_id=None,
-        )
-    except Exception as e:
-        print(f"⚠️ Failed to patch workflow for preload: {e}")
+        print("ℹ️ No baked warmup workflow found; skipping warmup")
         return
 
     try:
-        resp = server.submit_prompt(preloaded, client_id="preload")
+        resp = server.submit_prompt(workflow, client_id="preload")
         prompt_id = resp.get("prompt_id") if isinstance(resp, dict) else None
-        print(f"🚀 Preload prompt submitted (prompt_id={prompt_id})")
+        print(f"🚀 Warmup prompt submitted (prompt_id={prompt_id})")
     except Exception as e:
-        print(f"⚠️ Failed to submit preload prompt: {e}")
+        print(f"⚠️ Failed to submit warmup prompt: {e}")
 
 
 def poll_server_health(port: int, total_timeout: float = 90.0, per_try_timeout: float = 5.0) -> None:
@@ -957,13 +916,13 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         # Select workflow by quality; fall back to prepared.workflow only if quality-based key is missing
         p = input_data.get("params", {})
         req_quality = str((p or {}).get("quality", "1K")).upper()
-        quality_wf = "V1.0_1K.json" if req_quality == "1K" else "V1.0.json"
+        quality_wf = "V1.1_1K.json" if req_quality == "1K" else "V1.1.json"
         chosen_key = quality_wf
         try:
             wf = load_workflow_from_s3(chosen_key)
             print(f"🎯 Using quality-selected workflow: {chosen_key} (quality={req_quality})")
         except FileNotFoundError as _e:
-            alt_key = prepared.get("workflow") or "V1.0_1K.json"
+            alt_key = prepared.get("workflow") or "V1.1_1K.json"
             print(f"⚠️ Quality-selected workflow not found: {chosen_key}. Falling back to prepared key: {alt_key}")
             wf = load_workflow_from_s3(alt_key)
             chosen_key = alt_key

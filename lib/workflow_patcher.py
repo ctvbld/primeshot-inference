@@ -32,25 +32,15 @@ def compute_dimensions(quality: str, aspect_ratio: str) -> Tuple[int, int]:
     # 1K mappings
     if q == "1K":
         if ar == "1:1":
-            return 1024, 1024
+            return 1280, 1280
         if ar == "2:3":
-            return 896, 1280
+            return 904, 1408
         if ar == "3:2":
-            return 1280, 896
-        return 1024, 1024
+            return 1408, 904
+        return 1280, 1280
     
     # 2K mappings
     if q == "2K":
-        if ar == "1:1":
-            return 1280, 1280
-        if ar == "2:3":
-            return 896, 1408
-        if ar == "3:2":
-            return 1408, 896
-        return 1280, 1280
-    
-    # 4K mappings
-    if q == "4K":
         if ar == "1:1":
             return 1408, 1408
         if ar == "2:3":
@@ -59,8 +49,18 @@ def compute_dimensions(quality: str, aspect_ratio: str) -> Tuple[int, int]:
             return 1471, 960
         return 1408, 1408
     
+    # 4K mappings
+    if q == "4K":
+        if ar == "1:1":
+            return 1536, 1536
+        if ar == "2:3":
+            return 1072, 1688
+        if ar == "3:2":
+            return 1688, 1072
+        return 1536, 1536
+    
     # Fallback: default to 1K square
-    return 1024, 1024
+    return 1280, 1280
 
 
 class WorkflowPatcher:

@@ -1,0 +1,325 @@
+{
+  "3": {
+    "inputs": {
+      "text": "A dark, cinematic studio portrait of a man, early 30s, brown eyes, average build with broad shoulders, short hair, tightly framed from the upper chest, looking directly at the camera and showing a calm, positive and slightly introspective expression. The lighting is very low-key and directional, illuminating only the subject’s left side, while the right side of the face falls into deep shadow. The background is a seamless dark navy backdrop, perfectly flat, evenly lit without shadows enhancing the dark mood. Wearing orange blazer over a fine-gauge white merino wool turtleneck, luxury tailoring. The overall mood is subdued, minimalistic, and intimate, with strong contrast, defined shadows, and a highly professional editorial style.",
+      "clip": [
+        "14",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "PositivePrompt"
+    }
+  },
+  "4": {
+    "inputs": {
+      "text": "plastic-like skin texture, oily appearance, unnatural texture, 3d render, cgi, doll, deformed, disfigured, poorly drawn, poor anatomy, bad hands, nude, bad hands, deformed, face asymmetry, eyes asymmetry, deformed eyes, deformed mouth, unwanted hair artifacts on face, grain, noise, artifacts, nipple, brand, text, writings, logo, initials, low quality, blurry face, ugly, poorly drawn hands, deformed face, extra limbs, bad anatomy, low resolution, unrealistic, cartoonish, watermark, text, signature, distorted proportions, creepy, glitch, jpeg artifacts,",
+      "clip": [
+        "14",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)"
+    }
+  },
+  "7": {
+    "inputs": {
+      "unet_name": "wan2.1_t2v_14B_fp16.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model"
+    }
+  },
+  "8": {
+    "inputs": {
+      "vae_name": "wan_2.1_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "9": {
+    "inputs": {
+      "samples": [
+        "43",
+        0
+      ],
+      "vae": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "14": {
+    "inputs": {
+      "lora_name": "e595aa3a-343a-4425-9fc0-332d236d6ee2_training_7c8cb0a2-7ce7-4513-ae16-e3225b8487d7_loras_lora_20250926_152204_3a4a2cdf.safetensors",
+      "strength_model": 1,
+      "strength_clip": 1,
+      "model": [
+        "38",
+        0
+      ],
+      "clip": [
+        "38",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "CharacterLora"
+    }
+  },
+  "38": {
+    "inputs": {
+      "lora_name": "training_studiopro_loras_wan_lora_20250725_005619.safetensors",
+      "strength_model": 0.4,
+      "strength_clip": 0.4,
+      "model": [
+        "125:29",
+        0
+      ],
+      "clip": [
+        "125:29",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "StyleLora"
+    }
+  },
+  "42": {
+    "inputs": {
+      "text": "Static, motionless, still, ugly, bad quality, worst quality, poorly drawn, low resolution, lack of details, blurry face, blurry eyes",
+      "clip": [
+        "14",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "NegativePrompt"
+    }
+  },
+  "43": {
+    "inputs": {
+      "seed": 347062694219818,
+      "steps": 10,
+      "cfg": 1,
+      "nag_scale": 0.8,
+      "nag_tau": 2.2,
+      "nag_alpha": 0.32,
+      "nag_sigma_end": 0.08,
+      "sampler_name": "res_2s",
+      "scheduler": "bong_tangent",
+      "denoise": 1,
+      "model": [
+        "14",
+        0
+      ],
+      "positive": [
+        "3",
+        0
+      ],
+      "negative": [
+        "4",
+        0
+      ],
+      "nag_negative": [
+        "42",
+        0
+      ],
+      "latent_image": [
+        "145",
+        0
+      ]
+    },
+    "class_type": "KSamplerWithNAG",
+    "_meta": {
+      "title": "KSamplerWithNAG"
+    }
+  },
+  "44": {
+    "inputs": {
+      "shift": 5,
+      "model": [
+        "7",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingSD3",
+    "_meta": {
+      "title": "ModelSamplingSD3"
+    }
+  },
+  "130": {
+    "inputs": {
+      "filename_prefix": "orig_",
+      "file_type": "PNG",
+      "remove_metadata": true,
+      "images": [
+        "124:110",
+        0
+      ]
+    },
+    "class_type": "SaveImagePlus",
+    "_meta": {
+      "title": "SaveOrig"
+    }
+  },
+  "145": {
+    "inputs": {
+      "width": 1408,
+      "height": 1408,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "ImageLatent"
+    }
+  },
+  "148": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "scale_by": 0.8,
+      "image": [
+        "9",
+        0
+      ]
+    },
+    "class_type": "ImageScaleBy",
+    "_meta": {
+      "title": "Upscale Image By"
+    }
+  },
+  "125:22": {
+    "inputs": {
+      "clip_name": "umt5_xxl_fp16.safetensors",
+      "type": "wan",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP"
+    }
+  },
+  "125:29": {
+    "inputs": {
+      "lora_name": "Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors",
+      "strength_model": 0.4,
+      "strength_clip": 0.4,
+      "model": [
+        "125:30",
+        0
+      ],
+      "clip": [
+        "125:30",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "Load LoRA"
+    }
+  },
+  "125:30": {
+    "inputs": {
+      "lora_name": "Wan2.1_T2V_14B_FusionX_LoRA.safetensors",
+      "strength_model": 0.4,
+      "strength_clip": 0.4,
+      "model": [
+        "44",
+        0
+      ],
+      "clip": [
+        "125:22",
+        0
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "Load LoRA"
+    }
+  },
+  "124:110": {
+    "inputs": {
+      "grain_intensity": 0.05,
+      "grain_size": 0.5,
+      "film_type": "35mm",
+      "color_grain": true,
+      "vintage_tone": 0,
+      "vignette": 0,
+      "image": [
+        "124:116",
+        0
+      ]
+    },
+    "class_type": "FilmGrainNode",
+    "_meta": {
+      "title": "FilmGrain"
+    }
+  },
+  "124:121": {
+    "inputs": {
+      "leak_intensity": 0,
+      "leak_color": "warm",
+      "leak_count": 2,
+      "leak_position": "random",
+      "blur_amount": 0,
+      "custom_hue": 0,
+      "image": [
+        "148",
+        0
+      ]
+    },
+    "class_type": "LightLeaksNode",
+    "_meta": {
+      "title": "LightLeaks"
+    }
+  },
+  "124:118": {
+    "inputs": {
+      "vibrance": 0,
+      "saturation": 2,
+      "protect_skin_tones": true,
+      "strength": 1,
+      "image": [
+        "124:121",
+        0
+      ]
+    },
+    "class_type": "VibranceNode",
+    "_meta": {
+      "title": "VibSat"
+    }
+  },
+  "124:116": {
+    "inputs": {
+      "output_channel": "Red",
+      "red_source": 30,
+      "green_source": 59,
+      "blue_source": 11,
+      "constant": 0,
+      "monochrome": true,
+      "preserve_luminosity": false,
+      "image": [
+        "124:118",
+        0
+      ]
+    },
+    "class_type": "ChannelMixerNode",
+    "_meta": {
+      "title": "ChannelMixer"
+    }
+  }
+}
