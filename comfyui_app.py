@@ -5,6 +5,7 @@
 
 
 import json
+import threading
 import subprocess
 import uuid
 import os
@@ -37,6 +38,9 @@ MODELS_PATH = "/models"
 PORT: int = 8000
 # GPU type for dev_server UI (H100 queues can be long). Override via DEV_SERVER_GPU.
 DEV_SERVER_GPU_TYPE = os.getenv("DEV_SERVER_GPU", "H100")
+# Idle warmup coordination
+FIRST_JOB_RECEIVED = threading.Event()
+
 
 # S3 mount for user LoRAs and outputs
 # Mount user-images/ prefix at /data for all relevant functions
@@ -288,11 +292,29 @@ def _launch_inference_runtime(port: int) -> None:
     except Exception as e:
         print(f"❌ Failed to verify ComfyUI readiness: {e}")
 
-    # Preload core models (UNet / VAE / CLIP) to avoid first-request cold latency
+    # Idle warmup: delay, cancel if first job arrives
     try:
-        preload_core_models(port)
+        def _idle_warmup():
+            try:
+                from pathlib import Path
+                marker_path = Path("/tmp/warmup_ok.json")
+                if marker_path.exists():
+                    print(f"[warmup] existing marker: {marker_path.read_text()}")
+            except Exception:
+                pass
+
+            # wait up to 10s for a job; skip warmup if a job arrives
+            if FIRST_JOB_RECEIVED.wait(timeout=10.0):
+                print("[warmup] skipping (first job arrived during idle window)")
+                return
+            try:
+                preload_core_models(port)
+            except Exception as e:
+                print(f"⚠️ Idle warmup failed (continuing): {e}")
+
+        threading.Thread(target=_idle_warmup, daemon=True).start()
     except Exception as e:
-        print(f"⚠️ Preload failed (continuing): {e}")
+        print(f"⚠️ Failed to start idle warmup thread: {e}")
 
 
 def preload_core_models(port: int) -> None:
@@ -325,12 +347,78 @@ def preload_core_models(port: int) -> None:
         print("ℹ️ No baked warmup workflow found; skipping warmup")
         return
 
+    import time
+    t0 = time.time()
+    print("[warmup] starting: unet=wan2.1_t2v_14B_fp16.safetensors, vae=wan_2.1_vae.safetensors, clip=umt5_xxl_fp16.safetensors, lora=Wan2.1_T2V_14B_FusionX_LoRA.safetensors, upscale=4x-UltraSharpV2_Lite.pth, res=128x128")
+    # First pass: warm base UNet/VAE/CLIP and FusionX LoRA
+    prompt_id = None
     try:
         resp = server.submit_prompt(workflow, client_id="preload")
         prompt_id = resp.get("prompt_id") if isinstance(resp, dict) else None
         print(f"🚀 Warmup prompt submitted (prompt_id={prompt_id})")
     except Exception as e:
         print(f"⚠️ Failed to submit warmup prompt: {e}")
+    # Wait for execution to actually run to ensure models are loaded
+    if prompt_id:
+        result = server.poll_history(prompt_id, max_attempts=120, backoff_base=0.5)
+        print(f"[warmup] first pass completed: {bool(result)}")
+
+    # Second pass: warm the secondary base LoRA used by user workflow
+    # Deep-copy the workflow and swap the LoRA name
+    import json as _json
+    light_lora = "Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors"
+    try:
+        second_workflow = _json.loads(_json.dumps(workflow))
+    except Exception:
+        second_workflow = None
+    prompt_id2 = None
+    if isinstance(second_workflow, dict):
+        replaced = False
+        for node in second_workflow.values():
+            if isinstance(node, dict) and node.get("class_type") == "LoraLoader":
+                inputs = node.get("inputs") or {}
+                if isinstance(inputs, dict):
+                    inputs["lora_name"] = light_lora
+                    replaced = True
+                    break
+        if replaced:
+            try:
+                resp2 = server.submit_prompt(second_workflow, client_id="preload2")
+                prompt_id2 = resp2.get("prompt_id") if isinstance(resp2, dict) else None
+                print(f"🚀 Warmup 2 prompt submitted (prompt_id={prompt_id2}, lora={light_lora})")
+            except Exception as e:
+                print(f"⚠️ Failed to submit warmup2 prompt: {e}")
+            if prompt_id2:
+                result2 = server.poll_history(prompt_id2, max_attempts=120, backoff_base=0.5)
+                print(f"[warmup] second pass completed: {bool(result2)}")
+        else:
+            print("[warmup] second pass skipped: no LoraLoader node found")
+
+    elapsed = time.time() - t0
+    # Write marker only after passes are submitted and (if possible) executed
+    try:
+        from pathlib import Path
+        marker_path = Path("/tmp/warmup_ok.json")
+        marker = {
+            "ts": time.time(),
+            "elapsed_s": round(elapsed, 3),
+            "models": {
+                "unet": "wan2.1_t2v_14B_fp16.safetensors",
+                "vae": "wan_2.1_vae.safetensors",
+                "clip": "umt5_xxl_fp16.safetensors",
+                "lora_primary": "Wan2.1_T2V_14B_FusionX_LoRA.safetensors",
+                "lora_secondary": light_lora,
+                "upscale": "4x-UltraSharpV2_Lite.pth",
+            },
+            "warmup_res": "128x128",
+            "prompt_id": prompt_id,
+            "prompt_id_2": prompt_id2,
+        }
+        import json
+        marker_path.write_text(json.dumps(marker))
+        print(f"[warmup] done in {elapsed:.2f}s | marker={marker_path}")
+    except Exception as e:
+        print(f"[warmup] failed to write marker: {e}")
 
 
 def poll_server_health(port: int, total_timeout: float = 90.0, per_try_timeout: float = 5.0) -> None:
@@ -1443,12 +1531,9 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         if "connection refused" in str(e).lower():
             error_details["category"] = "connection_error"
             error_details["suggestion"] = "ComfyUI server may not be running or ready"
-        elif "timeout" in str(e).lower() or "timed out" in str(e).lower():
+        elif "timeout" in str(e).lower():
             error_details["category"] = "timeout_error"
-            error_details["suggestion"] = "Request timed out - server may be overloaded or node may be stuck"
-        elif "stuck node" in str(e).lower():
-            error_details["category"] = "stuck_node_error"
-            error_details["suggestion"] = "ComfyUI node appears to be stuck - workflow may have an issue"
+            error_details["suggestion"] = "Request timed out - server may be overloaded"
         elif "404" in str(e):
             error_details["category"] = "endpoint_error"
             error_details["suggestion"] = "ComfyUI endpoint not found - check server configuration"
@@ -1585,13 +1670,17 @@ class Fast:
 
     @modal.method()
     def run_inference(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        result = main(input_data)
-        # Ensure Modal marks function as failed when inference fails
-        if result.get("status") == "failed":
-            error_msg = result.get("error", "Inference failed")
-            error_details = result.get("error_details", {})
-            raise RuntimeError(f"Inference failed: {error_msg}. Details: {error_details}")
-        return result
+        try:
+            FIRST_JOB_RECEIVED.set()
+            from pathlib import Path
+            marker_path = Path("/tmp/warmup_ok.json")
+            if marker_path.exists():
+                print(f"[warmup] marker at first job (Fast): {marker_path.read_text()}")
+            else:
+                print("[warmup] no marker present before first job (Fast)")
+        except Exception:
+            pass
+        return main(input_data)
 
 
 @app.cls(
@@ -1615,13 +1704,17 @@ class Quick:
 
     @modal.method()
     def run_inference(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        result = main(input_data)
-        # Ensure Modal marks function as failed when inference fails
-        if result.get("status") == "failed":
-            error_msg = result.get("error", "Inference failed")
-            error_details = result.get("error_details", {})
-            raise RuntimeError(f"Inference failed: {error_msg}. Details: {error_details}")
-        return result
+        try:
+            FIRST_JOB_RECEIVED.set()
+            from pathlib import Path
+            marker_path = Path("/tmp/warmup_ok.json")
+            if marker_path.exists():
+                print(f"[warmup] marker at first job (Quick): {marker_path.read_text()}")
+            else:
+                print("[warmup] no marker present before first job (Quick)")
+        except Exception:
+            pass
+        return main(input_data)
 
 
 @app.function(
