@@ -82,8 +82,8 @@
   "38": {
     "inputs": {
       "lora_name": "training_studiopro_loras_wan_lora_20250725_005619.safetensors",
-      "strength_model": 0.4,
-      "strength_clip": 0.4,
+      "strength_model": 0.5,
+      "strength_clip": 0.5,
       "model": [
         "125:29",
         0

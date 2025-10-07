@@ -1177,6 +1177,17 @@ def wait_for_prompt_completion(job_id: str, prompt_id: str, timeout: float = 600
         current_time = time.time()
         time_since_activity = current_time - manager.last_activity_time
         
+        # Check for stuck node detection (if same node executing for too long)
+        if manager.last_executing_node:
+            node_timestamp = manager.last_executing_node.get('timestamp', 0)
+            if node_timestamp > 0:
+                time_on_same_node = current_time - (node_timestamp / 1000.0)  # Convert ms to seconds
+                if time_on_same_node > 120:  # 2 minutes on same node = likely stuck
+                    print(f"🚨 Node {manager.last_executing_node.get('node_id')} has been executing for {time_on_same_node:.1f}s - likely stuck")
+                    print(f"🚨 Failing job {job_id} due to stuck node")
+                    # Don't mark as completed, let it timeout and fail properly
+                    return False
+        
         # If we've been generating and no activity for 5 seconds, check if we should complete
         if manager.generation_started and time_since_activity > 5:
             # Check if the last progress state indicates completion

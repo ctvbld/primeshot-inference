@@ -1443,9 +1443,12 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         if "connection refused" in str(e).lower():
             error_details["category"] = "connection_error"
             error_details["suggestion"] = "ComfyUI server may not be running or ready"
-        elif "timeout" in str(e).lower():
+        elif "timeout" in str(e).lower() or "timed out" in str(e).lower():
             error_details["category"] = "timeout_error"
-            error_details["suggestion"] = "Request timed out - server may be overloaded"
+            error_details["suggestion"] = "Request timed out - server may be overloaded or node may be stuck"
+        elif "stuck node" in str(e).lower():
+            error_details["category"] = "stuck_node_error"
+            error_details["suggestion"] = "ComfyUI node appears to be stuck - workflow may have an issue"
         elif "404" in str(e):
             error_details["category"] = "endpoint_error"
             error_details["suggestion"] = "ComfyUI endpoint not found - check server configuration"
@@ -1582,7 +1585,13 @@ class Fast:
 
     @modal.method()
     def run_inference(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        return main(input_data)
+        result = main(input_data)
+        # Ensure Modal marks function as failed when inference fails
+        if result.get("status") == "failed":
+            error_msg = result.get("error", "Inference failed")
+            error_details = result.get("error_details", {})
+            raise RuntimeError(f"Inference failed: {error_msg}. Details: {error_details}")
+        return result
 
 
 @app.cls(
@@ -1606,7 +1615,13 @@ class Quick:
 
     @modal.method()
     def run_inference(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        return main(input_data)
+        result = main(input_data)
+        # Ensure Modal marks function as failed when inference fails
+        if result.get("status") == "failed":
+            error_msg = result.get("error", "Inference failed")
+            error_details = result.get("error_details", {})
+            raise RuntimeError(f"Inference failed: {error_msg}. Details: {error_details}")
+        return result
 
 
 @app.function(
