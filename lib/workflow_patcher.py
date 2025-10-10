@@ -252,12 +252,15 @@ class WorkflowPatcher:
                 self.manager.set_node_input_by_title(alias, "lora_name", style_lora)
     
     def _apply_settings_override(self, settings_override: Dict[str, Any]) -> None:
-        """Apply title-based node input overrides."""
+        """Apply title-based node input overrides and handle bypass flags."""
         if settings_override:
             print(f"🔧 SETTINGS_OVERRIDE DEBUG: Processing settings_override: {settings_override}")
             logger.info(f"🔧 Processing settings_override: {settings_override}")
 
         title_aliases = get_title_aliases()
+        
+        # Collect bypass specifications
+        bypass_specs = []
 
         for raw_title, overrides in settings_override.items():
             if not isinstance(overrides, dict):
@@ -274,29 +277,59 @@ class WorkflowPatcher:
             norm_key = normalize_title_key(key)
             target_title = title_aliases.get(norm_key, key)
 
+            # Check for bypass flag
+            should_bypass = overrides.get("__bypass__", False)
+            passthrough_key = overrides.get("__passthrough_key__", "image")
+            output_index = overrides.get("__output_index__", 0)
+            
+            if should_bypass:
+                # Collect bypass specification
+                bypass_specs.append({
+                    "ui_name": target_title,
+                    "passthrough_input_key": passthrough_key,
+                    "output_index": output_index,
+                    "remove": True
+                })
+                logger.info(f"🔄 Will bypass {target_title} (passthrough: {passthrough_key}, output: {output_index})")
+                
+                # Skip applying other settings to this node since it will be bypassed
+                continue
+
             print(f"🔧 SETTINGS_OVERRIDE DEBUG: Processing overrides for '{raw_title}' (normalized: '{norm_key}' → target: '{target_title}')")
             logger.info(f"🔧 Processing overrides for '{raw_title}' (normalized: '{norm_key}' → target: '{target_title}')")
+
+            # Filter out bypass control keys before applying
+            regular_overrides = {k: v for k, v in overrides.items() 
+                                if not k.startswith("__")}
+            
+            if not regular_overrides:
+                continue
 
             # Apply to all matching nodes
             applied = False
             for node_id, node in self.manager.find_nodes_by_title(target_title):
                 inputs = node.setdefault("inputs", {})
-                print(f"🔧 SETTINGS_OVERRIDE DEBUG: Applying {len(overrides)} overrides to {target_title} (node {node_id}):")
-                logger.info(f"🔧 Applying {len(overrides)} overrides to {target_title} (node {node_id}):")
+                print(f"🔧 SETTINGS_OVERRIDE DEBUG: Applying {len(regular_overrides)} overrides to {target_title} (node {node_id}):")
+                logger.info(f"🔧 Applying {len(regular_overrides)} overrides to {target_title} (node {node_id}):")
 
-                for k, v in overrides.items():
+                for k, v in regular_overrides.items():
                     old_value = inputs.get(k)
                     inputs[k] = v
                     print(f"  📝 SETTINGS_OVERRIDE DEBUG: {k}: {old_value} → {v}")
                     logger.info(f"  📝 {k}: {old_value} → {v}")
 
-                print(f"✅ SETTINGS_OVERRIDE DEBUG: Applied overrides to {target_title} (node {node_id}): {list(overrides.keys())}")
-                logger.info(f"✅ Applied overrides to {target_title} (node {node_id}): {list(overrides.keys())}")
+                print(f"✅ SETTINGS_OVERRIDE DEBUG: Applied overrides to {target_title} (node {node_id}): {list(regular_overrides.keys())}")
+                logger.info(f"✅ Applied overrides to {target_title} (node {node_id}): {list(regular_overrides.keys())}")
                 applied = True
 
             if not applied:
                 print(f"⚠️ SETTINGS_OVERRIDE DEBUG: No node with title '{target_title}' found to override")
                 logger.warning(f"⚠️ No node with title '{target_title}' found to override")
+        
+        # Apply collected bypasses
+        if bypass_specs:
+            logger.info(f"🔄 Applying {len(bypass_specs)} bypass specifications from settings")
+            self._apply_bypass_nodes(bypass_specs)
     
     def _auto_bypass_nodes(self, style_lora: str | None, settings_override: Dict[str, Any] | None) -> None:
         """Auto-bypass certain nodes based on configuration."""
@@ -319,7 +352,7 @@ class WorkflowPatcher:
                     logger.warning(f"⚠️ Failed to bypass StyleLora: {e}")
         
         # Auto-bypass effect nodes unless overridden
-        effects_to_bypass = ["LightLeaks", "VibSat", "ChannelMixer", "FilmGrain"]
+        effects_to_bypass = ["LightLeaks", "ChannelMixer", "FilmGrain"]
         
         present_titles = set()
         if isinstance(settings_override, dict):
@@ -509,6 +542,26 @@ def patch_workflow(
     """Apply minimal patches to a ComfyUI workflow JSON.
     
     This is the main entry point for workflow patching.
+    
+    Settings Override with Bypass Support:
+        The settings_override parameter now supports bypassing nodes using special keys:
+        
+        Example:
+        {
+            "VibSat": {
+                "__bypass__": true,
+                "__passthrough_key__": "image",  # Optional, defaults to "image"
+                "__output_index__": 0            # Optional, defaults to 0
+            },
+            "FilmGrain": {
+                "grain_intensity": 0.1           # Regular parameter override
+            }
+        }
+        
+        Bypass control keys (all optional):
+        - "__bypass__": Set to true to bypass this node
+        - "__passthrough_key__": Which input to forward through (default: "image")
+        - "__output_index__": Which output slot to replace (default: 0)
     """
     patcher = WorkflowPatcher(workflow)
     return patcher.patch(

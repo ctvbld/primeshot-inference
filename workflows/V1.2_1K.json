@@ -1,0 +1,256 @@
+{
+  "3": {
+    "inputs": {
+      "text": "BLINDLIGHT - A hyperrealistic cinematic still close-up portrait of FACEMODEL,  a man, early 30s, dark brown eyes, short 1b straight black hair, athletic with defined arms and broad shoulders illuminated by soft, warm afternoon light streaming through window Venetian blinds, creating striking shadow patterns across the face. Wearing light blue (shearling:2) soft leather jacket over a white hoodie, high fashion editorial style. A natural, glowing complexion with dewy skin. The background is a muted teal wall, its cool tone providing contrast to the warmth of the light and enhancing the subject's skin tones and fiery hair color. The atmosphere balances intimacy and clarity, with a shallow depth of field that keeps focus tightly on the subject's features while allowing the background to dissolve into soft blur. The interplay of light and shadow lends a painterly, hyperrealistic quality, emphasizing skin texture, freckles, and the glimmer in the eyes. The aesthetic evokes the mood of modern fashion photography, cinematic yet understated, with a color palette built around warm neutrals, rich auburn, and soft tones. The overall effect is luminous, elegant, and emotionally resonant, capturing both natural beauty and quiet sophistication.",
+      "clip": [
+        "45",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "PositivePrompt"
+    }
+  },
+  "4": {
+    "inputs": {
+      "text": "plastic-like texture, oily appearance, unnatural texture, 3d render, cgi, doll, deformed, disfigured, poorly drawn, poor anatomy, bad hands, blurry, nude, bad hands, bad anatomy, ugly, deformed, face asymmetry, eyes asymmetry, deformed eyes, deformed mouth, open mouth, stray hair strands on skin, unwanted hair artifacts on face, spots, grey spots, grain, noise, artifacts, necklace, nipple, brand, text, writings, logo, initials, watermark, high exposure",
+      "clip": [
+        "45",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "NegativePrompt"
+    }
+  },
+  "5": {
+    "inputs": {
+      "width": 1408,
+      "height": 1408,
+      "length": 1,
+      "batch_size": 1
+    },
+    "class_type": "EmptyHunyuanLatentVideo",
+    "_meta": {
+      "title": "ImageLatent"
+    }
+  },
+  "7": {
+    "inputs": {
+      "unet_name": "wan2.1_t2v_14B_fp16.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Charger Modèle Diffusion"
+    }
+  },
+  "8": {
+    "inputs": {
+      "vae_name": "wan_2.1_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Charger VAE"
+    }
+  },
+  "9": {
+    "inputs": {
+      "samples": [
+        "34",
+        0
+      ],
+      "vae": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "14": {
+    "inputs": {
+      "lora_name": "training_goldennoir_loras_lora_20250908_111346_2cf10b54.safetensors",
+      "strength_model": 0.5,
+      "strength_clip": 0.5,
+      "model": [
+        "29",
+        0
+      ],
+      "clip": [
+        "29",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "StyleLora"
+    }
+  },
+  "22": {
+    "inputs": {
+      "clip_name": "umt5_xxl_fp16.safetensors",
+      "type": "wan",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Charger CLIP"
+    }
+  },
+  "29": {
+    "inputs": {
+      "lora_name": "Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors",
+      "strength_model": 0.4000000000000001,
+      "strength_clip": 0.4000000000000001,
+      "model": [
+        "30",
+        0
+      ],
+      "clip": [
+        "30",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "Charger LoRA"
+    }
+  },
+  "30": {
+    "inputs": {
+      "lora_name": "Wan2.1_T2V_14B_FusionX_LoRA.safetensors",
+      "strength_model": 0.4000000000000001,
+      "strength_clip": 0.4000000000000001,
+      "model": [
+        "7",
+        0
+      ],
+      "clip": [
+        "22",
+        0
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "Charger LoRA"
+    }
+  },
+  "34": {
+    "inputs": {
+      "seed": 270191466352222,
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "res_2s",
+      "scheduler": "bong_tangent",
+      "denoise": 1,
+      "model": [
+        "45",
+        0
+      ],
+      "positive": [
+        "3",
+        0
+      ],
+      "negative": [
+        "4",
+        0
+      ],
+      "latent_image": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "35": {
+    "inputs": {
+      "lora_name": "dcace384-bcbb-43de-b48f-bd82722b6ce0_training_c5c3d4a3-edf8-4053-894a-6b84df352fdd_loras_lora_20251009_063511_d82cb1d8.safetensors",
+      "strength_model": 1,
+      "strength_clip": 1,
+      "model": [
+        "14",
+        0
+      ],
+      "clip": [
+        "14",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "CharacterLora"
+    }
+  },
+  "39": {
+    "inputs": {
+      "filename_prefix": "orig_",
+      "file_type": "PNG",
+      "remove_metadata": true,
+      "images": [
+        "41:118",
+        0
+      ]
+    },
+    "class_type": "SaveImagePlus",
+    "_meta": {
+      "title": "SaveOrig"
+    }
+  },
+  "42": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "scale_by": 0.8,
+      "image": [
+        "9",
+        0
+      ]
+    },
+    "class_type": "ImageScaleBy",
+    "_meta": {
+      "title": "Agrandir l'image par"
+    }
+  },
+  "45": {
+    "inputs": {
+      "lora_name": "FusionX_FaceNaturalizer.safetensors",
+      "strength_model": 0.6,
+      "strength_clip": 0.6,
+      "model": [
+        "35",
+        0
+      ],
+      "clip": [
+        "35",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "FaceNatLora"
+    }
+  },
+  "41:118": {
+    "inputs": {
+      "vibrance": 4,
+      "saturation": 6,
+      "protect_skin_tones": true,
+      "strength": 1,
+      "image": [
+        "42",
+        0
+      ]
+    },
+    "class_type": "VibranceNode",
+    "_meta": {
+      "title": "VibSat"
+    }
+  }
+}

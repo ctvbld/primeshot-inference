@@ -120,11 +120,119 @@ Response:
 
 ## Configuration
 
+### Node Bypass and Settings Override
+
+The platform supports fine-grained control over ComfyUI nodes through the `settings_override` parameter. You can both modify node parameters and bypass entire nodes using special control keys.
+
+#### Basic Parameter Override
+
+Override specific node parameters by node title:
+
+```json
+{
+  "settings_override": {
+    "FilmGrain": {
+      "grain_intensity": 0.1,
+      "grain_size": 1.5
+    },
+    "VibSat": {
+      "vibrance": 0.3,
+      "saturation": 0.2
+    }
+  }
+}
+```
+
+#### Bypassing Nodes
+
+Bypass nodes to skip their processing using the `__bypass__` control key:
+
+```json
+{
+  "settings_override": {
+    "VibSat": {
+      "__bypass__": true
+    },
+    "LightLeaks": {
+      "__bypass__": true,
+      "__passthrough_key__": "image"
+    }
+  }
+}
+```
+
+**Bypass Control Keys:**
+- `__bypass__`: Set to `true` to bypass this node (required)
+- `__passthrough_key__`: Which input to forward through (optional, defaults to "image")
+- `__output_index__`: Which output slot to replace (optional, defaults to 0)
+
+#### Combined Settings and Bypass
+
+You can combine parameter overrides and bypasses in the same configuration:
+
+```json
+{
+  "settings_override": {
+    "FilmGrain": {
+      "grain_intensity": 0.15
+    },
+    "VibSat": {
+      "__bypass__": true
+    },
+    "ChannelMixer": {
+      "red_adjust": 1.1,
+      "blue_adjust": 0.9
+    }
+  }
+}
+```
+
+#### Multi-Output Node Bypass
+
+For nodes with multiple outputs (like LoRA loaders), you may need multiple bypass operations:
+
+```json
+{
+  "settings_override": {
+    "StyleLora": {
+      "__bypass__": true,
+      "__passthrough_key__": "model",
+      "__output_index__": 0
+    }
+  }
+}
+```
+
+**Note:** Keys starting with `__` are reserved for control purposes and won't be applied as node parameters.
+
 ### Environment Variables
 
 The platform uses these Modal secrets and volumes:
 
+#### Modal Secrets
+
 - **aws-secret**: AWS credentials for S3 access
+  - `AWS_ACCESS_KEY_ID`
+  - `AWS_SECRET_ACCESS_KEY`
+  - `AWS_DEFAULT_REGION`
+
+- **inference-secret**: Inference configuration
+  - `COMFY_WORKFLOW_ENDPOINT` - ComfyUI API endpoint
+  - `PROGRESS_WS_URL` - WebSocket URL for progress updates
+  - `WEBHOOK_SECRET` - Secret for webhook authentication
+  - `WEBHOOK_URL` - URL for webhook callbacks
+  - **`WORKFLOW_VERSION`** - Workflow version to use (e.g., `1.2`, `1.3`)
+    - Default: `1.2` if not set
+    - Controls which workflow files are loaded: `V{version}_1K.json` and `V{version}.json`
+    - Can be updated without redeploying the Modal app
+
+- **supabase-secret**: Database credentials for multiple environments
+  - `SUPABASE_URL_DEV`, `SUPABASE_SERVICE_ROLE_KEY_DEV`
+  - `SUPABASE_URL_STAGING`, `SUPABASE_SERVICE_ROLE_KEY_STAGING`
+  - `SUPABASE_URL_PROD`, `SUPABASE_SERVICE_ROLE_KEY_PROD`
+
+#### Modal Volumes
+
 - **models-vol**: Persistent volume for model storage
 
 ### S3 Bucket Structure
@@ -141,6 +249,37 @@ primeshot-uploads-01/
 │               ├── image_002.png
 │               └── ...
 ```
+
+### Updating Workflow Version
+
+To update to a new workflow version without redeploying:
+
+1. **Upload new workflow files to S3** (if using S3 workflow storage):
+   ```bash
+   # Upload new workflow files to S3
+   aws s3 cp V1.3_1K.json s3://your-bucket/workflows/
+   aws s3 cp V1.3.json s3://your-bucket/workflows/
+   ```
+
+2. **Update the Modal secret**:
+   - Go to Modal Dashboard → Secrets
+   - Open `inference-secret`
+   - Update `WORKFLOW_VERSION` value (e.g., from `1.2` to `1.3`)
+   - Save changes
+
+3. **Verify the change**:
+   - Monitor logs for: `📋 Using workflow version: 1.3`
+   - Check that correct workflow files are loaded: `🎯 Using quality-selected workflow: V1.3_1K.json`
+
+**Benefits:**
+- ✅ No code deployment required
+- ✅ Instant updates across all containers
+- ✅ Easy rollback by reverting the environment variable
+- ✅ Test new versions quickly
+
+**Workflow File Naming:**
+- For 1K quality: `V{WORKFLOW_VERSION}_1K.json`
+- For 2K/4K quality: `V{WORKFLOW_VERSION}.json`
 
 ### Model Storage
 

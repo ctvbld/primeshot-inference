@@ -539,12 +539,15 @@ def get_image_outputs(
     
     Returns (outputs_dict, source) where source indicates the method used.
     """
-    from lib.ws_preview_relay import wait_for_prompt_completion, get_prompt_completion_data
+    from lib.ws_preview_relay import wait_for_prompt_completion, get_prompt_completion_data, get_last_executing_node
     
     start_time = time.time()
     
+    # Use configurable timeout from environment
+    timeout = int(os.getenv("COMFY_GENERATION_TIMEOUT", str(timeout)))
+    
     # Method 1: WebSocket completion data
-    print(f"⏳ Waiting for completion via WebSocket...")
+    print(f"⏳ Waiting for completion via WebSocket (timeout: {timeout}s)...")
     completed = wait_for_prompt_completion(job_id, prompt_id, timeout=timeout)
     
     if completed:
@@ -554,12 +557,14 @@ def get_image_outputs(
         if completion_data and completion_data.get("outputs"):
             return completion_data["outputs"], "websocket"
     
-    # Method 2: ComfyUI History API
+    # Method 2: ComfyUI History API with increased retry attempts
     print(f"⚠️ WebSocket data incomplete, trying history API...")
     history_start = time.time()
     history_url = f"{comfyui_base}/history/{prompt_id}"
     
-    for attempt in range(8):
+    # Increased from 8 to 15 attempts for better reliability
+    max_history_attempts = 15
+    for attempt in range(max_history_attempts):
         try:
             response = urllib.request.urlopen(history_url, timeout=10)
             history_data = json.loads(response.read().decode('utf-8'))
@@ -567,11 +572,11 @@ def get_image_outputs(
             if prompt_id in history_data:
                 outputs = history_data[prompt_id].get("outputs", {})
                 if outputs:
-                    print(f"✅ Got outputs from history (took {time.time() - history_start:.1f}s)")
+                    print(f"✅ Got outputs from history (took {time.time() - history_start:.1f}s, attempt {attempt + 1})")
                     return outputs, "history"
         except Exception as e:
-            if attempt == 0:
-                print(f"⚠️ History API error: {e}")
+            if attempt == 0 or attempt % 3 == 0:
+                print(f"⚠️ History API attempt {attempt + 1}/{max_history_attempts}: {e}")
         
         backoff = min(0.25 * (2 ** attempt), 2.0)
         time.sleep(backoff)
@@ -589,9 +594,56 @@ def get_image_outputs(
         }
         return outputs, "directory"
     
-    # All methods failed
+    # All methods failed - gather diagnostic info
     total_time = time.time() - start_time
-    raise RuntimeError(f"Failed to get outputs after {total_time:.1f}s - all methods exhausted")
+    last_node = get_last_executing_node(job_id)
+    
+    error_msg = f"Failed to get outputs after {total_time:.1f}s - all methods exhausted"
+    if last_node:
+        node_id = last_node.get('node_id', 'unknown')
+        error_msg += f" (last node: {node_id})"
+    
+    print(f"❌ {error_msg}")
+    raise RuntimeError(error_msg)
+
+
+def cancel_comfyui_prompt(job_id: str, prompt_id: str, comfyui_base: str) -> bool:
+    """Cancel/interrupt a stuck prompt in ComfyUI.
+    
+    This attempts to interrupt the current ComfyUI execution before retrying.
+    Returns True if successfully cancelled or already complete, False otherwise.
+    """
+    try:
+        print(f"🛑 Attempting to cancel stuck prompt {prompt_id} for job {job_id}")
+        
+        # Try ComfyUI's /interrupt endpoint to stop current execution
+        interrupt_url = f"{comfyui_base}/interrupt"
+        req = urllib.request.Request(
+            url=interrupt_url,
+            data=b'',  # Empty POST body
+            method="POST"
+        )
+        response = urllib.request.urlopen(req, timeout=10)
+        
+        if response.status == 200:
+            print(f"✅ Successfully interrupted ComfyUI execution for prompt {prompt_id}")
+            return True
+        else:
+            print(f"⚠️ Interrupt returned status {response.status}")
+            return False
+            
+    except urllib.error.HTTPError as e:
+        # 404 might mean endpoint doesn't exist or already completed
+        if e.code == 404:
+            print(f"⚠️ Interrupt endpoint not found (might be already complete)")
+            return True
+        else:
+            print(f"⚠️ Failed to interrupt prompt (HTTP {e.code}): {e}")
+            return False
+    except Exception as e:
+        print(f"⚠️ Failed to interrupt prompt: {e}")
+        return False
+
 
 
 def categorize_and_process_images(
@@ -1004,13 +1056,18 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         # Select workflow by quality; fall back to prepared.workflow only if quality-based key is missing
         p = input_data.get("params", {})
         req_quality = str((p or {}).get("quality", "1K")).upper()
-        quality_wf = "V1.1_1K.json" if req_quality == "1K" else "V1.1.json"
+        
+        # Get workflow version from environment variable, default to "1.2"
+        workflow_version = os.getenv("WORKFLOW_VERSION", "1.2")
+        print(f"📋 Using workflow version: {workflow_version}")
+        
+        quality_wf = f"V{workflow_version}_1K.json" if req_quality == "1K" else f"V{workflow_version}.json"
         chosen_key = quality_wf
         try:
             wf = load_workflow_from_s3(chosen_key)
             print(f"🎯 Using quality-selected workflow: {chosen_key} (quality={req_quality})")
         except FileNotFoundError as _e:
-            alt_key = prepared.get("workflow") or "V1.1_1K.json"
+            alt_key = prepared.get("workflow") or f"V{workflow_version}_1K.json"
             print(f"⚠️ Quality-selected workflow not found: {chosen_key}. Falling back to prepared key: {alt_key}")
             wf = load_workflow_from_s3(alt_key)
             chosen_key = alt_key
@@ -1318,71 +1375,132 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 
                 print(f"🎯 Image {image_index + 1} submitted! Prompt ID: {prompt_id}")
                 
-                # Get image outputs using our optimized helper
+                # Get image outputs with retry logic for better reliability
                 print(f"⏳ Waiting for image {image_index + 1} to complete...")
                 
-                try:
-                    outputs, source = get_image_outputs(job_id, prompt_id, comfyui_base, timeout=600)
-                    print(f"✅ Image {image_index + 1} completed! (source: {source})")
-                    
-                    # Find generated images in outputs
-                    generated_images = []
-                    for node_id, node_output in outputs.items():
-                        if "images" in node_output:
-                            for img in node_output["images"]:
-                                generated_images.append({
-                                    "filename": img.get("filename"),
-                                    "subfolder": img.get("subfolder", ""),
-                                    "type": img.get("type", "output"),
-                                    "image_index": image_index
-                                })
-                    
-                    print(f"🖼️ Found {len(generated_images)} images for image {image_index + 1}")
-                    if generated_images:
-                        all_generated_images.extend(generated_images)
+                # Configure retry behavior from environment
+                max_retries = int(os.getenv("COMFY_RETRY_ATTEMPTS", "2"))
+                retry_delay = 5  # Initial delay in seconds
+                
+                outputs = None
+                source = None
+                last_error = None
+                
+                for retry_attempt in range(max_retries):
+                    try:
+                        if retry_attempt > 0:
+                            print(f"🔄 Retry attempt {retry_attempt}/{max_retries - 1} for image {image_index + 1}")
+                            
+                            # Cancel the stuck prompt before retrying
+                            cancel_comfyui_prompt(job_id, prompt_id, comfyui_base)
+                            
+                            # Wait with exponential backoff
+                            print(f"⏳ Waiting {retry_delay}s before retry...")
+                            time.sleep(retry_delay)
+                            retry_delay = min(retry_delay * 2, 20)  # Cap at 20s
+                            
+                            # Clear completion event for retry
+                            try:
+                                from lib.ws_preview_relay import start_relay
+                                if hasattr(start_relay, '_active_relays') and job_id in start_relay._active_relays:
+                                    manager = start_relay._active_relays[job_id]
+                                    if prompt_id in manager.completed_prompt_ids:
+                                        manager.completed_prompt_ids.discard(prompt_id)
+                                    manager.completion_event.clear()
+                                    print(f"🔄 Cleared completion state for retry")
+                            except Exception as clear_e:
+                                print(f"⚠️ Failed to clear completion state: {clear_e}")
                         
-                        # Categorize and process images asynchronously
+                        # Attempt to get outputs (uses configurable timeout from env)
+                        outputs, source = get_image_outputs(job_id, prompt_id, comfyui_base, timeout=600)
+                        print(f"✅ Image {image_index + 1} completed on attempt {retry_attempt + 1}! (source: {source})")
+                        break  # Success!
+                        
+                    except RuntimeError as e:
+                        last_error = e
+                        error_msg = str(e)
+                        
+                        if retry_attempt == max_retries - 1:
+                            # Last retry failed, log and re-raise
+                            print(f"❌ All {max_retries} attempts failed for image {image_index + 1}")
+                            raise
+                        else:
+                            print(f"⚠️ Attempt {retry_attempt + 1}/{max_retries} failed for image {image_index + 1}: {error_msg}")
+                            # Continue to next retry
+                
+                # If we got here without outputs, something went wrong
+                if outputs is None:
+                    if last_error:
+                        raise last_error
+                    else:
+                        raise RuntimeError(f"Image {image_index + 1} generation failed: no outputs received")
+                
+                # Find generated images in outputs
+                generated_images = []
+                for node_id, node_output in outputs.items():
+                    if "images" in node_output:
+                        for img in node_output["images"]:
+                            generated_images.append({
+                                "filename": img.get("filename"),
+                                "subfolder": img.get("subfolder", ""),
+                                "type": img.get("type", "output"),
+                                "image_index": image_index
+                            })
+                
+                print(f"🖼️ Found {len(generated_images)} images for image {image_index + 1}")
+                if generated_images:
+                    all_generated_images.extend(generated_images)
+                    
+                    # Categorize and process images asynchronously
+                    threads = categorize_and_process_images(
+                        generated_images, image_index, job_id, user_id, 
+                        bucket, progress_ws_url, s3_failure_tracker
+                    )
+                    s3_processing_threads.extend(threads)
+                        
+                else:
+                    # If outputs structure is empty, do one final directory scan
+                    print(f"⚠️ No images in outputs, attempting final directory scan...")
+                    final_images = find_generated_images(job_id, max_attempts=5)
+                    
+                    if final_images:
+                        # Found images via directory scan
+                        for img in final_images:
+                            img["image_index"] = image_index
+                            all_generated_images.append(img)
+                        
+                        print(f"✅ Recovered {len(final_images)} images via final directory scan")
+                        
+                        # Process these images too
                         threads = categorize_and_process_images(
-                            generated_images, image_index, job_id, user_id, 
+                            final_images, image_index, job_id, user_id,
                             bucket, progress_ws_url, s3_failure_tracker
                         )
                         s3_processing_threads.extend(threads)
-                            
                     else:
-                        # If outputs structure is empty, do one final directory scan
-                        print(f"⚠️ No images in outputs, attempting final directory scan...")
-                        final_images = find_generated_images(job_id, max_attempts=5)
-                        
-                        if final_images:
-                            # Found images via directory scan
-                            for img in final_images:
-                                img["image_index"] = image_index
-                                all_generated_images.append(img)
-                            
-                            print(f"✅ Recovered {len(final_images)} images via final directory scan")
-                            
-                            # Process these images too
-                            threads = categorize_and_process_images(
-                                final_images, image_index, job_id, user_id,
-                                bucket, progress_ws_url, s3_failure_tracker
-                            )
-                            s3_processing_threads.extend(threads)
-                        else:
-                            raise RuntimeError(f"No generated images found for image {image_index + 1}")
-                except Exception as e:
-                    # Handle timeout or other errors from get_image_outputs
-                    error_msg = str(e)
-                    # Try to enrich with ComfyUI error context (from WS relay and history)
+                        raise RuntimeError(f"No generated images found for image {image_index + 1}")
+                    
+            except Exception as e:
+                # Handle timeout or other errors from get_image_outputs
+                error_msg = str(e)
+                
+                # Check if prompt_id was successfully retrieved before the error
+                prompt_id_available = 'prompt_id' in locals() and prompt_id is not None
+                
+                # Try to enrich with ComfyUI error context (from WS relay and history)
+                relay_error = {}
+                last_exec = {}
+                if prompt_id_available:
                     try:
                         from lib.ws_preview_relay import get_prompt_error_data, get_last_executing_node
                         relay_error = get_prompt_error_data(job_id, prompt_id)
                         last_exec = get_last_executing_node(job_id)
                     except Exception as _ge:
-                        relay_error = {}
-                        last_exec = {}
                         print(f"⚠️ Failed to get ComfyUI error details from relay: {_ge}")
-                    # Optionally fetch history entry for additional error context
-                    history_entry = {}
+                
+                # Optionally fetch history entry for additional error context
+                history_entry = {}
+                if prompt_id_available:
                     try:
                         history_url = f"{comfyui_base}/history/{prompt_id}"
                         response = urllib.request.urlopen(history_url, timeout=10)
@@ -1394,29 +1512,31 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                                 history_entry = {k: v for k, v in history_entry.items() if k != "outputs"}
                     except Exception as _he:
                         print(f"⚠️ Failed to fetch ComfyUI history for prompt {prompt_id}: {_he}")
-                    # Prepare redacted traceback head for logs
-                    def _head(txt: str, lines: int = 20) -> str:
-                        if not isinstance(txt, str):
-                            return ""
-                        return "\n".join(txt.splitlines()[:lines])
-                    comfy_error_details = {
-                        "prompt_id": prompt_id,
-                        "relay_error": relay_error,
-                        "last_executing_node": last_exec,
-                        "history_entry": history_entry,
-                    }
-                    last_comfy_error_details = comfy_error_details
-                    if relay_error:
-                        print(f"❌ ComfyUI error for image {image_index + 1}: {relay_error.get('exception_type') or 'Unknown'} - {relay_error.get('message')}\n{_head(relay_error.get('traceback'))}")
-                    if last_exec:
-                        print(f"🔎 Last executing node before failure: {last_exec}")
-                    if history_entry:
-                        print(f"📜 History entry sans outputs: {list(history_entry.keys())}")
-                    # Re-raise with original classification
-                    if "timed out" in error_msg.lower():
-                        raise RuntimeError(f"Image {image_index + 1} generation timed out")
-                    else:
-                        raise RuntimeError(f"Image {image_index + 1} generation failed: {error_msg}")
+                
+                # Prepare redacted traceback head for logs
+                def _head(txt: str, lines: int = 20) -> str:
+                    if not isinstance(txt, str):
+                        return ""
+                    return "\n".join(txt.splitlines()[:lines])
+                
+                comfy_error_details = {
+                    "prompt_id": prompt_id if prompt_id_available else None,
+                    "relay_error": relay_error,
+                    "last_executing_node": last_exec,
+                    "history_entry": history_entry,
+                }
+                last_comfy_error_details = comfy_error_details
+                if relay_error:
+                    print(f"❌ ComfyUI error for image {image_index + 1}: {relay_error.get('exception_type') or 'Unknown'} - {relay_error.get('message')}\n{_head(relay_error.get('traceback'))}")
+                if last_exec:
+                    print(f"🔎 Last executing node before failure: {last_exec}")
+                if history_entry:
+                    print(f"📜 History entry sans outputs: {list(history_entry.keys())}")
+                # Re-raise with original classification
+                if "timed out" in error_msg.lower():
+                    raise RuntimeError(f"Image {image_index + 1} generation timed out")
+                else:
+                    raise RuntimeError(f"Image {image_index + 1} generation failed: {error_msg}")
                     
             except Exception as e:
                 # Re-raise with image index context if not already included
@@ -1520,11 +1640,22 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "accepted", "job_id": job_id}
     
     except Exception as e:
+        # Check if this is a Modal retry attempt (Modal sets MODAL_TASK_ATTEMPT env var)
+        # Only mark job as failed if this is the FINAL retry attempt
+        current_attempt = int(os.environ.get("MODAL_TASK_ATTEMPT", "0"))
+        max_retries = 3  # Matches retries=3 in @app.cls decorator
+        is_final_attempt = current_attempt >= max_retries - 1
+        
+        print(f"🔄 Container attempt {current_attempt + 1}/{max_retries}")
+        print(f"🎯 Is final attempt: {is_final_attempt}")
+        
         error_details = {
             "error": str(e),
             "error_type": type(e).__name__,
             "job_id": job_id,
-            "user_id": user_id
+            "user_id": user_id,
+            "container_attempt": current_attempt + 1,
+            "is_final_attempt": is_final_attempt
         }
         
         # Categorize error types for better debugging
@@ -1560,71 +1691,90 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                     }
         except Exception as _attach_e:
             print(f"⚠️ Failed to attach ComfyUI error context: {_attach_e}")
-        print(f"❌ Generation failed: {error_details}")
+        print(f"❌ Generation failed (attempt {current_attempt + 1}/{max_retries}): {error_details}")
         
-        try:
-            tracker.mark_failed(job_id, str(e))
-        except Exception as tracker_e:
-            print(f"⚠️ Failed to update job tracker: {tracker_e}")
-        
-        # Send failure notification via WebSocket before cleanup
-        try:
-            from lib.ws_preview_relay import send_custom_message_to_job
-            failure_message = {
-                "job_id": job_id,
-                "job_type": "inference",
-                "status": "failed",
-                "progress": 0,
-                "message": f"Generation failed: {error_details.get('suggestion', str(e))}",
-                "timestamp": int(time.time() * 1000),
-                "error": str(e),
-                "error_type": error_details.get("error_type", "Unknown"),
-                "comfy_error_details": error_details.get("comfy_error_details")
-            }
-            send_custom_message_to_job(job_id, failure_message)
-            print(f"📤 Sent failure notification via WebSocket for job {job_id}")
-        except Exception as ws_fail_e:
-            print(f"⚠️ Failed to send failure notification via WebSocket: {ws_fail_e}")
-        
-        # Update database job status to failed via inference-complete EF
-        try:
-            import requests
-            env = (env_tag if 'env_tag' in locals() else (input_data.get("env") or "dev")).lower()
-            supabase_url = os.environ.get(f'SUPABASE_URL_{env.upper()}') or os.environ.get('SUPABASE_URL')
-            service_role_key = os.environ.get(f'SUPABASE_SERVICE_ROLE_KEY_{env.upper()}') or os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
-            if supabase_url and service_role_key:
-                ef_url = f"{supabase_url}/functions/v1/inference-complete"
-                ef_headers = {
-                    'Authorization': f'Bearer {service_role_key}',
-                    'Content-Type': 'application/json',
-                    'apikey': service_role_key,
+        # Only mark as failed and notify user on FINAL attempt
+        # On earlier attempts, Modal will retry with fresh container
+        if is_final_attempt:
+            print(f"🚨 FINAL ATTEMPT FAILED - Marking job as failed")
+            
+            try:
+                tracker.mark_failed(job_id, str(e))
+            except Exception as tracker_e:
+                print(f"⚠️ Failed to update job tracker: {tracker_e}")
+            
+            # Send failure notification via WebSocket before cleanup
+            try:
+                from lib.ws_preview_relay import send_custom_message_to_job
+                failure_message = {
+                    "job_id": job_id,
+                    "job_type": "inference",
+                    "status": "failed",
+                    "progress": 0,
+                    "message": f"Generation failed after {max_retries} attempts: {error_details.get('suggestion', str(e))}",
+                    "timestamp": int(time.time() * 1000),
+                    "error": str(e),
+                    "error_type": error_details.get("error_type", "Unknown"),
+                    "comfy_error_details": error_details.get("comfy_error_details"),
+                    "total_attempts": max_retries
                 }
-                ef_body = {
-                    'job_id': job_id,
-                    'success': False,
-                    'error_message': str(e),
-                    'comfy_error_details': error_details.get("comfy_error_details")
+                send_custom_message_to_job(job_id, failure_message)
+                print(f"📤 Sent final failure notification via WebSocket for job {job_id}")
+            except Exception as ws_fail_e:
+                print(f"⚠️ Failed to send failure notification via WebSocket: {ws_fail_e}")
+        else:
+            print(f"🔄 Not final attempt - Modal will retry with fresh container")
+            print(f"⏭️ User will continue seeing 'generating' status while retry happens")
+            
+            # Send retrying notification to user (optional - keeps them informed)
+            try:
+                from lib.ws_preview_relay import send_custom_message_to_job
+                retry_message = {
+                    "job_id": job_id,
+                    "job_type": "inference",
+                    "status": "generating",  # Keep as generating!
+                    "progress": 10,  # Reset progress a bit to show retry
+                    "message": f"Retrying generation (attempt {current_attempt + 2}/{max_retries})...",
+                    "timestamp": int(time.time() * 1000),
+                    "is_retry": True,
+                    "attempt": current_attempt + 2
                 }
-                ef_resp = requests.post(ef_url, json=ef_body, headers=ef_headers, timeout=20)
-                if ef_resp.ok:
-                    print(f"✅ Marked job {job_id} as failed via inference-complete EF")
+                send_custom_message_to_job(job_id, retry_message)
+                print(f"📤 Sent retry notification via WebSocket for job {job_id}")
+            except Exception as ws_retry_e:
+                print(f"⚠️ Failed to send retry notification via WebSocket: {ws_retry_e}")
+        
+        # Update database job status to failed via inference-complete EF (ONLY on final attempt)
+        if is_final_attempt:
+            try:
+                import requests
+                env = (env_tag if 'env_tag' in locals() else (input_data.get("env") or "dev")).lower()
+                supabase_url = os.environ.get(f'SUPABASE_URL_{env.upper()}') or os.environ.get('SUPABASE_URL')
+                service_role_key = os.environ.get(f'SUPABASE_SERVICE_ROLE_KEY_{env.upper()}') or os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+                if supabase_url and service_role_key:
+                    ef_url = f"{supabase_url}/functions/v1/inference-complete"
+                    ef_headers = {
+                        'Authorization': f'Bearer {service_role_key}',
+                        'Content-Type': 'application/json',
+                        'apikey': service_role_key,
+                    }
+                    ef_body = {
+                        'job_id': job_id,
+                        'success': False,
+                        'error_message': str(e),
+                        'comfy_error_details': error_details.get("comfy_error_details")
+                    }
+                    ef_resp = requests.post(ef_url, json=ef_body, headers=ef_headers, timeout=20)
+                    if ef_resp.ok:
+                        print(f"✅ Marked job {job_id} as failed via inference-complete EF")
+                    else:
+                        print(f"⚠️ inference-complete EF failure update error: {ef_resp.status_code} {ef_resp.text}")
                 else:
-                    print(f"⚠️ inference-complete EF failure update error: {ef_resp.status_code} {ef_resp.text}")
-            else:
-                print("⚠️ Missing Supabase credentials; cannot mark job failed in DB")
-        except Exception as ef_fail:
-            print(f"⚠️ Failed to update job failure via inference-complete EF: {ef_fail}")
+                    print("⚠️ Missing Supabase credentials; cannot mark job failed in DB")
+            except Exception as ef_fail:
+                print(f"⚠️ Failed to update job failure via inference-complete EF: {ef_fail}")
         
-        # Clean up WebSocket relay on failure
-        try:
-            from lib.ws_preview_relay import signal_job_completion, get_active_relays
-            print(f"📊 Active relays before failure cleanup: {get_active_relays()}")
-            signal_job_completion(job_id)
-            print(f"📊 Active relays after failure cleanup: {get_active_relays()}")
-        except Exception as cleanup_e:
-            print(f"⚠️ Failed to cleanup relay on failure: {cleanup_e}")
-        
-        # Attempt to remove job-scoped LoRA links on failure
+        # Clean up WebSocket relay and LoRA links (always do this, but only signal completion on final attempt)
         try:
             from pathlib import Path as _P
             for fname in created_lora_filenames:
@@ -1637,13 +1787,24 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                     print(f"⚠️ Failed to remove LoRA link {fname} after failure: {_e}")
         except Exception as _cleanup_fail_e:
             print(f"⚠️ LoRA cleanup on failure failed: {_cleanup_fail_e}")
-    
-        return {
-            "job_id": job_id, 
-            "status": "failed", 
-            "error": str(e),
-            "error_details": error_details
-        }
+        
+        # Only signal WebSocket completion on FINAL attempt
+        # On earlier attempts, keep the WebSocket alive for the next container
+        if is_final_attempt:
+            try:
+                from lib.ws_preview_relay import signal_job_completion, get_active_relays
+                print(f"📊 Active relays before final failure cleanup: {get_active_relays()}")
+                signal_job_completion(job_id)
+                print(f"📊 Active relays after final failure cleanup: {get_active_relays()}")
+            except Exception as cleanup_e:
+                print(f"⚠️ Failed to cleanup relay on final failure: {cleanup_e}")
+        else:
+            print(f"🔌 Keeping WebSocket relay alive for next container retry")
+        
+        # Re-raise the exception so Modal can retry with a fresh container
+        # Modal's retries=3 will catch this and spawn a new container
+        print(f"🔄 Re-raising exception to allow Modal container retry (attempt {current_attempt + 1}/{max_retries})...")
+        raise
     
     finally:
         pass

@@ -1182,13 +1182,20 @@ def wait_for_prompt_completion(job_id: str, prompt_id: str, timeout: float = 600
             node_timestamp = manager.last_executing_node.get('timestamp', 0)
             if node_timestamp > 0:
                 time_on_same_node = current_time - (node_timestamp / 1000.0)  # Convert ms to seconds
-                if time_on_same_node > 120:  # 2 minutes on same node = likely stuck
-                    print(f"🚨 Node {manager.last_executing_node.get('node_id')} has been executing for {time_on_same_node:.1f}s - likely stuck")
+                # Configurable stuck node timeout (default: 90s, reduced from 120s)
+                stuck_timeout = int(os.environ.get("COMFY_STUCK_NODE_TIMEOUT", "90"))
+                if time_on_same_node > stuck_timeout:
+                    node_id = manager.last_executing_node.get('node_id')
+                    print(f"🚨 Node {node_id} has been executing for {time_on_same_node:.1f}s - likely stuck (timeout: {stuck_timeout}s)")
+                    print(f"🚨 Node details: {manager.last_executing_node}")
                     print(f"🚨 Failing job {job_id} due to stuck node")
                     # Don't mark as completed, let it timeout and fail properly
                     return False
         
-        # If we've been generating and no activity for 5 seconds, check if we should complete
+        # If we've been generating and no activity for some time, check if we should complete
+        # Configurable progress timeout (default: 60s for inactivity-based stuck detection)
+        progress_timeout = int(os.environ.get("COMFY_PROGRESS_TIMEOUT", "60"))
+        
         if manager.generation_started and time_since_activity > 5:
             # Check if the last progress state indicates completion
             last_progress = manager.last_progress_state
@@ -1219,6 +1226,11 @@ def wait_for_prompt_completion(job_id: str, prompt_id: str, timeout: float = 600
                         return True
                     else:
                         print(f"🔄 Progress state shows {running_count} running nodes for prompt {prompt_id}, still waiting...")
+                        
+                        # Check if no progress for extended time (likely stuck)
+                        if time_since_activity > progress_timeout:
+                            print(f"🚨 No progress for {time_since_activity:.1f}s (timeout: {progress_timeout}s) - likely stuck")
+                            return False
                 elif progress_prompt_id != prompt_id:
                     print(f"🔄 Progress state is for different prompt ({progress_prompt_id}), waiting for {prompt_id}...")
             

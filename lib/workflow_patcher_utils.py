@@ -157,6 +157,7 @@ def get_title_aliases() -> Dict[str, str]:
     """Get mapping of normalized names to proper titles."""
     return {
         # Core loaders
+        "facenatlora": "FaceNatLora",
         "characterlora": "CharacterLora",
         "stylelora": "StyleLora",
         # Common processing nodes
@@ -167,6 +168,7 @@ def get_title_aliases() -> Dict[str, str]:
         # Utility/config nodes
         "upscaleby": "UpscaleBy",
         "resizeby": "ResizeBy",
+        "ksamplerupscalepass": "KSamplerUpscalePass",
     }
 
 
