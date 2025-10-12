@@ -74,7 +74,7 @@
   },
   "14": {
     "inputs": {
-      "lora_name": "training_goldennoir_loras_lora_20250908_111346_2cf10b54.safetensors",
+      "lora_name": "training_blindlight_loras_lora_20250915_094231_b0a940a5.safetensors",
       "strength_model": 0.5,
       "strength_clip": 0.5,
       "model": [
@@ -142,7 +142,7 @@
   },
   "34": {
     "inputs": {
-      "seed": 270191466352222,
+      "seed": 679276903000525,
       "steps": 8,
       "cfg": 1,
       "sampler_name": "res_2s",
@@ -195,7 +195,7 @@
       "file_type": "PNG",
       "remove_metadata": true,
       "images": [
-        "41:118",
+        "41:110",
         0
       ]
     },
@@ -237,6 +237,61 @@
       "title": "FaceNatLora"
     }
   },
+  "41:110": {
+    "inputs": {
+      "grain_intensity": 0.1,
+      "grain_size": 1,
+      "film_type": "35mm",
+      "color_grain": true,
+      "vintage_tone": 0,
+      "vignette": 0,
+      "image": [
+        "41:116",
+        0
+      ]
+    },
+    "class_type": "FilmGrainNode",
+    "_meta": {
+      "title": "FilmGrain"
+    }
+  },
+  "41:116": {
+    "inputs": {
+      "output_channel": "Red",
+      "red_source": 100,
+      "green_source": 0,
+      "blue_source": 0,
+      "constant": 0,
+      "monochrome": false,
+      "preserve_luminosity": false,
+      "image": [
+        "41:118",
+        0
+      ]
+    },
+    "class_type": "ChannelMixerNode",
+    "_meta": {
+      "title": "ChannelMixer"
+    }
+  },
+  "41:121": {
+    "inputs": {
+      "leak_intensity": 0,
+      "leak_color": "warm",
+      "leak_count": 2,
+      "leak_position": "random",
+      "blur_amount": 0,
+      "custom_hue": 0,
+      "image": [
+        "42",
+        0
+      ]
+    },
+    "class_type": "LightLeaksNode",
+    "_meta": {
+      "title": "LightLeaks"
+    }
+  },
   "41:118": {
     "inputs": {
       "vibrance": 4,
@@ -244,7 +299,7 @@
       "protect_skin_tones": true,
       "strength": 1,
       "image": [
-        "42",
+        "41:121",
         0
       ]
     },
