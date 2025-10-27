@@ -360,7 +360,7 @@ def preload_core_models(port: int) -> None:
         print(f"⚠️ Failed to submit warmup prompt: {e}")
     # Wait for execution to actually run to ensure models are loaded
     if prompt_id:
-        result = server.poll_history(prompt_id, max_attempts=120, backoff_base=0.5)
+        result = server.poll_history(prompt_id, max_attempts=10, backoff_base=0.5)
         print(f"[warmup] first pass completed: {bool(result)}")
 
     # Second pass: warm the secondary base LoRA used by user workflow
@@ -389,7 +389,7 @@ def preload_core_models(port: int) -> None:
             except Exception as e:
                 print(f"⚠️ Failed to submit warmup2 prompt: {e}")
             if prompt_id2:
-                result2 = server.poll_history(prompt_id2, max_attempts=120, backoff_base=0.5)
+                result2 = server.poll_history(prompt_id2, max_attempts=10, backoff_base=0.5)
                 print(f"[warmup] second pass completed: {bool(result2)}")
         else:
             print("[warmup] second pass skipped: no LoraLoader node found")
@@ -421,12 +421,12 @@ def preload_core_models(port: int) -> None:
         print(f"[warmup] failed to write marker: {e}")
 
 
-def poll_server_health(port: int, total_timeout: float = 90.0, per_try_timeout: float = 5.0) -> None:
+def poll_server_health(port: int, total_timeout: float = 30.0, per_try_timeout: float = 3.0) -> None:
     import socket, urllib.request, urllib.error, time as _t
     
     deadline = _t.time() + total_timeout
     attempt = 0
-    backoff = 2.0
+    backoff = 1.0
     last_err = None
     while _t.time() < deadline:
         attempt += 1
@@ -440,7 +440,7 @@ def poll_server_health(port: int, total_timeout: float = 90.0, per_try_timeout: 
             remaining = max(0.0, deadline - _t.time())
             print(f"❌ Server health check attempt {attempt} failed ({str(e)}), {remaining:.1f}s left; retrying...")
             _t.sleep(backoff)
-            backoff = min(backoff * 1.5, 8.0)
+            backoff = min(backoff * 1.5, 3.0)
             continue
         except Exception as e:
             last_err = e
@@ -457,7 +457,7 @@ def poll_server_health(port: int, total_timeout: float = 90.0, per_try_timeout: 
 def find_generated_images(
     job_id: str,
     output_dir: str = "/root/comfy/ComfyUI/output",
-    max_attempts: int = 10,
+    max_attempts: int = 3,
     delay_seconds: float = 1.0
 ) -> list[dict]:
     """Find generated images in ComfyUI output directory with retries.
@@ -524,7 +524,7 @@ def find_generated_images(
         if attempt < max_attempts - 1:
             print(f"⏳ Directory scan attempt {attempt + 1}/{max_attempts}, waiting {delay_seconds}s...")
             time.sleep(delay_seconds)
-            delay_seconds = min(delay_seconds * 1.5, 3.0)  # Exponential backoff
+            delay_seconds = min(delay_seconds * 1.5, 2.0)  # Exponential backoff
     
     return found_images
 
@@ -533,7 +533,7 @@ def get_image_outputs(
     job_id: str,
     prompt_id: str,
     comfyui_base: str,
-    timeout: int = 600
+    timeout: int = 120
 ) -> tuple[dict, str]:
     """Get image outputs using multiple methods with fallback.
     
@@ -556,14 +556,26 @@ def get_image_outputs(
         
         if completion_data and completion_data.get("outputs"):
             return completion_data["outputs"], "websocket"
+    else:
+        # WebSocket timed out, but generation might still be completing
+        # Add a grace period to check if outputs appear
+        grace_period = 15  # seconds
+        print(f"⏳ WebSocket timeout - adding {grace_period}s grace period for late completion...")
+        time.sleep(grace_period)
+        
+        # Check one more time if completion happened during grace period
+        completion_data = get_prompt_completion_data(job_id, prompt_id)
+        if completion_data and completion_data.get("outputs"):
+            print(f"✅ Found completion data during grace period!")
+            return completion_data["outputs"], "websocket_grace"
     
-    # Method 2: ComfyUI History API with increased retry attempts
+    # Method 2: ComfyUI History API with more aggressive retries
     print(f"⚠️ WebSocket data incomplete, trying history API...")
     history_start = time.time()
     history_url = f"{comfyui_base}/history/{prompt_id}"
     
-    # Increased from 8 to 15 attempts for better reliability
-    max_history_attempts = 15
+    # Increased to 6 attempts since history API is very reliable once data is written
+    max_history_attempts = 6
     for attempt in range(max_history_attempts):
         try:
             response = urllib.request.urlopen(history_url, timeout=10)
@@ -574,17 +586,22 @@ def get_image_outputs(
                 if outputs:
                     print(f"✅ Got outputs from history (took {time.time() - history_start:.1f}s, attempt {attempt + 1})")
                     return outputs, "history"
+                else:
+                    # History exists but no outputs yet - generation might still be finishing
+                    print(f"📊 History entry exists but no outputs yet (attempt {attempt + 1})")
         except Exception as e:
-            if attempt == 0 or attempt % 3 == 0:
+            if attempt == 0 or attempt % 2 == 0:
                 print(f"⚠️ History API attempt {attempt + 1}/{max_history_attempts}: {e}")
         
-        backoff = min(0.25 * (2 ** attempt), 2.0)
+        # Use longer backoff to give outputs time to be written
+        backoff = min(0.5 * (1.5 ** attempt), 3.0)
         time.sleep(backoff)
     
-    # Method 3: Directory scanning
+    # Method 3: Directory scanning with increased attempts
     print(f"⚠️ History unavailable, scanning output directory...")
     dir_start = time.time()
-    found_images = find_generated_images(job_id)
+    # Increase attempts to 5 with longer delays
+    found_images = find_generated_images(job_id, max_attempts=5, delay_seconds=2.0)
     
     if found_images:
         print(f"✅ Found images via directory scan (took {time.time() - dir_start:.1f}s)")
@@ -1378,8 +1395,8 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 # Get image outputs with retry logic for better reliability
                 print(f"⏳ Waiting for image {image_index + 1} to complete...")
                 
-                # Configure retry behavior from environment
-                max_retries = int(os.getenv("COMFY_RETRY_ATTEMPTS", "2"))
+                # Configure retry behavior from environment (default to 1 retry for fail-fast)
+                max_retries = int(os.getenv("COMFY_RETRY_ATTEMPTS", "1"))
                 retry_delay = 5  # Initial delay in seconds
                 
                 outputs = None
@@ -1411,8 +1428,8 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                             except Exception as clear_e:
                                 print(f"⚠️ Failed to clear completion state: {clear_e}")
                         
-                        # Attempt to get outputs (uses configurable timeout from env)
-                        outputs, source = get_image_outputs(job_id, prompt_id, comfyui_base, timeout=600)
+                        # Attempt to get outputs with fail-fast timeout (reduced from 600s to 120s)
+                        outputs, source = get_image_outputs(job_id, prompt_id, comfyui_base, timeout=120)
                         print(f"✅ Image {image_index + 1} completed on attempt {retry_attempt + 1}! (source: {source})")
                         break  # Success!
                         
@@ -2652,8 +2669,8 @@ def dev_server():
 
     @app_proxy.on_event("startup")
     async def _wait_for_upstream():
-        # Give ComfyUI a moment to boot to reduce initial 503s
-        for _ in range(60):
+        # Give ComfyUI a moment to boot to reduce initial 503s (fail-fast: max 30s)
+        for _ in range(15):
             try:
                 async with httpx.AsyncClient(timeout=2.0) as client:
                     await client.get(f"{UPSTREAM}/")

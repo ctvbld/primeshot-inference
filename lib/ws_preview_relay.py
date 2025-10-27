@@ -1178,19 +1178,29 @@ def wait_for_prompt_completion(job_id: str, prompt_id: str, timeout: float = 600
         time_since_activity = current_time - manager.last_activity_time
         
         # Check for stuck node detection (if same node executing for too long)
+        # BUT: Only trigger if we're also not receiving progress updates
         if manager.last_executing_node:
             node_timestamp = manager.last_executing_node.get('timestamp', 0)
             if node_timestamp > 0:
                 time_on_same_node = current_time - (node_timestamp / 1000.0)  # Convert ms to seconds
-                # Configurable stuck node timeout (default: 90s, reduced from 120s)
-                stuck_timeout = int(os.environ.get("COMFY_STUCK_NODE_TIMEOUT", "90"))
-                if time_on_same_node > stuck_timeout:
+                # Configurable stuck node timeout (default: 180s, increased from 90s)
+                # Some operations like high-quality upscaling or multi-LoRA loading legitimately take this long
+                stuck_timeout = int(os.environ.get("COMFY_STUCK_NODE_TIMEOUT", "180"))
+                
+                # Only consider stuck if BOTH conditions are true:
+                # 1. Same node for > stuck_timeout seconds
+                # 2. No progress messages in the last 30 seconds
+                if time_on_same_node > stuck_timeout and time_since_activity > 30:
                     node_id = manager.last_executing_node.get('node_id')
                     print(f"🚨 Node {node_id} has been executing for {time_on_same_node:.1f}s - likely stuck (timeout: {stuck_timeout}s)")
+                    print(f"🚨 No progress for {time_since_activity:.1f}s")
                     print(f"🚨 Node details: {manager.last_executing_node}")
                     print(f"🚨 Failing job {job_id} due to stuck node")
                     # Don't mark as completed, let it timeout and fail properly
                     return False
+                elif time_on_same_node > stuck_timeout:
+                    # Node taking long but we're still receiving progress - this is OK
+                    print(f"📊 Node {manager.last_executing_node.get('node_id')} executing for {time_on_same_node:.1f}s, but receiving progress (last: {time_since_activity:.1f}s ago) - continuing...")
         
         # If we've been generating and no activity for some time, check if we should complete
         # Configurable progress timeout (default: 60s for inactivity-based stuck detection)

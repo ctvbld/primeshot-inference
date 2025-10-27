@@ -114,10 +114,10 @@ def download_models():
     # Define all models to download with smart checking
     models_to_download = [
         {
-            "name": "Wan-AI Wan2.2-T2V-A14B",
+            "name": "Qwen Image",
             "type": "snapshot",
-            "check_path": "/models/ai-toolkit/Wan2.2-T2V-A14B-Diffusers-bf16",
-            "repo_id": "Wan-AI/Wan2.2-T2V-A14B-Diffusers-bf16"
+            "check_path": "/models/Qwen/Qwen-Image",
+            "repo_id": "Qwen/Qwen-Image"
         },
         {
             "name": "Wan-AI Wan2.1-T2V-14B",
@@ -137,20 +137,6 @@ def download_models():
                     local_dir="/models/clip"
                 ),
                 "/models/clip/umt5_xxl_fp16.safetensors"
-            )
-        },
-        {
-            "name": "Wan 2.2 VAE (Text-to-Video VAE - ~335MB)",
-            "type": "single_file",
-            "check_path": "/models/vae/wan_2.2_vae.safetensors",
-            "min_size_mb": 300,
-            "download_func": lambda: shutil.move(
-                hf_hub_download(
-                    repo_id="Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
-                    filename="split_files/vae/wan2.2_vae.safetensors",
-                    local_dir="/models/vae"
-                ),
-                "/models/vae/wan_2.2_vae.safetensors"
             )
         },
         {
@@ -315,9 +301,8 @@ def download_models():
     
     print(f"\n🔍 FINAL VERIFICATION:")
     essential_checks = [
-        ("/models/ai-toolkit/Wan2.2-T2V-A14B-Diffusers-bf16", "Wan-AI 2.2 Text-to-Video Diffusers"),
+        ("/models/Qwen/Qwen-Image", "Qwen Image"),
         ("/models/Wan-AI/Wan2.1-T2V-14B-Diffusers", "Wan-AI 2.1 Text-to-Video Diffusers"),
-        ("/models/vae/wan_2.2_vae.safetensors", "Wan 2.2 VAE"),
         ("/models/upscale_models/4x_NMKD-Siax_200k.pth", "4x NMKD-Siax Upscaler"),
         ("/models/loras/Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors", "WanVideo T2V 14B Light x2v CFG Step Distill LoRA"),
         ("/models/loras/Wan2.1_T2V_14B_FusionX_LoRA.safetensors", "Wan2.1 T2V 14B FusionX LoRA"),
@@ -469,9 +454,8 @@ if __name__ == "__main__":
     print("🔍 Checking if models are available...")
     
     essential_checks = [
-        ("/models/ai-toolkit/Wan2.2-T2V-A14B-Diffusers-bf16", "Wan-AI 2.2 Text-to-Video Diffusers"),
+        ("/models/Qwen/Qwen-Image", "Qwen Image"),
         ("/models/Wan-AI/Wan2.1-T2V-14B-Diffusers", "Wan-AI 2.1 Text-to-Video Diffusers"),
-        ("/models/vae/wan_2.2_vae.safetensors", "Wan 2.2 VAE"),
         ("/models/upscale_models/4x_NMKD-Siax_200k.pth", "4x NMKD-Siax Upscaler"),
         ("/models/loras/Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors", "WanVideo T2V 14B Light x2v CFG Step Distill LoRA"),
         ("/models/loras/Wan2.1_T2V_14B_FusionX_LoRA.safetensors", "Wan2.1 T2V 14B FusionX LoRA"),

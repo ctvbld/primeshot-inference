@@ -161,6 +161,7 @@
           ]
         }
       ],
+      "title": "KSampler",
       "properties": {
         "aux_id": "ChenDarYen/ComfyUI-NAG",
         "ver": "25bd940444732e21726944d03893a2f6055f5392",
