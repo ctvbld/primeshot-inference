@@ -138,12 +138,35 @@ class WebSocketRelay:
         self._custom_messages.append(message_data)
 
 
-def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_sec: float = 1.5, image_index: int = 0) -> None:
-    """Start a memory-efficient background relay from ComfyUI WS to our progress WS broadcast endpoint."""
+def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_sec: float = 1.5, image_index: int = 0, workflow: dict = None) -> None:
+    """Start a memory-efficient background relay from ComfyUI WS to our progress WS broadcast endpoint.
+    
+    Args:
+        progress_ws_url: WebSocket URL for progress broadcast
+        comfy_ws_url: ComfyUI WebSocket URL
+        job_id: Unique job identifier
+        throttle_sec: Minimum seconds between preview updates
+        image_index: Current image index being processed
+        workflow: Optional workflow dict to identify node types (for filtering previews)
+    """
     
     # Keep a strong reference to prevent garbage collection during relay operation
     relay_manager = WebSocketRelay(job_id)
     relay_manager.image_index = image_index  # Set the image index for this relay
+    
+    # Build set of node IDs to filter from previews (e.g., FaceDetailer)
+    filtered_node_ids = set()
+    if workflow:
+        for node_id, node_data in workflow.items():
+            if isinstance(node_data, dict):
+                class_type = node_data.get("class_type", "")
+                title = node_data.get("_meta", {}).get("title", "")
+                # Filter out FaceDetailer and similar post-processing nodes
+                if class_type == "FaceDetailerPipe" or title == "FaceDetailer":
+                    filtered_node_ids.add(node_id)
+                    print(f"🔍 Will filter previews from {title or class_type} (node {node_id})")
+    
+    relay_manager.filtered_node_ids = filtered_node_ids
     
     # Store relay manager in a global dict to prevent garbage collection
     if not hasattr(start_relay, '_active_relays'):
@@ -389,6 +412,19 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                     is_webp = image_data.startswith(b'RIFF') and b'WEBP' in image_data[:12]
                                     
                                     if is_png or is_jpeg or is_webp:
+                                        # Check if preview is from a node we want to show
+                                        # Filter out post-processing nodes like FaceDetailer
+                                        should_send_preview = True
+                                        if hasattr(manager, 'filtered_node_ids') and manager.filtered_node_ids:
+                                            if manager.last_executing_node:
+                                                current_node = manager.last_executing_node.get("node_id", "")
+                                                if current_node in manager.filtered_node_ids:
+                                                    should_send_preview = False
+                                                    print(f"⏭️ Skipping preview from filtered node {current_node}")
+                                        
+                                        if not should_send_preview:
+                                            continue
+                                        
                                         # Process the valid image data
                                         import base64
                                         preview_base64 = base64.b64encode(image_data).decode('utf-8')
@@ -503,7 +539,7 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                 node_id = exec_data.get("node") or exec_data.get("node_id")
                                 if node_id is not None:
                                     manager.last_executing_node = {
-                                        "node_id": node_id,
+                                        "node_id": str(node_id),
                                         "prompt_id": manager.last_prompt_id,
                                         "timestamp": int(time.time() * 1000)
                                     }

@@ -399,29 +399,27 @@ class WorkflowPatcher:
                 logger.warning(f"⚠️ Failed to bypass {ui_name}: {e}")
     
     def _ensure_save_node_wiring(self) -> None:
-        """Ensure save nodes are properly wired to image sources."""
-        # Find final image output
+        """Ensure save nodes are properly wired to image sources.
+        
+        This function only fixes BROKEN connections (nodes that don't exist).
+        It does NOT rewire valid connections, preserving the workflow's
+        intended post-processing chain (FaceDetailer, effects, etc.).
+        """
+        # Find final image output as fallback
         vae_id = self.manager.find_image_output_node()
         if not vae_id:
             logger.warning("⚠️ No image output node found for save node wiring")
             return
         
-        # Find special nodes
-        special_nodes = self.manager.find_special_nodes()
-        scale_down_id = special_nodes["scale_down"]
-        resize_by_id = special_nodes["resize_by"]
-        upscale_by_id = special_nodes["upscale_by"]
-        
-        # Wire save nodes
-        save_nodes_wired = []
+        # Wire save nodes ONLY if they have broken connections
+        rewired_count = 0
         
         for node_type in SAVE_NODE_TYPES:
             for node_id, node in self.manager.find_nodes_by_class_type(node_type):
                 inputs = node.setdefault("inputs", {})
                 title = node.get("_meta", {}).get("title", "")
-                prefix = str(inputs.get("filename_prefix", ""))
                 
-                # Check if rewiring needed
+                # Check if connection is broken
                 current = inputs.get("images")
                 needs_rewiring = False
                 
@@ -429,29 +427,24 @@ class WorkflowPatcher:
                     connected_id = str(current[0])
                     if connected_id not in self.workflow:
                         needs_rewiring = True
-                        logger.warning(f"⚠️ Node {node_id} connected to non-existent node {connected_id}")
+                        logger.warning(f"⚠️ Node {node_id} ({title}) connected to non-existent node {connected_id}")
+                elif not current:
+                    needs_rewiring = True
+                    logger.warning(f"⚠️ Node {node_id} ({title}) has no image connection")
                 
-                # Wire based on node type
-                if title == "SaveOrig" or prefix.startswith("orig_"):
-                    # Prefer highest resolution output
-                    target = vae_id
-                    if resize_by_id:
-                        target = resize_by_id
-                    elif upscale_by_id:
-                        target = upscale_by_id
-                    
-                    inputs["images"] = [target, 0]
-                    logger.info(f"✅ Wired SaveOrig (node {node_id}) -> [{target}, 0]")
-                    save_nodes_wired.append(("SaveOrig", node_id))
-                    
-                elif needs_rewiring:
-                    # Generic broken connection
+                # Only rewire if broken
+                if needs_rewiring:
+                    # Use VAEDecode as fallback
                     inputs["images"] = [vae_id, 0]
-                    logger.info(f"✅ Rewired broken save node {node_id} -> [{vae_id}, 0]")
-                    save_nodes_wired.append(("Generic", node_id))
+                    logger.info(f"✅ Rewired broken save node {node_id} ({title}) -> [{vae_id}, 0]")
+                    rewired_count += 1
+                else:
+                    logger.info(f"ℹ️ Save node {node_id} ({title}) has valid connection, preserving workflow chain")
         
-        # Log summary
-        logger.info(f"🔎 Save nodes wired: {save_nodes_wired}")
+        if rewired_count > 0:
+            logger.info(f"🔎 Rewired {rewired_count} broken save node(s)")
+        else:
+            logger.info(f"✅ All save nodes have valid connections")
     
     def _apply_quality_settings(self, quality: str) -> None:
         """Apply quality-specific settings."""

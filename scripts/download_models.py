@@ -7,6 +7,7 @@ Downloads all required models with existence checks to avoid redundant downloads
 import modal
 import os
 from pathlib import Path
+from grpclib import GRPCError
 
 models_volume = modal.Volume.from_name("models-vol")
 app = modal.App("download-all-models")
@@ -105,6 +106,8 @@ def download_models():
         "/models/vae",
         "/models/loras",
         "/models/Wan-AI",
+        "/models/ultralytics/bbox",
+        "/models/ultralytics/sam"
     ]
     
     for dir_path in directories:
@@ -154,6 +157,28 @@ def download_models():
             )
         },
         {
+            "name": "Face YOLOv9c Bounding Box Model (Face Detection - 52MB)",
+            "type": "single_file",
+            "check_path": "/models/ultralytics/bbox/face_yolov9c.pt",
+            "min_size_mb": 52,
+            "download_func": lambda: hf_hub_download(
+                repo_id="Bingsu/adetailer",
+                filename="face_yolov9c.pt",
+                local_dir="/models/ultralytics/bbox"
+            )
+        },
+        {
+            "name": "SAM Vit B (Semantic Segmentation - 375MB)",
+            "type": "single_file",
+            "check_path": "/models/sams/sam_vit_b_01ec64.pth",
+            "min_size_mb": 375,
+            "download_func": lambda: hf_hub_download(
+                repo_id="scenario-labs/sam_vit",
+                filename="sam_vit_b_01ec64.pth",
+                local_dir="/models/sams"
+            )
+        },
+        {
             "name": "4x_NMKD-Siax_200k Upscaler (Best for Faces - 67MB)",
             "type": "single_file",
             "check_path": "/models/upscale_models/4x_NMKD-Siax_200k.pth",
@@ -165,13 +190,13 @@ def download_models():
             )
         },
         {
-            "name": "4x_UltraSharpV2 Lite Upscaler (Best for Faces - 15MB)",
+            "name": "4xNomosUniDAT_otf Upscaler (Best for Faces - 154MB)",
             "type": "single_file",
-            "check_path": "/models/upscale_models/4x_UltraSharpV2_Lite.pth",
-            "min_size_mb": 15,
+            "check_path": "/models/upscale_models/4xNomosUniDAT_otf.safetensors",
+            "min_size_mb": 154,
             "download_func": lambda: hf_hub_download(
-                repo_id="Kim2091/UltraSharpV2",
-                filename="4x-UltraSharpV2_Lite.pth",
+                repo_id="Phips/4xNomosUniDAT_otf",
+                filename="4xNomosUniDAT_otf.safetensors",
                 local_dir="/models/upscale_models"
             )
         },
@@ -191,13 +216,43 @@ def download_models():
             "type": "single_file",
             "check_path": "/models/loras/Wan2.1_T2V_14B_FusionX_LoRA.safetensors",
             "min_size_mb": 300,
-            "download_func": lambda: shutil.move(
-                hf_hub_download(
-                    repo_id="vrgamedevgirl84/Wan14BT2VFusioniX",
-                    filename="FusionX_LoRa/Wan2.1_T2V_14B_FusionX_LoRA.safetensors",
-                    local_dir="/models/loras"
-                ),
-                "/models/loras/Wan2.1_T2V_14B_FusionX_LoRA.safetensors"
+            "download_func": lambda: hf_hub_download(
+                repo_id="vrgamedevgirl84/Wan14BT2VFusioniX",
+                filename="FusionX_LoRa/Wan2.1_T2V_14B_FusionX_LoRA.safetensors",
+                local_dir="/models/loras"
+            )
+        },
+        {
+            "name": "SDXLrender v2.0 (SDXL Render - 181MB)",
+            "type": "single_file",
+            "check_path": "/models/loras/SDXLrender_v2.0.safetensors",
+            "min_size_mb": 181,
+            "download_func": lambda: hf_hub_download(
+                repo_id="philz1337x/loras",
+                filename="SDXLrender_v2.0.safetensors",
+                local_dir="/models/loras"
+            )
+        },
+        {
+            "name": "more_details (SDXL Render - 10MB)",
+            "type": "single_file",
+            "check_path": "/models/loras/more_details.safetensors",
+            "min_size_mb": 10,
+            "download_func": lambda: hf_hub_download(
+                repo_id="digiplay/LORA",
+                filename="more_details.safetensors",
+                local_dir="/models/loras"
+            )
+        },
+        {
+            "name": "control_v11f1e_sd15_tile (ControlNet - 723MB)",
+            "type": "single_file",
+            "check_path": "/models/controlnet/control_v11f1e_sd15_tile.safetensors",
+            "min_size_mb": 723,
+            "download_func": lambda: hf_hub_download(
+                repo_id="copybaiter/ControlNet",
+                filename="control_v11f1e_sd15_tile.safetensors",
+                local_dir="/models/controlnet"
             )
         },
     ]
@@ -349,7 +404,8 @@ def _volume_dir_exists(volume: modal.Volume, dir_path: str) -> bool:
     try:
         volume.listdir(dir_path)
         return True
-    except FileNotFoundError:
+    except (FileNotFoundError, GRPCError, Exception):
+        # Modal can raise GRPCError when directory doesn't exist
         return False
 
 def _volume_file_exists(volume: modal.Volume, file_path: str) -> bool:
@@ -372,14 +428,16 @@ def _volume_file_exists(volume: modal.Volume, file_path: str) -> bool:
                 # Fallback to string representation
                 names.append(os.path.basename(str(e)))
         return base in set(names)
-    except FileNotFoundError:
+    except (FileNotFoundError, GRPCError, Exception):
+        # Modal can raise GRPCError when directory doesn't exist
         return False
 
 def _volume_list_names(volume: modal.Volume, dir_path: str) -> set:
     """Return a set of basenames present in a volume directory."""
     try:
         entries = volume.listdir(dir_path)
-    except FileNotFoundError:
+    except (FileNotFoundError, GRPCError, Exception):
+        # Modal can raise GRPCError when directory doesn't exist
         return set()
     names = set()
     for e in entries:
@@ -406,7 +464,10 @@ def upload_local_uploads(local_base: str = None, mappings: dict = None):
     if local_base is None:
         local_base = str(Path(__file__).resolve().parents[1] / "uploads")
     if mappings is None:
-        mappings = {"loras": "/loras"}
+        mappings = {
+            "loras": "/loras",
+            "checkpoints": "/checkpoints",
+        }
 
     print(f"\n📤 Uploading from local uploads base: {local_base}")
 
@@ -419,9 +480,9 @@ def upload_local_uploads(local_base: str = None, mappings: dict = None):
             print(f"⏭️ Skip: local folder not found: {local_dir}")
             continue
 
+        # Check if directory exists, auto-create if needed
         if not _volume_dir_exists(vol, target_dir):
-            print(f"⚠️ Modal folder missing: {target_dir} (create it by writing a file during a function run)")
-            continue
+            print(f"📁 Creating directory: {target_dir} (will be created on first file upload)")
 
         print(f"➡️  Syncing {local_dir} -> {target_dir}")
 

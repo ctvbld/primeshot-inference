@@ -11,6 +11,7 @@ import uuid
 import os
 import time
 import sys
+import socket
 import urllib.request
 import urllib.error
 import modal
@@ -120,7 +121,7 @@ cuda_image = (
     ])
     # Install web dependencies and ComfyUI
     .pip_install("fastapi[standard]==0.115.4")  # web dependencies
-    .pip_install("comfy-cli==1.4.1")  # Install latest version of ComfyUI
+    .pip_install("comfy-cli==1.5.0")  # Install latest version of ComfyUI
     # Pre-install OpenCV to avoid conflicts with custom nodes
     .pip_install("opencv-python-headless==4.8.1.78")  # OpenCV without GUI dependencies
     # Install optimized xformers for additional attention acceleration
@@ -158,6 +159,18 @@ cuda_image = (
     #     "cd /root/comfy/ComfyUI/custom_nodes/comfyui-vrgamedevgirl && pip install -r requirements.txt --no-input"
     # )
     # END TO UNUSED NODES
+    .run_commands(
+        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/ltdrdata/ComfyUI-Impact-Subpack.git",
+        "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-Impact-Subpack && pip install -r requirements.txt --no-input"
+    )
+    .run_commands(
+        "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/ltdrdata/ComfyUI-Impact-Pack.git",
+        "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-Impact-Pack && pip install -r requirements.txt --no-input"
+    )
+    # .run_commands(
+    #     "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler.git",
+    #     "cd /root/comfy/ComfyUI/custom_nodes/ComfyUI-SeedVR2_VideoUpscaler && pip install -r requirements.txt --no-input"
+    # )
     # Install RES4LYF advanced sampling nodes
     .run_commands(
         "cd /root/comfy/ComfyUI/custom_nodes && git clone https://github.com/ClownsharkBatwing/RES4LYF.git",
@@ -1228,7 +1241,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 print(f"  🌐 Base URL: {progress_ws_url.split('/ws/broadcast/')[0]}")
                 
                 # Start the relay for the entire job
-                start_relay(progress_ws_url, comfy_ws_url, job_id, throttle_sec=1.5, image_index=0)
+                start_relay(progress_ws_url, comfy_ws_url, job_id, throttle_sec=1.5, image_index=0, workflow=wf)
                 print(f"🔄 Started WebSocket relay for entire job {job_id}")
             except Exception as e:
                 print(f"⚠️ WebSocket relay failed for job {job_id}: {e}")
@@ -1360,31 +1373,75 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             except Exception as e:
                 print(f"⚠️ ComfyUI readiness check failed for image {image_index + 1}: {e}")
 
-            # Submit to ComfyUI for this specific image
+            # Submit to ComfyUI for this specific image with retry logic
             prompt_url = f"{comfyui_base}/prompt"
             
-            try:
-                req = urllib.request.Request(
-                    url=prompt_url,
-                    data=json.dumps(body).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
+            # Configure prompt submission timeout and retries from environment
+            prompt_timeout = int(os.getenv("COMFY_PROMPT_TIMEOUT", "60"))
+            prompt_max_retries = int(os.getenv("COMFY_PROMPT_RETRIES", "3"))
+            
+            response_json = None
+            last_submission_error = None
+            
+            for submission_attempt in range(prompt_max_retries):
                 try:
-                    response = urllib.request.urlopen(req, timeout=30)
-                    response_data = response.read().decode('utf-8')
-                    response_json = json.loads(response_data)
-                except urllib.error.HTTPError as http_err:
-                    err_body = ""
+                    if submission_attempt > 0:
+                        # Exponential backoff: 2s, 4s, 8s
+                        backoff_delay = min(2 ** submission_attempt, 10)
+                        print(f"🔄 Prompt submission retry {submission_attempt + 1}/{prompt_max_retries} for image {image_index + 1} (waiting {backoff_delay}s)...")
+                        time.sleep(backoff_delay)
+                    
+                    req = urllib.request.Request(
+                        url=prompt_url,
+                        data=json.dumps(body).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    
                     try:
-                        err_body = http_err.read().decode('utf-8', errors='replace')
-                    except Exception:
-                        pass
-                    print(f"❌ ComfyUI /prompt HTTP {getattr(http_err, 'code', 'unknown')}. Body: {err_body[:2000]}")
-                    raise RuntimeError(f"HTTP {getattr(http_err, 'code', 'unknown')} from ComfyUI /prompt: {err_body[:200]}")
-                
-                print(f"📨 Submitted image {image_index + 1} to ComfyUI: {response_json}")
-                
+                        print(f"📤 Submitting prompt for image {image_index + 1} (attempt {submission_attempt + 1}/{prompt_max_retries}, timeout: {prompt_timeout}s)...")
+                        response = urllib.request.urlopen(req, timeout=prompt_timeout)
+                        response_data = response.read().decode('utf-8')
+                        response_json = json.loads(response_data)
+                        print(f"📨 Successfully submitted image {image_index + 1} to ComfyUI: {response_json}")
+                        break  # Success! Exit retry loop
+                        
+                    except urllib.error.HTTPError as http_err:
+                        err_body = ""
+                        try:
+                            err_body = http_err.read().decode('utf-8', errors='replace')
+                        except Exception:
+                            pass
+                        error_msg = f"HTTP {getattr(http_err, 'code', 'unknown')} from ComfyUI /prompt: {err_body[:200]}"
+                        print(f"❌ {error_msg}")
+                        last_submission_error = RuntimeError(error_msg)
+                        
+                        # HTTP errors are likely not transient, don't retry
+                        raise last_submission_error
+                        
+                    except (TimeoutError, urllib.error.URLError, socket.timeout) as timeout_err:
+                        error_msg = f"Prompt submission timeout/network error for image {image_index + 1}: {timeout_err}"
+                        print(f"⚠️ {error_msg}")
+                        last_submission_error = RuntimeError(error_msg)
+                        
+                        if submission_attempt == prompt_max_retries - 1:
+                            # Last attempt failed
+                            print(f"❌ All {prompt_max_retries} prompt submission attempts failed for image {image_index + 1}")
+                            raise RuntimeError(f"Failed to submit prompt for image {image_index + 1} after {prompt_max_retries} attempts: {timeout_err}")
+                        # Continue to next retry for timeout/network errors
+                        
+                except Exception as e:
+                    # Unexpected error during submission attempt
+                    if submission_attempt == prompt_max_retries - 1:
+                        raise RuntimeError(f"Failed to submit prompt for image {image_index + 1}: {e}")
+                    last_submission_error = e
+                    print(f"⚠️ Prompt submission attempt {submission_attempt + 1} failed: {e}")
+            
+            # Verify we got a valid response
+            if response_json is None:
+                raise RuntimeError(f"Failed to submit prompt for image {image_index + 1} after {prompt_max_retries} attempts: {last_submission_error}")
+            
+            try:
                 # Extract prompt_id from response
                 prompt_id = response_json.get("prompt_id")
                 if not prompt_id:
@@ -1452,9 +1509,29 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                     else:
                         raise RuntimeError(f"Image {image_index + 1} generation failed: no outputs received")
                 
-                # Find generated images in outputs
+                # Find generated images in outputs - ONLY from Save nodes, not preview images
                 generated_images = []
+                save_node_ids = set()
+                
+                # First, identify which nodes are Save nodes by checking the workflow
+                for wf_node_id, wf_node in wf.items():
+                    if isinstance(wf_node, dict):
+                        class_type = wf_node.get("class_type", "")
+                        if class_type in ["SaveImage", "SaveImagePlus"]:
+                            save_node_ids.add(wf_node_id)
+                
+                if save_node_ids:
+                    print(f"🔍 Filtering images: only accepting from Save nodes {list(save_node_ids)}")
+                
+                # Only retrieve images from Save nodes
                 for node_id, node_output in outputs.items():
+                    if "images" in node_output:
+                        if node_id not in save_node_ids:
+                            print(f"⏭️ Skipping preview images from node {node_id} (not a Save node)")
+                            continue  # Skip non-save nodes (like VAEDecode preview images)
+                        else:
+                            print(f"✅ Accepting images from Save node {node_id}")
+                    
                     if "images" in node_output:
                         for img in node_output["images"]:
                             generated_images.append({

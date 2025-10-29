@@ -1,0 +1,530 @@
+{
+  "3": {
+    "inputs": {
+      "text": "A minimalistic studio portrait of a man, late 30s, brown eyes, black hair, athletic build, seated front-facing in a high-back armchair, has a calm, neutral expression, gazing directly at the camera with quiet confidence. The posture is forward with both arms resting on both legs, hands and shoulders relaxed. The background, floor, chair, and clothes are all the same shade of deep burgundy, with no visible distinction between the floor and walls, creating a perfectly seamless and monochromatic environment that emphasizes symmetry and visual harmony. Wearing a matching color suit, high-end fashion, that matches the background color, along a white t-shirt and white sneakers, styled in a modern and understated way. The overall mood is relaxed, composed and professional. Shot in a studio with controlled soft lighting, 50mm lens at f/8 for full clarity and depth, professional fashion editorial style.",
+      "clip": [
+        "45",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "PositivePrompt"
+    }
+  },
+  "4": {
+    "inputs": {
+      "text": "plastic-like texture, oily appearance, unnatural texture, 3d render, cgi, doll, deformed, disfigured, poorly drawn, poor anatomy, bad hands, blurry, nude, bad hands, bad anatomy, ugly, deformed, face asymmetry, eyes asymmetry, deformed eyes, deformed mouth, open mouth, stray hair strands on skin, unwanted hair artifacts on face, spots, grey spots, grain, noise, artifacts, necklace, nipple, brand, text, writings, logo, initials, watermark, high exposure",
+      "clip": [
+        "45",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "NegativePrompt"
+    }
+  },
+  "5": {
+    "inputs": {
+      "width": 1408,
+      "height": 1408,
+      "length": 1,
+      "batch_size": 1
+    },
+    "class_type": "EmptyHunyuanLatentVideo",
+    "_meta": {
+      "title": "ImageLatent"
+    }
+  },
+  "7": {
+    "inputs": {
+      "unet_name": "wan2.1_t2v_14B_fp16.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Charger Modèle Diffusion"
+    }
+  },
+  "8": {
+    "inputs": {
+      "vae_name": "wan_2.1_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Charger VAE"
+    }
+  },
+  "9": {
+    "inputs": {
+      "samples": [
+        "34",
+        0
+      ],
+      "vae": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "14": {
+    "inputs": {
+      "lora_name": "training_studiopro_loras_lora_20251010_212656_ce30267f.safetensors",
+      "strength_model": 0.5,
+      "strength_clip": 0.5,
+      "model": [
+        "29",
+        0
+      ],
+      "clip": [
+        "29",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "StyleLora"
+    }
+  },
+  "22": {
+    "inputs": {
+      "clip_name": "umt5_xxl_fp16.safetensors",
+      "type": "wan",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Charger CLIP"
+    }
+  },
+  "29": {
+    "inputs": {
+      "lora_name": "Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors",
+      "strength_model": 0.4000000000000001,
+      "strength_clip": 0.4000000000000001,
+      "model": [
+        "30",
+        0
+      ],
+      "clip": [
+        "30",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "Charger LoRA"
+    }
+  },
+  "30": {
+    "inputs": {
+      "lora_name": "Wan2.1_T2V_14B_FusionX_LoRA.safetensors",
+      "strength_model": 0.4000000000000001,
+      "strength_clip": 0.4000000000000001,
+      "model": [
+        "7",
+        0
+      ],
+      "clip": [
+        "22",
+        0
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "Charger LoRA"
+    }
+  },
+  "34": {
+    "inputs": {
+      "seed": 129636116209571,
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "res_2s",
+      "scheduler": "bong_tangent",
+      "denoise": 1,
+      "model": [
+        "45",
+        0
+      ],
+      "positive": [
+        "3",
+        0
+      ],
+      "negative": [
+        "4",
+        0
+      ],
+      "latent_image": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "35": {
+    "inputs": {
+      "lora_name": "fc9f0a5d-73cf-45f3-a58e-6131bed67d21_training_fd8c5187-717c-4c58-9b77-47e30e0081be_loras_lora_20251028_125959_0e8377cb.safetensors",
+      "strength_model": 1,
+      "strength_clip": 1,
+      "model": [
+        "14",
+        0
+      ],
+      "clip": [
+        "14",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "CharacterLora"
+    }
+  },
+  "39": {
+    "inputs": {
+      "filename_prefix": "orig_",
+      "file_type": "PNG",
+      "remove_metadata": true,
+      "images": [
+        "41:110",
+        0
+      ]
+    },
+    "class_type": "SaveImagePlus",
+    "_meta": {
+      "title": "SaveOrig"
+    }
+  },
+  "45": {
+    "inputs": {
+      "lora_name": "FusionX_FaceNaturalizer.safetensors",
+      "strength_model": 0,
+      "strength_clip": 0,
+      "model": [
+        "35",
+        0
+      ],
+      "clip": [
+        "35",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "FaceNatLora"
+    }
+  },
+  "43:47": {
+    "inputs": {
+      "upscale_model": [
+        "43:50",
+        0
+      ],
+      "image": [
+        "9",
+        0
+      ]
+    },
+    "class_type": "ImageUpscaleWithModel",
+    "_meta": {
+      "title": "Agrandir l'Image (à l'aide du Modèle)"
+    }
+  },
+  "43:48": {
+    "inputs": {
+      "pixels": [
+        "43:46",
+        0
+      ],
+      "vae": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode"
+    }
+  },
+  "43:55": {
+    "inputs": {
+      "samples": [
+        "43:49",
+        0
+      ],
+      "vae": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "43:92": {
+    "inputs": {
+      "upscale_model": [
+        "43:50",
+        0
+      ],
+      "image": [
+        "43:55",
+        0
+      ]
+    },
+    "class_type": "ImageUpscaleWithModel",
+    "_meta": {
+      "title": "Agrandir l'Image (à l'aide du Modèle)"
+    }
+  },
+  "43:50": {
+    "inputs": {
+      "model_name": "4x_NMKD-Siax_200k.pth"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {
+      "title": "Charger le modèle de mise à l'échelle"
+    }
+  },
+  "43:49": {
+    "inputs": {
+      "seed": 229773567261949,
+      "steps": 6,
+      "cfg": 1,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 0.65,
+      "model": [
+        "45",
+        0
+      ],
+      "positive": [
+        "3",
+        0
+      ],
+      "negative": [
+        "4",
+        0
+      ],
+      "latent_image": [
+        "43:48",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSamplerUpscalePass"
+    }
+  },
+  "43:46": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "scale_by": 0.3,
+      "image": [
+        "43:47",
+        0
+      ]
+    },
+    "class_type": "ImageScaleBy",
+    "_meta": {
+      "title": "UpscaleBy"
+    }
+  },
+  "43:91": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "scale_by": 0.28,
+      "image": [
+        "43:92",
+        0
+      ]
+    },
+    "class_type": "ImageScaleBy",
+    "_meta": {
+      "title": "ResizeBy"
+    }
+  },
+  "54:46": {
+    "inputs": {
+      "model_name": "bbox/face_yolov9c.pt"
+    },
+    "class_type": "UltralyticsDetectorProvider",
+    "_meta": {
+      "title": "UltralyticsDetectorProvider"
+    }
+  },
+  "54:47": {
+    "inputs": {
+      "model_name": "sam_vit_b_01ec64.pth",
+      "device_mode": "Prefer GPU"
+    },
+    "class_type": "SAMLoader",
+    "_meta": {
+      "title": "SAMLoader (Impact)"
+    }
+  },
+  "54:48": {
+    "inputs": {
+      "wildcard": "",
+      "Select to add LoRA": "Select the LoRA to add to the text",
+      "Select to add Wildcard": "Select the Wildcard to add to the text",
+      "model": [
+        "45",
+        0
+      ],
+      "clip": [
+        "45",
+        1
+      ],
+      "vae": [
+        "8",
+        0
+      ],
+      "positive": [
+        "3",
+        0
+      ],
+      "negative": [
+        "4",
+        0
+      ],
+      "bbox_detector": [
+        "54:46",
+        0
+      ],
+      "sam_model_opt": [
+        "54:47",
+        0
+      ]
+    },
+    "class_type": "ToDetailerPipe",
+    "_meta": {
+      "title": "ToDetailerPipe"
+    }
+  },
+  "54:52": {
+    "inputs": {
+      "guide_size": 768,
+      "guide_size_for": true,
+      "max_size": 1024,
+      "seed": 798749377351726,
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "res_2s",
+      "scheduler": "bong_tangent",
+      "denoise": 0.5,
+      "feather": 5,
+      "noise_mask": true,
+      "force_inpaint": true,
+      "bbox_threshold": 0.5,
+      "bbox_dilation": 10,
+      "bbox_crop_factor": 1.3,
+      "sam_detection_hint": "center-1",
+      "sam_dilation": 0,
+      "sam_threshold": 0.93,
+      "sam_bbox_expansion": 0,
+      "sam_mask_hint_threshold": 0.7,
+      "sam_mask_hint_use_negative": "False",
+      "drop_size": 10,
+      "refiner_ratio": 0.2,
+      "cycle": 1,
+      "inpaint_model": false,
+      "noise_mask_feather": 20,
+      "tiled_encode": false,
+      "tiled_decode": false,
+      "image": [
+        "43:91",
+        0
+      ],
+      "detailer_pipe": [
+        "54:48",
+        0
+      ]
+    },
+    "class_type": "FaceDetailerPipe",
+    "_meta": {
+      "title": "FaceDetailer"
+    }
+  },
+  "41:110": {
+    "inputs": {
+      "grain_intensity": 0.1,
+      "grain_size": 1,
+      "film_type": "35mm",
+      "color_grain": true,
+      "vintage_tone": 0,
+      "vignette": 0,
+      "image": [
+        "41:116",
+        0
+      ]
+    },
+    "class_type": "FilmGrainNode",
+    "_meta": {
+      "title": "FilmGrain"
+    }
+  },
+  "41:116": {
+    "inputs": {
+      "output_channel": "Red",
+      "red_source": 100,
+      "green_source": 0,
+      "blue_source": 0,
+      "constant": 0,
+      "monochrome": false,
+      "preserve_luminosity": false,
+      "image": [
+        "41:118",
+        0
+      ]
+    },
+    "class_type": "ChannelMixerNode",
+    "_meta": {
+      "title": "ChannelMixer"
+    }
+  },
+  "41:121": {
+    "inputs": {
+      "leak_intensity": 0,
+      "leak_color": "warm",
+      "leak_count": 2,
+      "leak_position": "random",
+      "blur_amount": 0,
+      "custom_hue": 0,
+      "image": [
+        "54:52",
+        0
+      ]
+    },
+    "class_type": "LightLeaksNode",
+    "_meta": {
+      "title": "LightLeaks"
+    }
+  },
+  "41:118": {
+    "inputs": {
+      "vibrance": 4,
+      "saturation": 6,
+      "protect_skin_tones": true,
+      "strength": 1,
+      "image": [
+        "41:121",
+        0
+      ]
+    },
+    "class_type": "VibranceNode",
+    "_meta": {
+      "title": "VibSat"
+    }
+  }
+}
