@@ -434,6 +434,58 @@ def preload_core_models(port: int) -> None:
         print(f"[warmup] failed to write marker: {e}")
 
 
+def cleanup_loras_from_vram(job_id: str, port: int = 8000) -> None:
+    """Clean up LoRAs from VRAM without unloading base models.
+    
+    This ensures that between jobs, LoRA weights are cleared from VRAM while
+    keeping the expensive base models (UNET, VAE, CLIP, upscaler) loaded.
+    """
+    print(f"🧹 Cleaning up LoRAs from VRAM for job {job_id}")
+    
+    comfyui_base = f"http://127.0.0.1:{port}"
+    
+    # 1. Interrupt any lingering ComfyUI state
+    try:
+        interrupt_req = urllib.request.Request(
+            url=f"{comfyui_base}/interrupt",
+            data=b'',
+            method="POST"
+        )
+        urllib.request.urlopen(interrupt_req, timeout=5)
+        print("✅ Interrupted ComfyUI")
+    except Exception as e:
+        print(f"⚠️ Interrupt failed (non-critical): {e}")
+    
+    # 2. Clear queue
+    try:
+        import json as _json
+        queue_req = urllib.request.Request(
+            url=f"{comfyui_base}/queue",
+            data=_json.dumps({"clear": True}).encode('utf-8'),
+            headers={'Content-Type': 'application/json'},
+            method="POST"
+        )
+        urllib.request.urlopen(queue_req, timeout=5)
+        print("✅ Cleared queue")
+    except Exception as e:
+        print(f"⚠️ Queue clear failed (non-critical): {e}")
+    
+    # 3. Force CUDA cache cleanup (releases LoRA VRAM)
+    try:
+        import torch
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        print("✅ Cleared CUDA cache")
+    except Exception as e:
+        print(f"⚠️ CUDA cleanup failed: {e}")
+    
+    # 4. Small delay to let ComfyUI stabilize
+    time.sleep(0.5)
+    print(f"✅ LoRA VRAM cleanup completed for job {job_id}")
+
+
 def poll_server_health(port: int, total_timeout: float = 30.0, per_try_timeout: float = 3.0) -> None:
     import socket, urllib.request, urllib.error, time as _t
     
@@ -546,7 +598,7 @@ def get_image_outputs(
     job_id: str,
     prompt_id: str,
     comfyui_base: str,
-    timeout: int = 120
+    timeout: int = 60
 ) -> tuple[dict, str]:
     """Get image outputs using multiple methods with fallback.
     
@@ -556,7 +608,7 @@ def get_image_outputs(
     
     start_time = time.time()
     
-    # Use configurable timeout from environment
+    # Use configurable timeout from environment (reduced default from 120s to 60s)
     timeout = int(os.getenv("COMFY_GENERATION_TIMEOUT", str(timeout)))
     
     # Method 1: WebSocket completion data
@@ -571,8 +623,8 @@ def get_image_outputs(
             return completion_data["outputs"], "websocket"
     else:
         # WebSocket timed out, but generation might still be completing
-        # Add a grace period to check if outputs appear
-        grace_period = 15  # seconds
+        # Add a grace period to check if outputs appear (reduced from 15s to 5s)
+        grace_period = 5  # seconds
         print(f"⏳ WebSocket timeout - adding {grace_period}s grace period for late completion...")
         time.sleep(grace_period)
         
@@ -582,16 +634,16 @@ def get_image_outputs(
             print(f"✅ Found completion data during grace period!")
             return completion_data["outputs"], "websocket_grace"
     
-    # Method 2: ComfyUI History API with more aggressive retries
+    # Method 2: ComfyUI History API (reduced from 6 attempts to 3)
     print(f"⚠️ WebSocket data incomplete, trying history API...")
     history_start = time.time()
     history_url = f"{comfyui_base}/history/{prompt_id}"
     
-    # Increased to 6 attempts since history API is very reliable once data is written
-    max_history_attempts = 6
+    # Reduced to 3 attempts with explicit timeout
+    max_history_attempts = 3
     for attempt in range(max_history_attempts):
         try:
-            response = urllib.request.urlopen(history_url, timeout=10)
+            response = urllib.request.urlopen(history_url, timeout=5)
             history_data = json.loads(response.read().decode('utf-8'))
             
             if prompt_id in history_data:
@@ -606,15 +658,15 @@ def get_image_outputs(
             if attempt == 0 or attempt % 2 == 0:
                 print(f"⚠️ History API attempt {attempt + 1}/{max_history_attempts}: {e}")
         
-        # Use longer backoff to give outputs time to be written
-        backoff = min(0.5 * (1.5 ** attempt), 3.0)
+        # Shorter backoff (max 2s instead of 3s)
+        backoff = min(0.5 * (1.5 ** attempt), 2.0)
         time.sleep(backoff)
     
-    # Method 3: Directory scanning with increased attempts
+    # Method 3: Directory scanning (reduced from 5 attempts to 2)
     print(f"⚠️ History unavailable, scanning output directory...")
     dir_start = time.time()
-    # Increase attempts to 5 with longer delays
-    found_images = find_generated_images(job_id, max_attempts=5, delay_seconds=2.0)
+    # Reduced to 2 attempts with 1s delay
+    found_images = find_generated_images(job_id, max_attempts=2, delay_seconds=1.0)
     
     if found_images:
         print(f"✅ Found images via directory scan (took {time.time() - dir_start:.1f}s)")
@@ -1072,6 +1124,14 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             import traceback
         
         poll_server_health(PORT)
+        
+        # Clean up LoRAs from previous job before starting new one (safety net)
+        # Skip on cold start since there are no previous LoRAs
+        if not is_cold_start:
+            try:
+                cleanup_loras_from_vram(job_id, PORT)
+            except Exception as cleanup_e:
+                print(f"⚠️ Pre-job LoRA cleanup failed (non-critical): {cleanup_e}")
 
         # Expect prepared payload from EF
         prepared = input_data.get("prepared")
@@ -1730,6 +1790,12 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as _cleanup_e:
             print(f"⚠️ LoRA cleanup failed: {_cleanup_e}")
         
+        # Purge LoRAs from VRAM to prevent OOM on next job
+        try:
+            cleanup_loras_from_vram(job_id, PORT)
+        except Exception as vram_cleanup_e:
+            print(f"⚠️ VRAM cleanup failed (non-critical): {vram_cleanup_e}")
+        
         # 5) Return accepted; completion goes via webhook -> EF -> DB
         return {"status": "accepted", "job_id": job_id}
     
@@ -1881,6 +1947,12 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                     print(f"⚠️ Failed to remove LoRA link {fname} after failure: {_e}")
         except Exception as _cleanup_fail_e:
             print(f"⚠️ LoRA cleanup on failure failed: {_cleanup_fail_e}")
+        
+        # Purge LoRAs from VRAM even on failure to prevent OOM on retry
+        try:
+            cleanup_loras_from_vram(job_id, PORT)
+        except Exception as vram_cleanup_e:
+            print(f"⚠️ VRAM cleanup after failure failed (non-critical): {vram_cleanup_e}")
         
         # Only signal WebSocket completion on FINAL attempt
         # On earlier attempts, keep the WebSocket alive for the next container
