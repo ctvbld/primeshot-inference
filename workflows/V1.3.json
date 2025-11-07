@@ -1,7 +1,7 @@
 {
   "3": {
     "inputs": {
-      "text": "A natural editorial-style portrait of FACEMODEL, a woman, late 30s, brown eyes, black with gray streaks hair, average build with soft curves, framed half-body from the hips upward, leaning casually against a softly illuminated wall with arms crossed, radiating a relaxed, confident presence that conveys warmth, approachability, and charisma. The lighting is warm and directional, with soft highlights shaping the subject’s face and subtle reflections catching on the clothes, adding depth and refinement. The glow of ambient fixtures in the background creates a layered contrast, with warm golden tones against the darker walls and glass partitions. The setting is a sophisticated executive lounge or private office space, with leather chairs, low tables, and softly diffused pendant lights visible through the glass, suggesting comfort and discretion in a professional environment. The blurred reflections and depth of field guide the eye smoothly from the subject to the background, enhancing the polished atmosphere. Wearing (a pastel-orange blazer:2) over a white (structured slim fitted dress:2) with scoop neckline, luxury tailoring. The overall mood is professional, composed, and welcoming, balancing authority with approachability. The look conveys the character of a cinematic corporate editorial still, blending personal presence with the elegance of a refined workspace.",
+      "text": "A minimalistic studio portrait of a woman, late 30s, brown eyes, black with gray streaks hair, average build with soft curves, seated front-facing in a huge high-back armchair, has a calm, neutral expression, gazing directly at the camera with quiet confidence. The posture is forward, hands and shoulders relaxed. The background, floor, chair, and clothes are all the same shade of hot reddish orange, with no visible distinction between the floor and walls, creating a perfectly seamless and monochromatic environment that emphasizes symmetry and visual harmony. Wearing (an orange sheer button-up shirt:2) with a relaxed fit, (long cuffed sleeves:2), styled over a white (ribbed bralette:2), high fashion editorial stye with a matching trouser (if no dress), along white sneakers, styled in a modern and understated way. The overall mood is relaxed, composed and professional. Shot in a studio with controlled soft lighting, 50mm lens at f/8 for full clarity and depth, professional fashion editorial style.",
       "clip": [
         "35",
         1
@@ -27,8 +27,8 @@
   },
   "5": {
     "inputs": {
-      "width": 1408,
-      "height": 1408,
+      "width": 1536,
+      "height": 1536,
       "length": 1,
       "batch_size": 1
     },
@@ -74,7 +74,7 @@
   },
   "14": {
     "inputs": {
-      "lora_name": "training_crosswall_loras_lora_20251010_193650_c83e40f6.safetensors",
+      "lora_name": "training_studiothrone_loras_lora_20251029_173638_7bc83d24.safetensors",
       "strength_model": 0.2,
       "strength_clip": 0.2,
       "model": [
@@ -142,7 +142,7 @@
   },
   "34": {
     "inputs": {
-      "seed": 667239189182254,
+      "seed": 888575681851478,
       "steps": 8,
       "cfg": 1,
       "sampler_name": "res_2s",
@@ -204,108 +204,6 @@
       "title": "SaveOrig"
     }
   },
-  "54:46": {
-    "inputs": {
-      "model_name": "bbox/face_yolov9c.pt"
-    },
-    "class_type": "UltralyticsDetectorProvider",
-    "_meta": {
-      "title": "UltralyticsDetectorProvider"
-    }
-  },
-  "54:47": {
-    "inputs": {
-      "model_name": "sam_vit_b_01ec64.pth",
-      "device_mode": "Prefer GPU"
-    },
-    "class_type": "SAMLoader",
-    "_meta": {
-      "title": "SAMLoader (Impact)"
-    }
-  },
-  "54:48": {
-    "inputs": {
-      "wildcard": "",
-      "Select to add LoRA": "Select the LoRA to add to the text",
-      "Select to add Wildcard": "Select the Wildcard to add to the text",
-      "model": [
-        "35",
-        0
-      ],
-      "clip": [
-        "35",
-        1
-      ],
-      "vae": [
-        "8",
-        0
-      ],
-      "positive": [
-        "3",
-        0
-      ],
-      "negative": [
-        "4",
-        0
-      ],
-      "bbox_detector": [
-        "54:46",
-        0
-      ],
-      "sam_model_opt": [
-        "54:47",
-        0
-      ]
-    },
-    "class_type": "ToDetailerPipe",
-    "_meta": {
-      "title": "ToDetailerPipe"
-    }
-  },
-  "54:52": {
-    "inputs": {
-      "guide_size": 768,
-      "guide_size_for": true,
-      "max_size": 1536,
-      "seed": 258878078019019,
-      "steps": 6,
-      "cfg": 1,
-      "sampler_name": "res_2m",
-      "scheduler": "bong_tangent",
-      "denoise": 0.35,
-      "feather": 5,
-      "noise_mask": true,
-      "force_inpaint": true,
-      "bbox_threshold": 0.5,
-      "bbox_dilation": 10,
-      "bbox_crop_factor": 1.5,
-      "sam_detection_hint": "center-1",
-      "sam_dilation": 0,
-      "sam_threshold": 0.93,
-      "sam_bbox_expansion": 0,
-      "sam_mask_hint_threshold": 0.7,
-      "sam_mask_hint_use_negative": "False",
-      "drop_size": 10,
-      "refiner_ratio": 0.2,
-      "cycle": 1,
-      "inpaint_model": false,
-      "noise_mask_feather": 20,
-      "tiled_encode": false,
-      "tiled_decode": false,
-      "image": [
-        "9",
-        0
-      ],
-      "detailer_pipe": [
-        "54:48",
-        0
-      ]
-    },
-    "class_type": "FaceDetailerPipe",
-    "_meta": {
-      "title": "FaceDetailer"
-    }
-  },
   "43:47": {
     "inputs": {
       "upscale_model": [
@@ -313,7 +211,7 @@
         0
       ],
       "image": [
-        "54:52",
+        "9",
         0
       ]
     },
@@ -409,12 +307,12 @@
   },
   "43:49": {
     "inputs": {
-      "seed": 357446192397283,
+      "seed": 402477652122746,
       "steps": 6,
       "cfg": 1,
       "sampler_name": "dpmpp_2m",
       "scheduler": "karras",
-      "denoise": 0.5,
+      "denoise": 0.4,
       "model": [
         "35",
         0
@@ -435,6 +333,108 @@
     "class_type": "KSampler",
     "_meta": {
       "title": "KSamplerUpscalePass"
+    }
+  },
+  "54:46": {
+    "inputs": {
+      "model_name": "bbox/face_yolov9c.pt"
+    },
+    "class_type": "UltralyticsDetectorProvider",
+    "_meta": {
+      "title": "UltralyticsDetectorProvider"
+    }
+  },
+  "54:47": {
+    "inputs": {
+      "model_name": "sam_vit_b_01ec64.pth",
+      "device_mode": "Prefer GPU"
+    },
+    "class_type": "SAMLoader",
+    "_meta": {
+      "title": "SAMLoader (Impact)"
+    }
+  },
+  "54:48": {
+    "inputs": {
+      "wildcard": "",
+      "Select to add LoRA": "Select the LoRA to add to the text",
+      "Select to add Wildcard": "Select the Wildcard to add to the text",
+      "model": [
+        "35",
+        0
+      ],
+      "clip": [
+        "35",
+        1
+      ],
+      "vae": [
+        "8",
+        0
+      ],
+      "positive": [
+        "3",
+        0
+      ],
+      "negative": [
+        "4",
+        0
+      ],
+      "bbox_detector": [
+        "54:46",
+        0
+      ],
+      "sam_model_opt": [
+        "54:47",
+        0
+      ]
+    },
+    "class_type": "ToDetailerPipe",
+    "_meta": {
+      "title": "ToDetailerPipe"
+    }
+  },
+  "54:52": {
+    "inputs": {
+      "guide_size": 768,
+      "guide_size_for": true,
+      "max_size": 1024,
+      "seed": 309254535696530,
+      "steps": 6,
+      "cfg": 1,
+      "sampler_name": "res_2m",
+      "scheduler": "bong_tangent",
+      "denoise": 0.5,
+      "feather": 5,
+      "noise_mask": true,
+      "force_inpaint": true,
+      "bbox_threshold": 0.5,
+      "bbox_dilation": 10,
+      "bbox_crop_factor": 1.3,
+      "sam_detection_hint": "center-1",
+      "sam_dilation": 0,
+      "sam_threshold": 0.93,
+      "sam_bbox_expansion": 0,
+      "sam_mask_hint_threshold": 0.7,
+      "sam_mask_hint_use_negative": "False",
+      "drop_size": 10,
+      "refiner_ratio": 0.2,
+      "cycle": 1,
+      "inpaint_model": false,
+      "noise_mask_feather": 20,
+      "tiled_encode": false,
+      "tiled_decode": false,
+      "image": [
+        "43:91",
+        0
+      ],
+      "detailer_pipe": [
+        "54:48",
+        0
+      ]
+    },
+    "class_type": "FaceDetailerPipe",
+    "_meta": {
+      "title": "FaceDetailer"
     }
   },
   "41:110": {
@@ -483,7 +483,7 @@
       "blur_amount": 0,
       "custom_hue": 0,
       "image": [
-        "43:91",
+        "54:52",
         0
       ]
     },

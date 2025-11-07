@@ -598,9 +598,18 @@ def get_image_outputs(
     job_id: str,
     prompt_id: str,
     comfyui_base: str,
-    timeout: int = 60
+    timeout: int = 120
 ) -> tuple[dict, str]:
     """Get image outputs using multiple methods with fallback.
+    
+    Args:
+        job_id: Unique job identifier
+        prompt_id: ComfyUI prompt ID for this generation
+        comfyui_base: Base URL for ComfyUI API
+        timeout: Maximum total time to wait (default 120s)
+                Note: This is now the absolute maximum. The actual timeout
+                is based on IDLE time (no progress) which defaults to 90s.
+                See COMFY_IDLE_TIMEOUT environment variable.
     
     Returns (outputs_dict, source) where source indicates the method used.
     """
@@ -608,11 +617,13 @@ def get_image_outputs(
     
     start_time = time.time()
     
-    # Use configurable timeout from environment (reduced default from 120s to 60s)
+    # Use configurable timeout from environment (default: 120s total timeout)
+    # Note: The wait function uses COMFY_IDLE_TIMEOUT (default 90s) for actual timeout
+    # This total timeout is a safety limit to prevent infinite waiting
     timeout = int(os.getenv("COMFY_GENERATION_TIMEOUT", str(timeout)))
     
     # Method 1: WebSocket completion data
-    print(f"⏳ Waiting for completion via WebSocket (timeout: {timeout}s)...")
+    print(f"⏳ Waiting for completion via WebSocket...")
     completed = wait_for_prompt_completion(job_id, prompt_id, timeout=timeout)
     
     if completed:
@@ -623,8 +634,8 @@ def get_image_outputs(
             return completion_data["outputs"], "websocket"
     else:
         # WebSocket timed out, but generation might still be completing
-        # Add a grace period to check if outputs appear (reduced from 15s to 5s)
-        grace_period = 5  # seconds
+        # Add grace period to check if outputs appear
+        grace_period = 10  # seconds - allow time for late completion signals
         print(f"⏳ WebSocket timeout - adding {grace_period}s grace period for late completion...")
         time.sleep(grace_period)
         
@@ -634,16 +645,16 @@ def get_image_outputs(
             print(f"✅ Found completion data during grace period!")
             return completion_data["outputs"], "websocket_grace"
     
-    # Method 2: ComfyUI History API (reduced from 6 attempts to 3)
+    # Method 2: ComfyUI History API
     print(f"⚠️ WebSocket data incomplete, trying history API...")
     history_start = time.time()
     history_url = f"{comfyui_base}/history/{prompt_id}"
     
-    # Reduced to 3 attempts with explicit timeout
-    max_history_attempts = 3
+    # Increased to 5 attempts with 10s timeout each
+    max_history_attempts = 5
     for attempt in range(max_history_attempts):
         try:
-            response = urllib.request.urlopen(history_url, timeout=5)
+            response = urllib.request.urlopen(history_url, timeout=10)
             history_data = json.loads(response.read().decode('utf-8'))
             
             if prompt_id in history_data:
@@ -658,15 +669,15 @@ def get_image_outputs(
             if attempt == 0 or attempt % 2 == 0:
                 print(f"⚠️ History API attempt {attempt + 1}/{max_history_attempts}: {e}")
         
-        # Shorter backoff (max 2s instead of 3s)
-        backoff = min(0.5 * (1.5 ** attempt), 2.0)
+        # Exponential backoff (max 3s)
+        backoff = min(0.5 * (1.5 ** attempt), 3.0)
         time.sleep(backoff)
     
-    # Method 3: Directory scanning (reduced from 5 attempts to 2)
+    # Method 3: Directory scanning
     print(f"⚠️ History unavailable, scanning output directory...")
     dir_start = time.time()
-    # Reduced to 2 attempts with 1s delay
-    found_images = find_generated_images(job_id, max_attempts=2, delay_seconds=1.0)
+    # Increased to 4 attempts with 2s delay
+    found_images = find_generated_images(job_id, max_attempts=4, delay_seconds=2.0)
     
     if found_images:
         print(f"✅ Found images via directory scan (took {time.time() - dir_start:.1f}s)")

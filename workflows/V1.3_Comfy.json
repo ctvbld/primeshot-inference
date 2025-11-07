@@ -2,7 +2,7 @@
   "id": "25dfce61-3571-4c9a-a7f8-6a83951d66aa",
   "revision": 0,
   "last_node_id": 56,
-  "last_link_id": 120,
+  "last_link_id": 125,
   "nodes": [
     {
       "id": 29,
@@ -238,7 +238,7 @@
         "Node name for S&R": "KSampler"
       },
       "widgets_values": [
-        811368710860761,
+        888575681851478,
         "randomize",
         8,
         1,
@@ -401,10 +401,10 @@
       "outputs": [],
       "title": "SaveOrig",
       "properties": {
-        "cnr_id": "comfyui-saveimage-plus",
+        "aux_id": "Goktug/comfyui-saveimage-plus",
         "ver": "efa54493216e47126e022a6a38cdaf0c0480256d",
         "Node name for S&R": "SaveImagePlus",
-        "aux_id": "Goktug/comfyui-saveimage-plus"
+        "cnr_id": "comfyui-saveimage-plus"
       },
       "widgets_values": [
         "orig_",
@@ -500,22 +500,22 @@
       ],
       "outputs": [],
       "properties": {
-        "cnr_id": "rgthree-comfy",
+        "aux_id": "rgthree/rgthree-comfy",
         "ver": "2b9eb36d3e1741e88dbfccade0e08137f7fa2bfb",
         "comparer_mode": "Slide",
-        "aux_id": "rgthree/rgthree-comfy"
+        "cnr_id": "rgthree-comfy"
       },
       "widgets_values": [
         [
           {
             "name": "A",
             "selected": true,
-            "url": "/api/view?filename=rgthree.compare._temp_vtsol_00225_.png&type=temp&subfolder=&rand=0.5591837097703068"
+            "url": "/api/view?filename=rgthree.compare._temp_osfci_00021_.png&type=temp&subfolder=&rand=0.46793439114945456"
           },
           {
             "name": "B",
             "selected": true,
-            "url": "/api/view?filename=rgthree.compare._temp_vtsol_00226_.png&type=temp&subfolder=&rand=0.5770668868940233"
+            "url": "/api/view?filename=rgthree.compare._temp_osfci_00022_.png&type=temp&subfolder=&rand=0.6353602792822314"
           }
         ]
       ]
@@ -538,7 +538,7 @@
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 117
+          "link": 125
         }
       ],
       "outputs": [],
@@ -599,7 +599,7 @@
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 116
+          "link": 124
         }
       ],
       "outputs": [],
@@ -609,6 +609,185 @@
         "Node name for S&R": "PreviewImage"
       },
       "widgets_values": []
+    },
+    {
+      "id": 5,
+      "type": "EmptyHunyuanLatentVideo",
+      "pos": [
+        3650,
+        300
+      ],
+      "size": [
+        450,
+        150
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            53
+          ]
+        }
+      ],
+      "title": "ImageLatent",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.43",
+        "Node name for S&R": "EmptyHunyuanLatentVideo"
+      },
+      "widgets_values": [
+        1536,
+        1536,
+        1,
+        1
+      ],
+      "color": "#323",
+      "bgcolor": "#535"
+    },
+    {
+      "id": 42,
+      "type": "ImageScaleBy",
+      "pos": [
+        4735.597310067904,
+        104.32064648646714
+      ],
+      "size": [
+        311.720703125,
+        82
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 71
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            121
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.59",
+        "Node name for S&R": "ImageScaleBy"
+      },
+      "widgets_values": [
+        "lanczos",
+        0.8
+      ]
+    },
+    {
+      "id": 35,
+      "type": "LoraLoader",
+      "pos": [
+        3200.557861328125,
+        296.163330078125
+      ],
+      "size": [
+        400,
+        150
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 57
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 58
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            77
+          ]
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            78
+          ]
+        }
+      ],
+      "title": "CharacterLora",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.43",
+        "Node name for S&R": "LoraLoader"
+      },
+      "widgets_values": [
+        "9f3cd0e0-1c45-4c07-baef-cca36171d22a_training_ff8ccfc9-e03b-4171-9289-efe7c41b3f87_loras_lora_20251017_071723_71a12ca3.safetensors",
+        1,
+        1
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 3,
+      "type": "CLIPTextEncode",
+      "pos": [
+        3650,
+        -300
+      ],
+      "size": [
+        450,
+        350
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 80
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            51,
+            74,
+            101
+          ]
+        }
+      ],
+      "title": "PositivePrompt",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.43",
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "A minimalistic studio portrait of a woman, late 30s, brown eyes, black with gray streaks hair, average build with soft curves, seated front-facing in a huge high-back armchair, has a calm, neutral expression, gazing directly at the camera with quiet confidence. The posture is forward, hands and shoulders relaxed. The background, floor, chair, and clothes are all the same shade of hot reddish orange, with no visible distinction between the floor and walls, creating a perfectly seamless and monochromatic environment that emphasizes symmetry and visual harmony. Wearing (an orange sheer button-up shirt:2) with a relaxed fit, (long cuffed sleeves:2), styled over a white (ribbed bralette:2), high fashion editorial stye with a matching trouser (if no dress), along white sneakers, styled in a modern and understated way. The overall mood is relaxed, composed and professional. Shot in a studio with controlled soft lighting, 50mm lens at f/8 for full clarity and depth, professional fashion editorial style."
+      ],
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
     },
     {
       "id": 14,
@@ -667,54 +846,38 @@
       "bgcolor": "#653"
     },
     {
-      "id": 5,
-      "type": "EmptyHunyuanLatentVideo",
+      "id": 56,
+      "type": "Note",
       "pos": [
-        3650,
-        300
+        5086.710860194997,
+        502.6777540260803
       ],
       "size": [
-        450,
-        150
+        413.2325208063494,
+        165.91407625911643
       ],
       "flags": {},
-      "order": 3,
+      "order": 4,
       "mode": 0,
       "inputs": [],
-      "outputs": [
-        {
-          "name": "LATENT",
-          "type": "LATENT",
-          "links": [
-            53
-          ]
-        }
-      ],
-      "title": "ImageLatent",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.43",
-        "Node name for S&R": "EmptyHunyuanLatentVideo"
-      },
+      "outputs": [],
+      "properties": {},
       "widgets_values": [
-        1536,
-        1536,
-        1,
-        1
+        "FaceDetailer:\n- When it's a close-up, bypass it.\n- When it is a mid shot (half body), denoise = 0.3\n- When full body shot, denoise = 0.5\n\nUpscale (KSamplerUpscalePass):\n- When FaceDetailer is on, set KSamplerUpscalePass denoise = 0.4\n- When FaceDetailer is off, set KSamplerUpscalePass denoise = 0.65"
       ],
-      "color": "#323",
-      "bgcolor": "#535"
+      "color": "#432",
+      "bgcolor": "#653"
     },
     {
-      "id": 54,
-      "type": "bb940fb3-f6e2-422f-8be7-c95dfcea2a39",
+      "id": 43,
+      "type": "3d1a722d-178b-4a9a-859c-1489d92c05dc",
       "pos": [
-        5104.926919777548,
-        102.0767135696452
+        5085.413343499888,
+        105.9948618860505
       ],
       "size": [
-        158.175390625,
-        346
+        211.08173853955213,
+        347.91318409719355
       ],
       "flags": {},
       "order": 16,
@@ -723,7 +886,72 @@
         {
           "name": "image",
           "type": "IMAGE",
-          "link": 113
+          "link": 121
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 76
+        },
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 82
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 74
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 73
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            122,
+            124
+          ]
+        }
+      ],
+      "properties": {
+        "proxyWidgets": [
+          [
+            "-1",
+            "$$canvas-image-preview"
+          ]
+        ],
+        "cnr_id": "comfy-core",
+        "ver": "0.3.51"
+      },
+      "widgets_values": [],
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 54,
+      "type": "bb940fb3-f6e2-422f-8be7-c95dfcea2a39",
+      "pos": [
+        5338.271549975658,
+        106.64780696730115
+      ],
+      "size": [
+        158.175390625,
+        346
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 122
         },
         {
           "name": "model",
@@ -756,9 +984,9 @@
           "name": "image",
           "type": "IMAGE",
           "links": [
-            114,
-            116,
-            120
+            120,
+            123,
+            125
           ]
         }
       ],
@@ -773,234 +1001,6 @@
         "ver": "0.3.67"
       },
       "widgets_values": []
-    },
-    {
-      "id": 42,
-      "type": "ImageScaleBy",
-      "pos": [
-        4735.597310067904,
-        104.32064648646714
-      ],
-      "size": [
-        311.720703125,
-        82
-      ],
-      "flags": {},
-      "order": 15,
-      "mode": 4,
-      "inputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "link": 71
-        }
-      ],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            113
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.59",
-        "Node name for S&R": "ImageScaleBy"
-      },
-      "widgets_values": [
-        "lanczos",
-        0.8
-      ]
-    },
-    {
-      "id": 43,
-      "type": "3d1a722d-178b-4a9a-859c-1489d92c05dc",
-      "pos": [
-        5296.307639011196,
-        100.2333915214242
-      ],
-      "size": [
-        211.08173853955213,
-        347.91318409719355
-      ],
-      "flags": {},
-      "order": 17,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "link": 114
-        },
-        {
-          "name": "vae",
-          "type": "VAE",
-          "link": 76
-        },
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 82
-        },
-        {
-          "name": "positive",
-          "type": "CONDITIONING",
-          "link": 74
-        },
-        {
-          "name": "negative",
-          "type": "CONDITIONING",
-          "link": 73
-        }
-      ],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            115,
-            117
-          ]
-        }
-      ],
-      "properties": {
-        "proxyWidgets": [
-          [
-            "-1",
-            "$$canvas-image-preview"
-          ]
-        ],
-        "cnr_id": "comfy-core",
-        "ver": "0.3.51"
-      },
-      "widgets_values": [],
-      "color": "#223",
-      "bgcolor": "#335"
-    },
-    {
-      "id": 3,
-      "type": "CLIPTextEncode",
-      "pos": [
-        3650,
-        -300
-      ],
-      "size": [
-        450,
-        350
-      ],
-      "flags": {},
-      "order": 11,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "clip",
-          "type": "CLIP",
-          "link": 80
-        }
-      ],
-      "outputs": [
-        {
-          "name": "CONDITIONING",
-          "type": "CONDITIONING",
-          "links": [
-            51,
-            74,
-            101
-          ]
-        }
-      ],
-      "title": "PositivePrompt",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.43",
-        "Node name for S&R": "CLIPTextEncode"
-      },
-      "widgets_values": [
-        "A minimalistic studio portrait of a woman, late 20s, green eyes, reddish brown with highlights hair, slim with a narrow frame, seated front-facing in a huge high-back armchair, has a calm, neutral expression, gazing directly at the camera with quiet confidence. The posture is forward, hands and shoulders relaxed. The background, floor, chair, and clothes are all the same shade of black, with no visible distinction between the floor and walls, creating a perfectly seamless and monochromatic environment that emphasizes symmetry and visual harmony. Wearing (a black oversized puffer jacket:2), modern streetwear style with a matching trouser (if no dress), along white sneakers, styled in a modern and understated way. The overall mood is relaxed, composed and professional. Shot in a studio with controlled soft lighting, 50mm lens at f/8 for full clarity and depth, professional fashion editorial style."
-      ],
-      "color": "#2a363b",
-      "bgcolor": "#3f5159"
-    },
-    {
-      "id": 56,
-      "type": "Note",
-      "pos": [
-        5111.91064070991,
-        499.76814081401693
-      ],
-      "size": [
-        413.2325208063494,
-        165.91407625911643
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [],
-      "properties": {},
-      "widgets_values": [
-        "FaceDetailer:\n- When it's a close-up, bypass it.\n- When it is a mid shot (half body), denoise = 0.35\n- When full body shot, denoise = 0.5\n\nUpscale (KSamplerUpscalePass):\n- When FaceDetailer is on, set KSamplerUpscalePass denoise = 0.5\n- When FaceDetailer is off, set KSamplerUpscalePass denoise = 0.65"
-      ],
-      "color": "#432",
-      "bgcolor": "#653"
-    },
-    {
-      "id": 35,
-      "type": "LoraLoader",
-      "pos": [
-        3200.557861328125,
-        296.163330078125
-      ],
-      "size": [
-        400,
-        150
-      ],
-      "flags": {},
-      "order": 8,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 57
-        },
-        {
-          "name": "clip",
-          "type": "CLIP",
-          "link": 58
-        }
-      ],
-      "outputs": [
-        {
-          "name": "MODEL",
-          "type": "MODEL",
-          "links": [
-            77
-          ]
-        },
-        {
-          "name": "CLIP",
-          "type": "CLIP",
-          "links": [
-            78
-          ]
-        }
-      ],
-      "title": "CharacterLora",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.43",
-        "Node name for S&R": "LoraLoader"
-      },
-      "widgets_values": [
-        "9f3cd0e0-1c45-4c07-baef-cca36171d22a_training_06f35bfa-1bb8-40e2-b6a0-44c8290c80b4_loras_lora_20251017_083618_0e38e18f.safetensors",
-        1,
-        1
-      ],
-      "color": "#232",
-      "bgcolor": "#353"
     },
     {
       "id": 41,
@@ -1020,7 +1020,7 @@
         {
           "name": "image",
           "type": "IMAGE",
-          "link": 115
+          "link": 123
         }
       ],
       "outputs": [
@@ -1285,46 +1285,6 @@
       "CONDITIONING"
     ],
     [
-      113,
-      42,
-      0,
-      54,
-      0,
-      "IMAGE"
-    ],
-    [
-      114,
-      54,
-      0,
-      43,
-      0,
-      "IMAGE"
-    ],
-    [
-      115,
-      43,
-      0,
-      41,
-      0,
-      "IMAGE"
-    ],
-    [
-      116,
-      54,
-      0,
-      53,
-      0,
-      "IMAGE"
-    ],
-    [
-      117,
-      43,
-      0,
-      40,
-      0,
-      "IMAGE"
-    ],
-    [
       118,
       41,
       0,
@@ -1338,6 +1298,46 @@
       0,
       55,
       1,
+      "IMAGE"
+    ],
+    [
+      121,
+      42,
+      0,
+      43,
+      0,
+      "IMAGE"
+    ],
+    [
+      122,
+      43,
+      0,
+      54,
+      0,
+      "IMAGE"
+    ],
+    [
+      123,
+      54,
+      0,
+      41,
+      0,
+      "IMAGE"
+    ],
+    [
+      124,
+      43,
+      0,
+      53,
+      0,
+      "IMAGE"
+    ],
+    [
+      125,
+      54,
+      0,
+      40,
+      0,
       "IMAGE"
     ]
   ],
@@ -2175,13 +2175,13 @@
               "Node name for S&R": "KSampler"
             },
             "widgets_values": [
-              446305798178590,
+              402477652122746,
               "randomize",
               6,
               1,
               "dpmpp_2m",
               "karras",
-              0.5
+              0.4
             ]
           }
         ],
@@ -2469,10 +2469,10 @@
               }
             ],
             "properties": {
-              "cnr_id": "comfyui-impact-subpack",
+              "aux_id": "ltdrdata/ComfyUI-Impact-Subpack",
               "ver": "50c7b71a6a224734cc9b21963c6d1926816a97f1",
               "Node name for S&R": "UltralyticsDetectorProvider",
-              "aux_id": "ltdrdata/ComfyUI-Impact-Subpack"
+              "cnr_id": "comfyui-impact-subpack"
             },
             "widgets_values": [
               "bbox/face_yolov9c.pt"
@@ -2504,10 +2504,10 @@
               }
             ],
             "properties": {
-              "cnr_id": "comfyui-impact-pack",
+              "aux_id": "ltdrdata/ComfyUI-Impact-Pack",
               "ver": "2804f7944f125b1c10bc9d1fbb5a997a25a62726",
               "Node name for S&R": "SAMLoader",
-              "aux_id": "ltdrdata/ComfyUI-Impact-Pack"
+              "cnr_id": "comfyui-impact-pack"
             },
             "widgets_values": [
               "sam_vit_b_01ec64.pth",
@@ -2598,10 +2598,10 @@
               }
             ],
             "properties": {
-              "cnr_id": "comfyui-impact-pack",
+              "aux_id": "ltdrdata/ComfyUI-Impact-Pack",
               "ver": "2804f7944f125b1c10bc9d1fbb5a997a25a62726",
               "Node name for S&R": "ToDetailerPipe",
-              "aux_id": "ltdrdata/ComfyUI-Impact-Pack"
+              "cnr_id": "comfyui-impact-pack"
             },
             "widgets_values": [
               "",
@@ -2689,16 +2689,16 @@
             ],
             "title": "FaceDetailer",
             "properties": {
-              "cnr_id": "comfyui-impact-pack",
+              "aux_id": "ltdrdata/ComfyUI-Impact-Pack",
               "ver": "2804f7944f125b1c10bc9d1fbb5a997a25a62726",
               "Node name for S&R": "FaceDetailerPipe",
-              "aux_id": "ltdrdata/ComfyUI-Impact-Pack"
+              "cnr_id": "comfyui-impact-pack"
             },
             "widgets_values": [
               768,
               true,
-              1536,
-              1074055109787452,
+              1024,
+              309254535696530,
               "randomize",
               6,
               1,
@@ -2710,7 +2710,7 @@
               true,
               0.5,
               10,
-              1.5,
+              1.3,
               "center-1",
               0,
               0.93,
@@ -2817,10 +2817,10 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.5444123373609245,
+      "scale": 0.3672943043194206,
       "offset": [
-        -3979.433264515572,
-        370.70939665607057
+        -3347.519099298194,
+        9.015298530376514
       ]
     },
     "frontendVersion": "1.28.8"

@@ -1,7 +1,7 @@
 {
   "3": {
     "inputs": {
-      "text": "A natural editorial-style portrait of FACEMODEL, a woman, late 30s, brown eyes, black with gray streaks hair, average build with soft curves, framed half-body from the hips upward, leaning casually against a softly illuminated wall with arms crossed, radiating a relaxed, confident presence that conveys warmth, approachability, and charisma. The lighting is warm and directional, with soft highlights shaping the subject’s face and subtle reflections catching on the clothes, adding depth and refinement. The glow of ambient fixtures in the background creates a layered contrast, with warm golden tones against the darker walls and glass partitions. The setting is a sophisticated executive lounge or private office space, with leather chairs, low tables, and softly diffused pendant lights visible through the glass, suggesting comfort and discretion in a professional environment. The blurred reflections and depth of field guide the eye smoothly from the subject to the background, enhancing the polished atmosphere. Wearing (a pastel-orange blazer:2) over a white (structured slim fitted dress:2) with scoop neckline, luxury tailoring. The overall mood is professional, composed, and welcoming, balancing authority with approachability. The look conveys the character of a cinematic corporate editorial still, blending personal presence with the elegance of a refined workspace.",
+      "text": "A minimalistic studio portrait of a woman, late 30s, brown eyes, black with gray streaks hair, average build with soft curves, seated front-facing in a huge high-back armchair, has a calm, neutral expression, gazing directly at the camera with quiet confidence. The posture is forward, hands and shoulders relaxed. The background, floor, chair, and clothes are all the same shade of hot reddish orange, with no visible distinction between the floor and walls, creating a perfectly seamless and monochromatic environment that emphasizes symmetry and visual harmony. Wearing (an orange sheer button-up shirt:2) with a relaxed fit, (long cuffed sleeves:2), styled over a white (ribbed bralette:2), high fashion editorial stye with a matching trouser (if no dress), along white sneakers, styled in a modern and understated way. The overall mood is relaxed, composed and professional. Shot in a studio with controlled soft lighting, 50mm lens at f/8 for full clarity and depth, professional fashion editorial style.",
       "clip": [
         "35",
         1
@@ -27,8 +27,8 @@
   },
   "5": {
     "inputs": {
-      "width": 1408,
-      "height": 1408,
+      "width": 1536,
+      "height": 1536,
       "length": 1,
       "batch_size": 1
     },
@@ -74,7 +74,7 @@
   },
   "14": {
     "inputs": {
-      "lora_name": "training_crosswall_loras_lora_20251010_193650_c83e40f6.safetensors",
+      "lora_name": "training_studiothrone_loras_lora_20251029_173638_7bc83d24.safetensors",
       "strength_model": 0.2,
       "strength_clip": 0.2,
       "model": [
@@ -142,7 +142,7 @@
   },
   "34": {
     "inputs": {
-      "seed": 667239189182254,
+      "seed": 888575681851478,
       "steps": 8,
       "cfg": 1,
       "sampler_name": "res_2s",
@@ -280,19 +280,19 @@
     "inputs": {
       "guide_size": 768,
       "guide_size_for": true,
-      "max_size": 1536,
-      "seed": 258878078019019,
+      "max_size": 1024,
+      "seed": 309254535696530,
       "steps": 6,
       "cfg": 1,
       "sampler_name": "res_2m",
       "scheduler": "bong_tangent",
-      "denoise": 0.35,
+      "denoise": 0.5,
       "feather": 5,
       "noise_mask": true,
       "force_inpaint": true,
       "bbox_threshold": 0.5,
       "bbox_dilation": 10,
-      "bbox_crop_factor": 1.5,
+      "bbox_crop_factor": 1.3,
       "sam_detection_hint": "center-1",
       "sam_dilation": 0,
       "sam_threshold": 0.93,
