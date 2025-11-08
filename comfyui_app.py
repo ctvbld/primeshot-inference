@@ -1829,22 +1829,77 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             "is_final_attempt": is_final_attempt
         }
         
-        # Categorize error types for better debugging
-        if "connection refused" in str(e).lower():
+        # Categorize error types for better user messaging
+        error_str = str(e).lower()
+        
+        # HTTP 400 - Validation errors
+        if "http 400" in error_str or "prompt_outputs_failed_validation" in error_str:
+            error_details["category"] = "validation_error"
+            
+            # Specific validation error types
+            if "value_not_in_list" in error_str:
+                if "lora" in error_str or "node" in error_str and ("35" in error_str or "45" in error_str):
+                    error_details["error_key"] = "errors.validation.missingStyleOrCharacter"
+                    error_details["suggestion"] = "The requested style or character is no longer available. Please try again or select a different style."
+                else:
+                    error_details["error_key"] = "errors.validation.invalidParameter"
+                    error_details["suggestion"] = "Invalid parameter value. Please try again with different settings."
+            elif "invalid" in error_str or "validation" in error_str:
+                error_details["error_key"] = "errors.validation.workflowConfig"
+                error_details["suggestion"] = "Workflow configuration error. Please try again or contact support."
+            else:
+                error_details["error_key"] = "errors.validation.invalidRequest"
+                error_details["suggestion"] = "Invalid request parameters. Please try again."
+        
+        # Connection errors
+        elif "connection refused" in error_str or "connection reset" in error_str:
             error_details["category"] = "connection_error"
-            error_details["suggestion"] = "ComfyUI server may not be running or ready"
-        elif "timeout" in str(e).lower():
+            error_details["error_key"] = "errors.connection.unavailable"
+            error_details["suggestion"] = "Service temporarily unavailable. Please try again in a moment."
+        
+        # Timeout errors
+        elif "timeout" in error_str or "timed out" in error_str:
             error_details["category"] = "timeout_error"
-            error_details["suggestion"] = "Request timed out - server may be overloaded"
-        elif "404" in str(e):
+            if "idle" in error_str or "no progress" in error_str:
+                error_details["error_key"] = "errors.timeout.idle"
+                error_details["suggestion"] = "Generation took too long without progress. This may be due to high server load. Please try again."
+            else:
+                error_details["error_key"] = "errors.timeout.general"
+                error_details["suggestion"] = "Request timed out. Please try again or use lower quality settings."
+        
+        # 404 errors
+        elif "404" in error_str or "not found" in error_str:
             error_details["category"] = "endpoint_error"
-            error_details["suggestion"] = "ComfyUI endpoint not found - check server configuration"
-        elif "prompt_id" in str(e).lower():
+            error_details["error_key"] = "errors.endpoint.configuration"
+            error_details["suggestion"] = "Service configuration error. Please contact support."
+        
+        # Memory/resource errors
+        elif "out of memory" in error_str or "oom" in error_str or "cuda" in error_str:
+            error_details["category"] = "resource_error"
+            error_details["error_key"] = "errors.resource.insufficient"
+            error_details["suggestion"] = "Insufficient resources. Please try again with lower resolution or fewer images."
+        
+        # File not found / missing resource
+        elif "no such file" in error_str or "file not found" in error_str or "does not exist" in error_str:
+            error_details["category"] = "missing_resource"
+            error_details["error_key"] = "errors.resource.missing"
+            error_details["suggestion"] = "Required resource not found. Please try again or contact support if the issue persists."
+        
+        # Prompt/generation errors
+        elif "prompt_id" in error_str or "generation failed" in error_str:
             error_details["category"] = "generation_error"
-            error_details["suggestion"] = "Issue with ComfyUI prompt generation or processing"
+            error_details["error_key"] = "errors.generation.failed"
+            error_details["suggestion"] = "Generation failed. Please try again with different settings."
+        
+        # Default fallback
         else:
             error_details["category"] = "general_error"
-            error_details["suggestion"] = "Check logs for detailed error information"
+            error_details["error_key"] = "errors.generation.general"
+            # Try to extract a useful part of the error message
+            if len(str(e)) > 100:
+                error_details["suggestion"] = "An error occurred during generation. Please try again."
+            else:
+                error_details["suggestion"] = f"Error: {str(e)[:100]}"
         
         # Attach enriched ComfyUI error context if available from the generation loop
         try:
@@ -1891,6 +1946,11 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 }
                 send_custom_message_to_job(job_id, failure_message)
                 print(f"📤 Sent final failure notification via WebSocket for job {job_id}")
+                
+                # CRITICAL: Give the daemon thread time to actually send the queued message
+                # The send is async - just queues it. Need to wait for actual delivery.
+                time.sleep(1.0)  # Allow WebSocket message to flush
+                print(f"⏳ Waited for WebSocket message delivery")
             except Exception as ws_fail_e:
                 print(f"⚠️ Failed to send failure notification via WebSocket: {ws_fail_e}")
         else:
@@ -1978,10 +2038,27 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         else:
             print(f"🔌 Keeping WebSocket relay alive for next container retry")
         
-        # Re-raise the exception so Modal can retry with a fresh container
-        # Modal's retries=3 will catch this and spawn a new container
-        print(f"🔄 Re-raising exception to allow Modal container retry (attempt {current_attempt + 1}/{max_retries})...")
-        raise
+        # Re-raise the exception ONLY if not final attempt, to allow Modal container retry
+        # On final attempt, return error response instead of raising
+        if not is_final_attempt:
+            print(f"🔄 Re-raising exception to allow Modal container retry (attempt {current_attempt + 1}/{max_retries})...")
+            raise
+        else:
+            print(f"🚨 Final attempt failed - returning error response instead of raising")
+            print(f"📤 Sent final completion message for job {job_id}")
+            
+            # Return error response so Modal doesn't mark it as "Failed" and can return properly
+            return {
+                "job_id": job_id,
+                "success": False,
+                "status": "failed",
+                "error": str(e),
+                "error_type": error_details.get("error_type", "Unknown"),
+                "message": f"Generation failed after {max_retries} attempts: {error_details.get('suggestion', str(e))}",
+                "credits_refunded": True,  # Credits are refunded on failure
+                "total_attempts": max_retries,
+                "comfy_error_details": error_details.get("comfy_error_details")
+            }
     
     finally:
         pass

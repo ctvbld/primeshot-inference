@@ -105,7 +105,7 @@ class WorkflowPatcher:
             self._apply_settings_override(settings_override)
         
         # Auto-bypass nodes
-        self._auto_bypass_nodes(style_lora, settings_override)
+        self._auto_bypass_nodes(character_lora, style_lora, settings_override)
         
         # Apply manual bypass specifications
         if bypass_nodes:
@@ -227,7 +227,10 @@ class WorkflowPatcher:
         if not desired_loras and lora_filename:
             desired_loras.append(lora_filename)
         
+        # If no LoRAs at all, bypass all LoRA loaders to avoid validation errors
         if not desired_loras:
+            logger.info("⚠️ No LoRAs specified - bypassing all LoRA loaders")
+            # This will be handled by _auto_bypass_nodes
             return
         
         # Find all LoRA loader nodes
@@ -242,14 +245,23 @@ class WorkflowPatcher:
             inputs["lora_name"] = desired_loras[idx]
             logger.info(f"✅ Set LoraLoader (node {node_id}) lora_name = {desired_loras[idx]}")
         
-        # Also try title-based setters
+        # Set character LoRA by title (if provided)
         if character_lora:
             for alias in ["CharacterLora", "CharacterLoRa"]:
                 self.manager.set_node_input_by_title(alias, "lora_name", character_lora)
+        else:
+            # If no character LoRA, we need to bypass the CharacterLora node
+            # This will be handled by _auto_bypass_nodes
+            logger.info("⚠️ No character LoRA - will bypass CharacterLora node")
         
+        # Set style LoRA by title (if provided)
         if style_lora:
             for alias in ["StyleLora", "StyleLoRa"]:
                 self.manager.set_node_input_by_title(alias, "lora_name", style_lora)
+        else:
+            # If no style LoRA, we need to bypass the StyleLora node
+            # This will be handled by _auto_bypass_nodes
+            logger.info("⚠️ No style LoRA - will bypass StyleLora node")
     
     def _apply_settings_override(self, settings_override: Dict[str, Any]) -> None:
         """Apply title-based node input overrides and handle bypass flags."""
@@ -331,8 +343,26 @@ class WorkflowPatcher:
             logger.info(f"🔄 Applying {len(bypass_specs)} bypass specifications from settings")
             self._apply_bypass_nodes(bypass_specs)
     
-    def _auto_bypass_nodes(self, style_lora: str | None, settings_override: Dict[str, Any] | None) -> None:
+    def _auto_bypass_nodes(self, character_lora: str | None, style_lora: str | None, settings_override: Dict[str, Any] | None) -> None:
         """Auto-bypass certain nodes based on configuration."""
+        # Auto-bypass CharacterLora if no character_lora provided
+        if not character_lora:
+            logger.info("🔄 No character_lora provided, auto-bypassing CharacterLora node...")
+            
+            # Bypass both outputs of LoRA loader
+            for output_idx, input_key in [(0, "model"), (1, "clip")]:
+                try:
+                    self.workflow = bypass_node(
+                        self.workflow,
+                        target_ui_name="CharacterLora",
+                        passthrough_input_key=input_key,
+                        output_index=output_idx,
+                        remove=(output_idx == 1)  # Remove on last operation
+                    )
+                    logger.info(f"✅ Bypassed CharacterLora output {output_idx}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to bypass CharacterLora: {e}")
+        
         # Auto-bypass StyleLora if no style_lora provided
         if not style_lora:
             logger.info("🔄 No style_lora provided, auto-bypassing StyleLora node...")
