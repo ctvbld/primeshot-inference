@@ -458,12 +458,12 @@
   "41:116": {
     "inputs": {
       "output_channel": "Red",
-      "red_source": 100,
-      "green_source": 0,
-      "blue_source": 0,
+      "red_source": 25,
+      "green_source": 40,
+      "blue_source": 35,
       "constant": 0,
-      "monochrome": false,
-      "preserve_luminosity": false,
+      "monochrome": true,
+      "preserve_luminosity": true,
       "image": [
         "41:118",
         0

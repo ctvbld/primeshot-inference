@@ -169,6 +169,7 @@ def get_title_aliases() -> Dict[str, str]:
         "upscaleby": "UpscaleBy",
         "resizeby": "ResizeBy",
         "ksamplerupscalepass": "KSamplerUpscalePass",
+        "facedetailer": "FaceDetailer",
     }
 
 
@@ -183,6 +184,6 @@ def get_quality_settings(quality: str) -> Dict[str, Any]:
         settings["resize_scale"] = 0.28
     elif quality == "4K":
         settings["upscale_scale"] = 0.30
-        settings["resize_scale"] = 0.50
+        settings["resize_scale"] = 0.54
     
     return settings

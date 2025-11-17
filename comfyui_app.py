@@ -846,7 +846,7 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
         # This guarantees IMG-01..IMG-0N even if multiple Save nodes increment counters
         base_name = f"IMG-{image_index + 1:02d}"
         # Detect which Save node produced this file
-        # Convention from workflow: orig_*.png (original PNG), web_*.webp (1024px webp)
+        # Convention from workflow: orig_*.png (original PNG), web_*.webp (2048px webp)
         variant = "unknown"
         try:
             lower_name = filename.lower()
@@ -875,19 +875,19 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
             shutil.copy(image_path, orig_path)
             print(f"  ✅ Copied original PNG to S3 (orig variant): {orig_path}")
         elif variant == "web":
-            # Use ComfyUI 1024px webp as the main web image; also make 720/480 from it
-            # Copy 1024 as IMG-XX.webp
-            web_1024_filename = f"{base_name}.webp"
-            web_1024_path = f"{web_dir}/{web_1024_filename}"
-            shutil.copy(image_path, web_1024_path)
-            print(f"  ✅ Saved 1024px WebP from workflow: {web_1024_path}")
-            # Create downscaled variants from the 1024 image
+            # Use ComfyUI 2048px webp as the main web image; also make 720/480 from it
+            # Copy 2048 as IMG-XX.webp
+            web_2048_filename = f"{base_name}.webp"
+            web_2048_path = f"{web_dir}/{web_2048_filename}"
+            shutil.copy(image_path, web_2048_path)
+            print(f"  ✅ Saved 2048px WebP from workflow: {web_2048_path}")
+            # Create downscaled variants from the 2048 image
             try:
-                with Image.open(web_1024_path) as img1024:
-                    if img1024.mode in ('RGBA', 'LA', 'P'):
-                        img1024 = img1024.convert('RGB')
+                with Image.open(web_2048_path) as img2048:
+                    if img2048.mode in ('RGBA', 'LA', 'P'):
+                        img2048 = img2048.convert('RGB')
                     for size in (720, 480):
-                        web_copy = img1024.copy()
+                        web_copy = img2048.copy()
                         web_copy.thumbnail((size, size), Image.Resampling.LANCZOS)
                         web_path = f"{web_dir}/{base_name}-w{size}.webp"
                         save_ok = False
@@ -906,7 +906,7 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
             except Exception as _web_e:
                 print(f"⚠️ Failed to generate downscaled WEBP variants: {_web_e}")
 
-            final_image_url = f"user-images/{user_id}/inference/{job_id}/web/{web_1024_filename}"
+            final_image_url = f"user-images/{user_id}/inference/{job_id}/web/{web_2048_filename}"
         else:
             # Legacy path: generate from the given file (kept for compatibility)
             # Copy original
@@ -914,14 +914,14 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
             orig_path = f"{orig_dir}/{orig_filename}"
             shutil.copy(image_path, orig_path)
             print(f"  ✅ Copied original to S3: {orig_path}")
-            # Generate 1024/720/480 as before
+            # Generate 2048/720/480 as before
             with Image.open(image_path) as img:
                 if img.mode in ('RGBA', 'LA', 'P'):
                     img = img.convert('RGB')
-                for size in (1024, 720, 480):
+                for size in (2048, 720, 480):
                     web_img = img.copy()
                     web_img.thumbnail((size, size), Image.Resampling.LANCZOS)
-                    web_filename = f"{base_name}.webp" if size == 1024 else f"{base_name}-w{size}.webp"
+                    web_filename = f"{base_name}.webp" if size == 2048 else f"{base_name}-w{size}.webp"
                     web_path = f"{web_dir}/{web_filename}"
                     save_ok = False
                     for attempt in range(3):
@@ -940,7 +940,7 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
         
 
         
-        # Send WebSocket notification only for the 1024px web image
+        # Send WebSocket notification only for the 2048px web image
         if final_image_url:
             try:
                 # Import the WebSocket relay functions
@@ -991,8 +991,8 @@ def process_and_save_single_image(img_info, image_index, job_id, user_id, bucket
                     'user_id': user_id,
                     'original_path': f"user-images/{user_id}/inference/{job_id}/orig/{base_name}.png",
                     'web_path': final_image_url,
-                    'width': 1024,  # TODO: Change this to the actual width of the image when we have the final workflow
-                    'height': 1024,  # TODO: Change this to the actual height of the image when we have the final workflow
+                    'width': 2048,  # TODO: Change this to the actual width of the image when we have the final workflow
+                    'height': 2048,  # TODO: Change this to the actual height of the image when we have the final workflow
                     'format': 'png',
                     'bytes': 0  # We could calculate this but it's not critical
                 }
@@ -1223,6 +1223,43 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         char_name = _link_lora(char_lora)
         style_name = _link_lora(style_lora)
         
+        # CRITICAL VALIDATION: Check if LoRA files exist when they should
+        # We need to check BOTH the input_data AND the prepared payload to catch all edge cases:
+        # 1. Character/style ID in input_data but LoRA path is None (database has NULL lora_path)
+        # 2. Character/style LoRA path provided but file doesn't exist on disk
+        
+        character_id_from_input = input_data.get("character_id")
+        style_id_from_input = input_data.get("style_id")
+        
+        # Validate character LoRA
+        # Check if character was intended (either ID provided OR lora path provided in prepared payload)
+        if character_id_from_input or char_lora:
+            # If we have a character ID or path, verify the file exists
+            if char_name is None:
+                # File is missing or invalid
+                error_msg = f"Character file is missing or invalid"
+                if character_id_from_input:
+                    error_msg += f" (Character ID: {character_id_from_input})"
+                if char_lora:
+                    error_msg += f" (Path: {char_lora})"
+                error_msg += ". The character may have been deleted or the file is corrupted."
+                raise RuntimeError(error_msg)
+        
+        # Validate style LoRA
+        # Check if style was intended (either ID provided OR lora path provided in prepared payload)
+        if style_id_from_input or style_lora:
+            # If we have a style ID or path, verify the file exists
+            if style_name is None:
+                # File is missing or invalid
+                error_msg = f"Style file is missing or invalid"
+                if style_id_from_input:
+                    error_msg += f" (Style ID: {style_id_from_input})"
+                if style_lora:
+                    error_msg += f" (Path: {style_lora})"
+                error_msg += ". The style may have been deleted or the file is corrupted."
+                raise RuntimeError(error_msg)
+        
+        print(f"✅ LoRA validation passed - Character: {char_name or 'None (style-only)'}, Style: {style_name or 'None (character-only)'}")
 
 
         # Handle seed: if -1, keep sentinel so each image chooses its own random seed later
@@ -1851,6 +1888,19 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                 error_details["error_key"] = "errors.validation.invalidRequest"
                 error_details["suggestion"] = "Invalid request parameters. Please try again."
         
+        # Missing LoRA file errors (from our validation) - PERMANENT FAILURE, don't retry
+        elif "file is missing or invalid" in error_str:
+            error_details["category"] = "missing_lora"
+            error_details["is_permanent_failure"] = True  # Mark as permanent - should not be retried
+            error_details["error_key"] = "errors.validation.missingStyleOrCharacter"
+            # Extract more specific message from the error
+            if "character" in error_str:
+                error_details["suggestion"] = "The selected character is no longer available. Please select a different character."
+            elif "style" in error_str:
+                error_details["suggestion"] = "The selected style is no longer available. Please select a different style."
+            else:
+                error_details["suggestion"] = "The requested style or character is no longer available. Please try again or select a different option."
+        
         # Connection errors
         elif "connection refused" in error_str or "connection reset" in error_str:
             error_details["category"] = "connection_error"
@@ -1919,10 +1969,17 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             print(f"⚠️ Failed to attach ComfyUI error context: {_attach_e}")
         print(f"❌ Generation failed (attempt {current_attempt + 1}/{max_retries}): {error_details}")
         
-        # Only mark as failed and notify user on FINAL attempt
-        # On earlier attempts, Modal will retry with fresh container
-        if is_final_attempt:
-            print(f"🚨 FINAL ATTEMPT FAILED - Marking job as failed")
+        # Check if this is a permanent failure that should not be retried
+        is_permanent_failure = error_details.get("is_permanent_failure", False)
+        should_fail_immediately = is_final_attempt or is_permanent_failure
+        
+        # Only mark as failed and notify user on FINAL attempt OR permanent failure
+        # On earlier attempts (and not permanent failures), Modal will retry with fresh container
+        if should_fail_immediately:
+            if is_permanent_failure:
+                print(f"🚨 PERMANENT FAILURE - Not retrying (e.g., missing LoRA file)")
+            else:
+                print(f"🚨 FINAL ATTEMPT FAILED - Marking job as failed")
             
             try:
                 tracker.mark_failed(job_id, str(e))
@@ -1975,8 +2032,8 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
             except Exception as ws_retry_e:
                 print(f"⚠️ Failed to send retry notification via WebSocket: {ws_retry_e}")
         
-        # Update database job status to failed via inference-complete EF (ONLY on final attempt)
-        if is_final_attempt:
+        # Update database job status to failed via inference-complete EF (on final attempt OR permanent failure)
+        if should_fail_immediately:
             try:
                 import requests
                 env = (env_tag if 'env_tag' in locals() else (input_data.get("env") or "dev")).lower()
@@ -2025,9 +2082,9 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as vram_cleanup_e:
             print(f"⚠️ VRAM cleanup after failure failed (non-critical): {vram_cleanup_e}")
         
-        # Only signal WebSocket completion on FINAL attempt
+        # Only signal WebSocket completion on FINAL attempt OR permanent failure
         # On earlier attempts, keep the WebSocket alive for the next container
-        if is_final_attempt:
+        if should_fail_immediately:
             try:
                 from lib.ws_preview_relay import signal_job_completion, get_active_relays
                 print(f"📊 Active relays before final failure cleanup: {get_active_relays()}")
@@ -2038,13 +2095,19 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         else:
             print(f"🔌 Keeping WebSocket relay alive for next container retry")
         
-        # Re-raise the exception ONLY if not final attempt, to allow Modal container retry
-        # On final attempt, return error response instead of raising
-        if not is_final_attempt:
+        # Re-raise the exception ONLY if not final attempt AND not a permanent failure
+        # Permanent failures (like missing LoRA files) should never be retried
+        # On final attempt OR permanent failure, return error response instead of raising
+        is_permanent_failure = error_details.get("is_permanent_failure", False)
+        
+        if not is_final_attempt and not is_permanent_failure:
             print(f"🔄 Re-raising exception to allow Modal container retry (attempt {current_attempt + 1}/{max_retries})...")
             raise
         else:
-            print(f"🚨 Final attempt failed - returning error response instead of raising")
+            if is_permanent_failure:
+                print(f"🚨 Permanent failure detected (e.g., missing LoRA file) - not retrying")
+            else:
+                print(f"🚨 Final attempt failed - returning error response instead of raising")
             print(f"📤 Sent final completion message for job {job_id}")
             
             # Return error response so Modal doesn't mark it as "Failed" and can return properly

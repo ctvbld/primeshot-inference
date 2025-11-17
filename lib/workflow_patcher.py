@@ -42,12 +42,12 @@ def compute_dimensions(quality: str, aspect_ratio: str) -> Tuple[int, int]:
     # 2K mappings
     if q == "2K":
         if ar == "1:1":
-            return 1408, 1408
+            return 1536, 1536
         if ar == "2:3":
-            return 960, 1471
+            return 1072, 1688
         if ar == "3:2":
-            return 1471, 960
-        return 1408, 1408
+            return 1688, 1072
+        return 1536, 1536
     
     # 4K mappings
     if q == "4K":
@@ -102,7 +102,7 @@ class WorkflowPatcher:
         
         # Apply settings overrides
         if settings_override:
-            self._apply_settings_override(settings_override)
+            self._apply_settings_override(settings_override, quality)
         
         # Auto-bypass nodes
         self._auto_bypass_nodes(character_lora, style_lora, settings_override)
@@ -263,8 +263,11 @@ class WorkflowPatcher:
             # This will be handled by _auto_bypass_nodes
             logger.info("⚠️ No style LoRA - will bypass StyleLora node")
     
-    def _apply_settings_override(self, settings_override: Dict[str, Any]) -> None:
-        """Apply title-based node input overrides and handle bypass flags."""
+    def _apply_settings_override(self, settings_override: Dict[str, Any], quality: str = "1K") -> None:
+        """Apply title-based node input overrides and handle bypass flags.
+        
+        For 1K workflows, automatically adds 0.1 to FaceDetailer denoise if specified in override.
+        """
         if settings_override:
             print(f"🔧 SETTINGS_OVERRIDE DEBUG: Processing settings_override: {settings_override}")
             logger.info(f"🔧 Processing settings_override: {settings_override}")
@@ -326,6 +329,14 @@ class WorkflowPatcher:
 
                 for k, v in regular_overrides.items():
                     old_value = inputs.get(k)
+                    
+                    # Special handling: Add 0.1 to FaceDetailer denoise for 1K workflows
+                    if target_title == "FaceDetailer" and k == "denoise" and quality == "1K":
+                        original_override = v
+                        v = v + 0.1
+                        print(f"  🔧 1K adjustment: FaceDetailer denoise override {original_override} + 0.1 = {v}")
+                        logger.info(f"🔧 1K adjustment: FaceDetailer denoise override {original_override} + 0.1 = {v}")
+                    
                     inputs[k] = v
                     print(f"  📝 SETTINGS_OVERRIDE DEBUG: {k}: {old_value} → {v}")
                     logger.info(f"  📝 {k}: {old_value} → {v}")

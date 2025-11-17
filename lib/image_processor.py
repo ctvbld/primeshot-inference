@@ -121,16 +121,16 @@ def save_image_variants(
         logger.info(f"✅ Copied original to S3: {orig_path}")
         
     elif variant == "web":
-        # Copy 1024px webp and create downscaled versions
-        web_1024_filename = f"{base_name}.webp"
-        web_1024_path = os.path.join(web_dir, web_1024_filename)
-        shutil.copy(source_path, web_1024_path)
-        logger.info(f"✅ Saved 1024px WebP: {web_1024_path}")
+        # Copy 2048px webp and create downscaled versions
+        web_2048_filename = f"{base_name}.webp"
+        web_2048_path = os.path.join(web_dir, web_2048_filename)
+        shutil.copy(source_path, web_2048_path)
+        logger.info(f"✅ Saved 2048px WebP: {web_2048_path}")
         
         # Create downscaled variants
-        _create_web_variants(web_1024_path, base_name, web_dir)
+        _create_web_variants(web_2048_path, base_name, web_dir)
         
-        final_image_url = f"user-images/{user_id}/inference/{job_id}/web/{web_1024_filename}"
+        final_image_url = f"user-images/{user_id}/inference/{job_id}/web/{web_2048_filename}"
         
     else:
         # Legacy path: generate all variants
@@ -149,14 +149,14 @@ def save_image_variants(
 
 
 def _create_web_variants(source_webp_path: str, base_name: str, web_dir: str) -> None:
-    """Create downscaled web variants from 1024px webp."""
+    """Create downscaled web variants from 2048px webp."""
     try:
-        with Image.open(source_webp_path) as img1024:
-            if img1024.mode in ('RGBA', 'LA', 'P'):
-                img1024 = img1024.convert('RGB')
+        with Image.open(source_webp_path) as img2048:
+            if img2048.mode in ('RGBA', 'LA', 'P'):
+                img2048 = img2048.convert('RGB')
             
             for size in (720, 480):
-                web_copy = img1024.copy()
+                web_copy = img2048.copy()
                 web_copy.thumbnail((size, size), Image.Resampling.LANCZOS)
                 web_path = os.path.join(web_dir, f"{base_name}-w{size}.webp")
                 
@@ -173,11 +173,11 @@ def _generate_all_web_variants(source_path: str, base_name: str, web_dir: str) -
             if img.mode in ('RGBA', 'LA', 'P'):
                 img = img.convert('RGB')
             
-            for size in (1024, 720, 480):
+            for size in (2048, 720, 480):
                 web_img = img.copy()
                 web_img.thumbnail((size, size), Image.Resampling.LANCZOS)
                 
-                filename = f"{base_name}.webp" if size == 1024 else f"{base_name}-w{size}.webp"
+                filename = f"{base_name}.webp" if size == 2048 else f"{base_name}-w{size}.webp"
                 web_path = os.path.join(web_dir, filename)
                 
                 _save_webp_with_retry(web_img, web_path, size)
