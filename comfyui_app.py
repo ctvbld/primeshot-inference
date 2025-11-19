@@ -39,8 +39,6 @@ MODELS_PATH = "/models"
 PORT: int = 8000
 # GPU type for dev_server UI (H100 queues can be long). Override via DEV_SERVER_GPU.
 DEV_SERVER_GPU_TYPE = os.getenv("DEV_SERVER_GPU", "H100")
-# Idle warmup coordination
-FIRST_JOB_RECEIVED = threading.Event()
 
 
 # S3 mount for user LoRAs and outputs
@@ -304,135 +302,6 @@ def _launch_inference_runtime(port: int) -> None:
             raise RuntimeError("ComfyUI failed to become ready within 30 seconds")
     except Exception as e:
         print(f"❌ Failed to verify ComfyUI readiness: {e}")
-
-    # Idle warmup: delay, cancel if first job arrives
-    try:
-        def _idle_warmup():
-            try:
-                from pathlib import Path
-                marker_path = Path("/tmp/warmup_ok.json")
-                if marker_path.exists():
-                    print(f"[warmup] existing marker: {marker_path.read_text()}")
-            except Exception:
-                pass
-
-            # wait up to 10s for a job; skip warmup if a job arrives
-            if FIRST_JOB_RECEIVED.wait(timeout=10.0):
-                print("[warmup] skipping (first job arrived during idle window)")
-                return
-            try:
-                preload_core_models(port)
-            except Exception as e:
-                print(f"⚠️ Idle warmup failed (continuing): {e}")
-
-        threading.Thread(target=_idle_warmup, daemon=True).start()
-    except Exception as e:
-        print(f"⚠️ Failed to start idle warmup thread: {e}")
-
-
-def preload_core_models(port: int) -> None:
-    """Warm model weights by submitting a minimal one-shot prompt.
-
-    Uses the baked workflow as a template and reduces steps/resolution to force
-    fast model initialization without meaningful generation cost.
-    """
-    from lib.comfyui_server import ComfyUIServer
-    import json
-    from pathlib import Path
-
-    server = ComfyUIServer(port)
-
-    # Load the dedicated warmup workflow as-is
-    wf_path_candidates = [
-        Path("/root/workflows/warmup.json"),
-    ]
-
-    workflow = None
-    for p in wf_path_candidates:
-        if p.exists():
-            try:
-                workflow = json.loads(p.read_text())
-                break
-            except Exception:
-                continue
-
-    if not isinstance(workflow, dict):
-        print("ℹ️ No baked warmup workflow found; skipping warmup")
-        return
-
-    import time
-    t0 = time.time()
-    print("[warmup] starting: unet=wan2.1_t2v_14B_fp16.safetensors, vae=wan_2.1_vae.safetensors, clip=umt5_xxl_fp16.safetensors, lora=Wan2.1_T2V_14B_FusionX_LoRA.safetensors, upscale=4x-UltraSharpV2_Lite.pth, res=128x128")
-    # First pass: warm base UNet/VAE/CLIP and FusionX LoRA
-    prompt_id = None
-    try:
-        resp = server.submit_prompt(workflow, client_id="preload")
-        prompt_id = resp.get("prompt_id") if isinstance(resp, dict) else None
-        print(f"🚀 Warmup prompt submitted (prompt_id={prompt_id})")
-    except Exception as e:
-        print(f"⚠️ Failed to submit warmup prompt: {e}")
-    # Wait for execution to actually run to ensure models are loaded
-    if prompt_id:
-        result = server.poll_history(prompt_id, max_attempts=10, backoff_base=0.5)
-        print(f"[warmup] first pass completed: {bool(result)}")
-
-    # Second pass: warm the secondary base LoRA used by user workflow
-    # Deep-copy the workflow and swap the LoRA name
-    import json as _json
-    light_lora = "Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors"
-    try:
-        second_workflow = _json.loads(_json.dumps(workflow))
-    except Exception:
-        second_workflow = None
-    prompt_id2 = None
-    if isinstance(second_workflow, dict):
-        replaced = False
-        for node in second_workflow.values():
-            if isinstance(node, dict) and node.get("class_type") == "LoraLoader":
-                inputs = node.get("inputs") or {}
-                if isinstance(inputs, dict):
-                    inputs["lora_name"] = light_lora
-                    replaced = True
-                    break
-        if replaced:
-            try:
-                resp2 = server.submit_prompt(second_workflow, client_id="preload2")
-                prompt_id2 = resp2.get("prompt_id") if isinstance(resp2, dict) else None
-                print(f"🚀 Warmup 2 prompt submitted (prompt_id={prompt_id2}, lora={light_lora})")
-            except Exception as e:
-                print(f"⚠️ Failed to submit warmup2 prompt: {e}")
-            if prompt_id2:
-                result2 = server.poll_history(prompt_id2, max_attempts=10, backoff_base=0.5)
-                print(f"[warmup] second pass completed: {bool(result2)}")
-        else:
-            print("[warmup] second pass skipped: no LoraLoader node found")
-
-    elapsed = time.time() - t0
-    # Write marker only after passes are submitted and (if possible) executed
-    try:
-        from pathlib import Path
-        marker_path = Path("/tmp/warmup_ok.json")
-        marker = {
-            "ts": time.time(),
-            "elapsed_s": round(elapsed, 3),
-            "models": {
-                "unet": "wan2.1_t2v_14B_fp16.safetensors",
-                "vae": "wan_2.1_vae.safetensors",
-                "clip": "umt5_xxl_fp16.safetensors",
-                "lora_primary": "Wan2.1_T2V_14B_FusionX_LoRA.safetensors",
-                "lora_secondary": light_lora,
-                "upscale": "4x-UltraSharpV2_Lite.pth",
-            },
-            "warmup_res": "128x128",
-            "prompt_id": prompt_id,
-            "prompt_id_2": prompt_id2,
-        }
-        import json
-        marker_path.write_text(json.dumps(marker))
-        print(f"[warmup] done in {elapsed:.2f}s | marker={marker_path}")
-    except Exception as e:
-        print(f"[warmup] failed to write marker: {e}")
-
 
 def cleanup_loras_from_vram(job_id: str, port: int = 8000) -> None:
     """Clean up LoRAs from VRAM without unloading base models.
@@ -2133,7 +2002,7 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
     secrets=[aws_secret, inference_secret, supabase_secret],
     volumes={**user_images_mount, **workflows_mount, MODELS_PATH: models_volume},
     timeout=30000,
-    scaledown_window=300,
+    scaledown_window=180,
     max_containers=40,
     retries=3,
 )
@@ -2148,16 +2017,6 @@ class Fast:
 
     @modal.method()
     def run_inference(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            FIRST_JOB_RECEIVED.set()
-            from pathlib import Path
-            marker_path = Path("/tmp/warmup_ok.json")
-            if marker_path.exists():
-                print(f"[warmup] marker at first job (Fast): {marker_path.read_text()}")
-            else:
-                print("[warmup] no marker present before first job (Fast)")
-        except Exception:
-            pass
         return main(input_data)
 
 
@@ -2182,16 +2041,6 @@ class Quick:
 
     @modal.method()
     def run_inference(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            FIRST_JOB_RECEIVED.set()
-            from pathlib import Path
-            marker_path = Path("/tmp/warmup_ok.json")
-            if marker_path.exists():
-                print(f"[warmup] marker at first job (Quick): {marker_path.read_text()}")
-            else:
-                print("[warmup] no marker present before first job (Quick)")
-        except Exception:
-            pass
         return main(input_data)
 
 
