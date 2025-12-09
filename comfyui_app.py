@@ -467,7 +467,7 @@ def get_image_outputs(
     job_id: str,
     prompt_id: str,
     comfyui_base: str,
-    timeout: int = 120
+    timeout: int = 180
 ) -> tuple[dict, str]:
     """Get image outputs using multiple methods with fallback.
     
@@ -475,7 +475,7 @@ def get_image_outputs(
         job_id: Unique job identifier
         prompt_id: ComfyUI prompt ID for this generation
         comfyui_base: Base URL for ComfyUI API
-        timeout: Maximum total time to wait (default 120s)
+        timeout: Maximum total time to wait (default 180s)
                 Note: This is now the absolute maximum. The actual timeout
                 is based on IDLE time (no progress) which defaults to 90s.
                 See COMFY_IDLE_TIMEOUT environment variable.
@@ -504,7 +504,7 @@ def get_image_outputs(
     else:
         # WebSocket timed out, but generation might still be completing
         # Add grace period to check if outputs appear
-        grace_period = 10  # seconds - allow time for late completion signals
+        grace_period = 30  # seconds - allow time for late completion signals
         print(f"⏳ WebSocket timeout - adding {grace_period}s grace period for late completion...")
         time.sleep(grace_period)
         
@@ -556,7 +556,14 @@ def get_image_outputs(
         }
         return outputs, "directory"
     
-    # All methods failed - gather diagnostic info
+    # All methods failed - but check one final time for late success
+    print(f"🔍 Performing final check for late completion data...")
+    completion_data = get_prompt_completion_data(job_id, prompt_id)
+    if completion_data and completion_data.get("outputs"):
+        print(f"🎉 Late success detected! Completion data arrived during directory scanning.")
+        return completion_data["outputs"], "websocket_late"
+    
+    # Truly all methods failed - gather diagnostic info
     total_time = time.time() - start_time
     last_node = get_last_executing_node(job_id)
     
@@ -1462,8 +1469,8 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
                             except Exception as clear_e:
                                 print(f"⚠️ Failed to clear completion state: {clear_e}")
                         
-                        # Attempt to get outputs with fail-fast timeout (reduced from 600s to 120s)
-                        outputs, source = get_image_outputs(job_id, prompt_id, comfyui_base, timeout=120)
+                        # Attempt to get outputs with timeout (increased to 180s for complex generations)
+                        outputs, source = get_image_outputs(job_id, prompt_id, comfyui_base, timeout=180)
                         print(f"✅ Image {image_index + 1} completed on attempt {retry_attempt + 1}! (source: {source})")
                         break  # Success!
                         
