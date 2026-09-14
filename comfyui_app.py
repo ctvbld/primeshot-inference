@@ -41,10 +41,11 @@ PORT: int = 8000
 DEV_SERVER_GPU_TYPE = os.getenv("DEV_SERVER_GPU", "H100")
 
 
-# S3 mount for user LoRAs and outputs
-# Mount user-images/ prefix at /data for all relevant functions
+# CloudBucketMount.bucket_name is baked in at `modal deploy`, not read from
+# Modal secrets at runtime. Keep this on the live uploads bucket.
+S3_BUCKET = "primeshot-uploads-02"
 user_images_mount = {"/data": modal.CloudBucketMount(
-    bucket_name="primeshot-uploads-01",
+    bucket_name=S3_BUCKET,
     key_prefix="user-images/",
     secret=aws_secret,
     read_only=False
@@ -52,7 +53,7 @@ user_images_mount = {"/data": modal.CloudBucketMount(
 
 # Mount workflows/ prefix at /workflows for local file access to workflow JSON
 workflows_mount = {"/workflows": modal.CloudBucketMount(
-    bucket_name="primeshot-uploads-01",
+    bucket_name=S3_BUCKET,
     key_prefix="workflows/",
     secret=aws_secret,
     read_only=True
@@ -303,7 +304,7 @@ def _launch_inference_runtime(port: int) -> None:
     except Exception as e:
         print(f"❌ Failed to verify ComfyUI readiness: {e}")
 
-def cleanup_loras_from_vram(job_id: str, port: int = 8000) -> None:
+def cleanup_loras_from_vram(job_id: str, port: int = 8000, interrupt: bool = True) -> None:
     """Clean up LoRAs from VRAM without unloading base models.
     
     This ensures that between jobs, LoRA weights are cleared from VRAM while
@@ -313,17 +314,20 @@ def cleanup_loras_from_vram(job_id: str, port: int = 8000) -> None:
     
     comfyui_base = f"http://127.0.0.1:{port}"
     
-    # 1. Interrupt any lingering ComfyUI state
-    try:
-        interrupt_req = urllib.request.Request(
-            url=f"{comfyui_base}/interrupt",
-            data=b'',
-            method="POST"
-        )
-        urllib.request.urlopen(interrupt_req, timeout=5)
-        print("✅ Interrupted ComfyUI")
-    except Exception as e:
-        print(f"⚠️ Interrupt failed (non-critical): {e}")
+    # 1. Interrupt any lingering ComfyUI state (unsafe while UNET/LoRA loaders run)
+    if interrupt:
+        try:
+            interrupt_req = urllib.request.Request(
+                url=f"{comfyui_base}/interrupt",
+                data=b'',
+                method="POST"
+            )
+            urllib.request.urlopen(interrupt_req, timeout=5)
+            print("✅ Interrupted ComfyUI")
+        except Exception as e:
+            print(f"⚠️ Interrupt failed (non-critical): {e}")
+    else:
+        print("⏭️ Skipping ComfyUI interrupt - model load still in progress")
     
     # 2. Clear queue
     try:
@@ -583,6 +587,11 @@ def cancel_comfyui_prompt(job_id: str, prompt_id: str, comfyui_base: str) -> boo
     Returns True if successfully cancelled or already complete, False otherwise.
     """
     try:
+        from lib.ws_preview_relay import should_skip_comfy_interrupt
+        if should_skip_comfy_interrupt(job_id):
+            print(f"⏭️ Skipping interrupt for prompt {prompt_id} - model load still in progress")
+            return False
+
         print(f"🛑 Attempting to cancel stuck prompt {prompt_id} for job {job_id}")
         
         # Try ComfyUI's /interrupt endpoint to stop current execution
@@ -1952,9 +1961,11 @@ def main(input_data: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as _cleanup_fail_e:
             print(f"⚠️ LoRA cleanup on failure failed: {_cleanup_fail_e}")
         
-        # Purge LoRAs from VRAM even on failure to prevent OOM on retry
+        # Purge LoRAs from VRAM even on failure to prevent OOM on retry.
+        # Do not interrupt if Comfy is still loading UNET/LoRA weights — that crashes the server.
         try:
-            cleanup_loras_from_vram(job_id, PORT)
+            from lib.ws_preview_relay import should_skip_comfy_interrupt
+            cleanup_loras_from_vram(job_id, PORT, interrupt=not should_skip_comfy_interrupt(job_id))
         except Exception as vram_cleanup_e:
             print(f"⚠️ VRAM cleanup after failure failed (non-critical): {vram_cleanup_e}")
         

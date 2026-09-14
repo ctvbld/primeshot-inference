@@ -11,6 +11,37 @@ import urllib.request
 import urllib.error
 from typing import Optional, Dict, Any
 
+# ComfyUI does not emit sampler `progress` while these nodes load weights.
+LOADER_NODE_TYPES = {
+    "UNETLoader",
+    "LoraLoader",
+    "CLIPLoader",
+    "VAELoader",
+    "CheckpointLoaderSimple",
+    "DualCLIPLoader",
+    "CLIPVisionLoader",
+    "ControlNetLoader",
+    "SAMLoader",
+    "UltralyticsDetectorProvider",
+}
+
+
+def _node_is_loader(node_type: Optional[str]) -> bool:
+    if not node_type:
+        return False
+    if node_type in LOADER_NODE_TYPES:
+        return True
+    return node_type.endswith("Loader")
+
+
+def _is_model_load_phase(manager: "WebSocketRelay") -> bool:
+    """True while weights are loading (no sampler previews yet) or the current node is a loader."""
+    node = manager.last_executing_node or {}
+    if _node_is_loader(node.get("node_type")):
+        return True
+    return not manager.generation_started
+
+
 class WebSocketRelay:
     """Simple WebSocket relay with efficient memory management and status state machine."""
     
@@ -34,6 +65,7 @@ class WebSocketRelay:
         self.errors_by_prompt: dict[str, dict] = {}
         # Executing node tracking
         self.last_executing_node: Optional[dict] = None
+        self.node_class_by_id: Dict[str, str] = {}
         
     def update_image_index(self, new_index: int):
         """Update the current image index being processed."""
@@ -156,17 +188,21 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
     
     # Build set of node IDs to filter from previews (e.g., FaceDetailer)
     filtered_node_ids = set()
+    node_class_by_id: Dict[str, str] = {}
     if workflow:
         for node_id, node_data in workflow.items():
             if isinstance(node_data, dict):
                 class_type = node_data.get("class_type", "")
                 title = node_data.get("_meta", {}).get("title", "")
+                if class_type:
+                    node_class_by_id[str(node_id)] = class_type
                 # Filter out FaceDetailer and similar post-processing nodes
                 if class_type == "FaceDetailerPipe" or title == "FaceDetailer":
                     filtered_node_ids.add(node_id)
                     print(f"🔍 Will filter previews from {title or class_type} (node {node_id})")
     
     relay_manager.filtered_node_ids = filtered_node_ids
+    relay_manager.node_class_by_id = node_class_by_id
     
     # Store relay manager in a global dict to prevent garbage collection
     if not hasattr(start_relay, '_active_relays'):
@@ -514,6 +550,7 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                             
                             # Handle ComfyUI execution updates with progressive progress
                             elif data.get("type") == "execution_start":
+                                manager.last_activity_time = time.time()
                                 if manager.generation_started:
                                     evt["status"] = "generating"
                                     evt["message"] = "Generating"
@@ -523,6 +560,7 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                 evt["progress"] = 5
                                 
                             elif data.get("type") == "executing" or data.get("type") == "execution_cached":
+                                manager.last_activity_time = time.time()
                                 if manager.generation_started:
                                     evt["status"] = "generating"
                                     evt["message"] = "Generating"
@@ -538,13 +576,22 @@ def start_relay(progress_ws_url: str, comfy_ws_url: str, job_id: str, throttle_s
                                 exec_data = data.get("data", {}) or {}
                                 node_id = exec_data.get("node") or exec_data.get("node_id")
                                 if node_id is not None:
+                                    node_key = str(node_id)
+                                    node_type = (
+                                        exec_data.get("node_type")
+                                        or exec_data.get("class_type")
+                                        or (getattr(manager, "node_class_by_id", {}) or {}).get(node_key)
+                                        or ""
+                                    )
                                     manager.last_executing_node = {
-                                        "node_id": str(node_id),
+                                        "node_id": node_key,
+                                        "node_type": node_type,
                                         "prompt_id": manager.last_prompt_id,
                                         "timestamp": int(time.time() * 1000)
                                     }
                                 
                             elif data.get("type") == "executed":
+                                manager.last_activity_time = time.time()
                                 if manager.generation_started:
                                     evt["status"] = "generating"
                                     evt["message"] = "Generating"
@@ -1166,6 +1213,12 @@ def get_last_executing_node(job_id: str) -> dict:
     manager = start_relay._active_relays[job_id]
     return manager.last_executing_node or {}
 
+def should_skip_comfy_interrupt(job_id: str) -> bool:
+    """True when Comfy is still loading weights; interrupting then crashes the server."""
+    if not hasattr(start_relay, '_active_relays') or job_id not in start_relay._active_relays:
+        return False
+    return _is_model_load_phase(start_relay._active_relays[job_id])
+
 def wait_for_prompt_completion(job_id: str, prompt_id: str, timeout: float = 600) -> bool:
     """Wait for a specific prompt to complete using event-based signaling instead of polling.
     
@@ -1211,9 +1264,18 @@ def wait_for_prompt_completion(job_id: str, prompt_id: str, timeout: float = 600
         time_since_activity = current_time - manager.last_activity_time
         
         if time_since_activity > MAX_IDLE_TIME:
-            print(f"🚨 Idle timeout ({MAX_IDLE_TIME}s) exceeded - no progress for {time_since_activity:.1f}s")
-            print(f"   Job {job_id} likely stuck or crashed")
-            return False
+            if _is_model_load_phase(manager):
+                node = manager.last_executing_node or {}
+                if int(elapsed_total) % 30 == 0:
+                    print(
+                        f"⏳ Model load in progress "
+                        f"(node {node.get('node_id')} {node.get('node_type') or 'unknown'}) - "
+                        f"idle {time_since_activity:.1f}s, skipping idle timeout"
+                    )
+            else:
+                print(f"🚨 Idle timeout ({MAX_IDLE_TIME}s) exceeded - no progress for {time_since_activity:.1f}s")
+                print(f"   Job {job_id} likely stuck or crashed")
+                return False
         
         # Log progress periodically
         if int(elapsed_total) % 30 == 0 and elapsed_total > 0:
@@ -1257,12 +1319,20 @@ def wait_for_prompt_completion(job_id: str, prompt_id: str, timeout: float = 600
                 # 1. Same node for > stuck_timeout seconds
                 # 2. No progress messages in the last 30 seconds (more lenient than main idle timeout)
                 if time_on_same_node > stuck_timeout and time_since_activity > 30:
-                    node_id = manager.last_executing_node.get('node_id')
-                    print(f"🚨 Node {node_id} has been executing for {time_on_same_node:.1f}s - likely stuck (timeout: {stuck_timeout}s)")
-                    print(f"🚨 No progress for {time_since_activity:.1f}s")
-                    print(f"🚨 Node details: {manager.last_executing_node}")
-                    print(f"🚨 Failing job {job_id} due to stuck node")
-                    return False
+                    if _is_model_load_phase(manager):
+                        if int(time_on_same_node) % 30 == 0:
+                            print(
+                                f"⏳ Loader node {manager.last_executing_node.get('node_id')} "
+                                f"({manager.last_executing_node.get('node_type') or 'unknown'}) "
+                                f"running for {time_on_same_node:.1f}s - waiting for load to finish"
+                            )
+                    else:
+                        node_id = manager.last_executing_node.get('node_id')
+                        print(f"🚨 Node {node_id} has been executing for {time_on_same_node:.1f}s - likely stuck (timeout: {stuck_timeout}s)")
+                        print(f"🚨 No progress for {time_since_activity:.1f}s")
+                        print(f"🚨 Node details: {manager.last_executing_node}")
+                        print(f"🚨 Failing job {job_id} due to stuck node")
+                        return False
                 elif time_on_same_node > stuck_timeout / 2:
                     # Node taking long but we're still receiving progress - log but continue
                     if int(time_on_same_node) % 30 == 0:  # Log every 30s
